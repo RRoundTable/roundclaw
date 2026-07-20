@@ -206,7 +206,31 @@ second agent run.
 /status  [agent:<name>]              what an agent is doing right now
 /stop    [agent:<name>]              cancel the current turn, clear the queue
 /steer   instruction:<...> [agent:]  interrupt and redirect, keeping context
+
+/agent create                        open a form to define a new agent
+/agent edit    agent:<name>          same form, pre-filled
+/agent show    agent:<name>          full definition
+/agent enable  agent:<name>          accept requests again
+/agent disable agent:<name>          stop accepting, keep the conversation
+/agent delete  agent:<name>          remove the definition, keep the workspace
 ```
+
+Full CRUD without leaving Discord. Create and edit open a modal rather than
+taking flat options: an agent has more fields than a command line reads
+comfortably, and tools and channels are free-form lists. In the channels field,
+`this` stands for the current channel, so nobody has to turn on developer mode
+to copy an ID.
+
+The modal holds Discord's maximum of five inputs. `agent_name` and
+`additional_dirs` are not among them; they are set through the HTTP API and are
+preserved — not blanked — when a definition is edited from Discord. `enabled`
+does not fit either, which is why it has its own commands.
+
+Slash commands are registered with one idempotent bulk overwrite at startup and
+are **not** removed on shutdown. Deleting them on the way out races a replacement
+instance during a restart: if the old container's deletes land after the new
+one's registration, the guild ends up missing commands with nothing in the logs
+to explain it.
 
 The `agent` argument has autocomplete, and is optional on everything except
 `/ask`. Omitted, it means the channel's bound agent; given, it addresses that

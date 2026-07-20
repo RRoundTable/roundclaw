@@ -102,3 +102,30 @@ func stringOfLength(n int) string {
 	}
 	return string(b)
 }
+
+// The modal folds tools and channels into free text, so the parsing has to
+// tolerate what people actually type.
+func TestSplitListTolerates(t *testing.T) {
+	cases := map[string][]string{
+		"Read, Grep, Bash":   {"Read", "Grep", "Bash"},
+		" Read ,, Grep , ":   {"Read", "Grep"},
+		"Read":               {"Read"},
+		"":                   nil,
+		"   ":                nil,
+		",,,":                nil,
+		"Read,Grep,\nWrite ": {"Read", "Grep", "Write"},
+	}
+	for in, want := range cases {
+		got := splitList(in)
+		if len(got) != len(want) {
+			t.Errorf("splitList(%q) = %v, want %v", in, got, want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("splitList(%q) = %v, want %v", in, got, want)
+				break
+			}
+		}
+	}
+}

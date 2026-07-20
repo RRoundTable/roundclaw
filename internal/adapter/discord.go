@@ -67,13 +67,18 @@ func (d *Discord) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close disconnects and removes the slash commands this process registered.
+// Close disconnects.
+//
+// It deliberately leaves the slash commands registered. Deleting them here
+// would race a replacement instance during a restart: compose stops the old
+// container and starts the new one, and if the old one's deletes land after the
+// new one's registration, the guild is left missing commands with nothing in
+// the logs to say why. Registration is an idempotent bulk overwrite instead, so
+// a restart converges no matter which order the calls arrive in.
+//
+// The cost is that a fully stopped roundclaw leaves commands visible that fail
+// when used. That is a clearer failure than a command silently disappearing.
 func (d *Discord) Close() error {
-	for _, cmd := range d.registered {
-		if err := d.session.ApplicationCommandDelete(d.session.State.User.ID, d.guildID, cmd.ID); err != nil {
-			d.log.Warn("failed to remove slash command", "command", cmd.Name, "error", err)
-		}
-	}
 	return d.session.Close()
 }
 
@@ -114,6 +119,53 @@ func (d *Discord) registerCommands() error {
 			Description: "List the agents you can call and what each one is for",
 		},
 		{
+			// Management. Creating and editing open a form rather than taking
+			// flat options: an agent has more fields than a slash command reads
+			// comfortably, and tools and channels are free text.
+			Name:        "agent",
+			Description: "Create, edit or delete an agent",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "create",
+					Description: "Open a form to create a new agent",
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "edit",
+					Description: "Open a form pre-filled with an agent's definition",
+					Options:     []*discordgo.ApplicationCommandOption{agentOption(true)},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "show",
+					Description: "Show an agent's full definition",
+					Options:     []*discordgo.ApplicationCommandOption{agentOption(true)},
+				},
+				{
+					// Enabled does not fit the five inputs a modal allows, and
+					// taking an agent out of service is common enough to deserve
+					// its own command anyway.
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "enable",
+					Description: "Let an agent accept requests again",
+					Options:     []*discordgo.ApplicationCommandOption{agentOption(true)},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "disable",
+					Description: "Stop an agent accepting requests, keeping its conversation",
+					Options:     []*discordgo.ApplicationCommandOption{agentOption(true)},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "delete",
+					Description: "Delete an agent's definition (its workspace and conversation are kept)",
+					Options:     []*discordgo.ApplicationCommandOption{agentOption(true)},
+				},
+			},
+		},
+		{
 			Name:        "status",
 			Description: "Show what an agent is doing right now",
 			Options:     []*discordgo.ApplicationCommandOption{agentOption(false)},
@@ -143,15 +195,18 @@ func (d *Discord) registerCommands() error {
 	// substitute for authorisation inside roundclaw, but it is free and it
 	// applies immediately.
 	permission := d.disp.Config().Discord.CommandPermissionBits()
-
 	for _, cmd := range commands {
 		cmd.DefaultMemberPermissions = permission
-		created, err := d.session.ApplicationCommandCreate(d.session.State.User.ID, d.guildID, cmd)
-		if err != nil {
-			return fmt.Errorf("register /%s: %w", cmd.Name, err)
-		}
-		d.registered = append(d.registered, created)
 	}
+
+	// One atomic overwrite rather than a create per command: it is idempotent,
+	// it removes commands this build no longer defines, and it cannot leave the
+	// guild half-updated if the process dies partway through.
+	created, err := d.session.ApplicationCommandBulkOverwrite(d.session.State.User.ID, d.guildID, commands)
+	if err != nil {
+		return fmt.Errorf("register slash commands: %w", err)
+	}
+	d.registered = created
 	return nil
 }
 
@@ -251,12 +306,20 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	case discordgo.InteractionApplicationCommandAutocomplete:
 		d.handleAutocomplete(i)
 		return
+	case discordgo.InteractionModalSubmit:
+		d.handleAgentForm(i)
+		return
 	case discordgo.InteractionApplicationCommand:
 	default:
 		return
 	}
 
 	data := i.ApplicationCommandData()
+
+	if data.Name == "agent" {
+		d.handleAgentCommand(i, data)
+		return
+	}
 
 	// /agents needs no target and must work in an unbound channel, since that
 	// is exactly where someone is trying to find out what to call.

@@ -1,0 +1,99 @@
+# roundclaw, running as a stable service.
+#
+#   docker compose up -d --build
+#   docker compose logs -f gateway worker
+#   docker compose down            # keeps data; add -v to wipe Temporal's DB
+#
+# Two things here are load-bearing and easy to get wrong:
+#
+# 1. ROUNDCLAW_ROOT is bind-mounted at the SAME absolute path inside the
+#    containers as on the host. The worker starts agent containers by shelling
+#    out to the host's Docker daemon, and that daemon resolves `-v` source paths
+#    against the HOST filesystem. If the workspace lived at some tidy in-image
+#    path like /app/workspace, every agent container would get an empty mount
+#    from a host directory that does not exist — silently, with no error.
+#
+# 2. Temporal is backed by Postgres, not the dev server's in-memory SQLite.
+#    That is the difference between "survives a restart" and "loses every
+#    running agent".
+
+name: roundclaw
+
+x-roundclaw-common: &roundclaw-common
+  build:
+    context: .
+  # Matches the host user so the workspace stays writable by both the
+  # containers and whoever is debugging them. group_add grants the docker
+  # socket's group without running as root.
+  user: "${ROUNDCLAW_UID:-1000}:${ROUNDCLAW_GID:-1000}"
+  env_file: [.env]
+  environment:
+    TZ: ${TZ:-Asia/Seoul}
+  volumes:
+    - ${ROUNDCLAW_ROOT:?set ROUNDCLAW_ROOT to this directory's absolute path}:${ROUNDCLAW_ROOT}
+  working_dir: ${ROUNDCLAW_ROOT}
+  restart: unless-stopped
+  depends_on:
+    temporal:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  temporal:
+    image: temporalio/auto-setup:1.27.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: postgres
+    # Published so `temporal` CLI and any host tooling can still reach it.
+    ports:
+      - "127.0.0.1:7233:7233"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  worker:
+    <<: *roundclaw-common
+    command: ["-config", "${ROUNDCLAW_ROOT}/roundclaw.yaml"]
+    entrypoint: ["/usr/local/bin/worker"]
+    volumes:
+      - ${ROUNDCLAW_ROOT}:${ROUNDCLAW_ROOT}
+      # Agent containers are siblings started through the host daemon, not
+      # children of this container. Read-write because the worker must create
+      # and remove them.
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-984}"
+
+  gateway:
+    <<: *roundclaw-common
+    command: ["-config", "${ROUNDCLAW_ROOT}/roundclaw.yaml"]
+    entrypoint: ["/usr/local/bin/gateway"]
+    ports:
+      - "127.0.0.1:${ROUNDCLAW_HTTP_PORT:-8099}:${ROUNDCLAW_HTTP_PORT:-8099}"
+
+volumes:
+  temporal-postgres:

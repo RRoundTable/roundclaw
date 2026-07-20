@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -81,11 +82,7 @@ func run(configPath string, log *slog.Logger) error {
 			"env", cfg.Discord.TokenEnv)
 	}
 
-	tc, err := client.Dial(client.Options{
-		HostPort:  cfg.Temporal.HostPort,
-		Namespace: cfg.Temporal.Namespace,
-		Logger:    log,
-	})
+	tc, err := dialTemporal(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -132,4 +129,35 @@ func configAgents(cfg *config.Config) []registry.Agent {
 		})
 	}
 	return out
+}
+
+// dialTemporal connects, retrying while the server is still coming up.
+//
+// Under compose the worker, the gateway and Temporal start together, and
+// Temporal takes the longest. Without this, both binaries would exit on the
+// first refused connection and rely on the restart policy to paper over it —
+// which works, but fills the logs with crashes every boot and makes a real
+// outage hard to spot.
+func dialTemporal(cfg *config.Config, log *slog.Logger) (client.Client, error) {
+	const (
+		attempts = 60
+		wait     = 2 * time.Second
+	)
+	var lastErr error
+	for i := range attempts {
+		tc, err := client.Dial(client.Options{
+			HostPort:  cfg.Temporal.HostPort,
+			Namespace: cfg.Temporal.Namespace,
+			Logger:    log,
+		})
+		if err == nil {
+			return tc, nil
+		}
+		lastErr = err
+		if i == 0 {
+			log.Info("waiting for temporal", "host_port", cfg.Temporal.HostPort)
+		}
+		time.Sleep(wait)
+	}
+	return nil, fmt.Errorf("temporal at %s did not become reachable: %w", cfg.Temporal.HostPort, lastErr)
 }

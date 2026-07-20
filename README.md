@@ -71,9 +71,44 @@ interrupted turn's unfinished work does not.
 ## Running it
 
 ```bash
+docker build -t roundclaw/claude:latest container   # the agent image
+cp roundclaw.example.yaml roundclaw.yaml            # then edit the agents section
+
+# Compose needs these in .env; ROUNDCLAW_ROOT must be this directory, absolute.
+cat >> .env <<EOF
+ROUNDCLAW_ROOT=$(pwd)
+ROUNDCLAW_UID=$(id -u)
+ROUNDCLAW_GID=$(id -g)
+DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+ROUNDCLAW_HTTP_PORT=8099
+EOF
+
+docker compose up -d --build
+docker compose logs -f gateway worker
+```
+
+Postgres-backed Temporal, plus the worker and gateway. `docker compose down`
+keeps everything; add `-v` to wipe Temporal's database.
+
+Two things in `compose.yaml` are load-bearing:
+
+- **`ROUNDCLAW_ROOT` is mounted at the same absolute path inside the
+  containers.** The worker starts agent containers through the host's Docker
+  daemon, and that daemon resolves `-v` sources against the *host*
+  filesystem. A tidy in-image path like `/app/workspace` would give every agent
+  an empty mount from a host directory that does not exist — silently.
+- **Temporal runs on Postgres, not the dev server's in-memory store.** That is
+  the difference between surviving a restart and losing every running agent.
+
+The worker mounts the Docker socket, so agent containers are *siblings* of the
+worker rather than children. `group_add` grants the socket's group without
+running anything as root.
+
+### Without compose
+
+```bash
 temporal server start-dev                    # or point at your own cluster
-docker build -t roundclaw/claude:latest container
-cp roundclaw.example.yaml roundclaw.yaml     # then edit the agents section
+# set temporal.host_port to localhost:7233 and workspace_root to a local path
 
 # Either credential works; the OAuth token wins when both are set.
 export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # preferred, headless
@@ -86,6 +121,9 @@ export ROUNDCLAW_CALLBACK_SECRET=another-secret
 go run ./cmd/worker  -config roundclaw.yaml
 go run ./cmd/gateway -config roundclaw.yaml
 ```
+
+Both binaries retry the Temporal connection while it comes up, so start order
+does not matter.
 
 ## Agents
 

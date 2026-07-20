@@ -65,7 +65,14 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents/{agent}/workflow", h.getWorkflow)
 	h.registerAgentRoutes(mux)
 	h.registerScheduleRoutes(mux)
-	return h.authenticate(mux)
+
+	// Webhooks sit outside the bearer middleware: their callers cannot hold a
+	// token and would not be updated when one rotates, so a per-payload
+	// signature is their authentication instead.
+	outer := http.NewServeMux()
+	h.registerWebhookRoutes(outer)
+	outer.Handle("/", h.authenticate(mux))
+	return outer
 }
 
 type submitBody struct {

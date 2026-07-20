@@ -335,8 +335,11 @@ The `agent` argument has autocomplete, and is optional on everything except
 `/ask`. Omitted, it means the channel's bound agent; given, it addresses that
 agent from anywhere — including a channel bound to nothing.
 
-Binding a channel to an agent in the config is the ergonomic shortcut: a plain
-message in a bound channel is queued as a request, no command needed.
+Binding a channel to an agent is the ergonomic shortcut: a plain message in a
+bound channel is queued as a request, no command needed. Set `require_mention`
+on the agent and it answers only messages that @-mention the bot — without that,
+a bound channel treats *every* message as a request, which is only tolerable in
+a channel nobody else talks in.
 
 ### Routing unbound channels (optional)
 
@@ -355,6 +358,31 @@ Three properties are deliberate:
   a router failure stays silent rather than replying to every message.
 
 An agent ID the model invents is downgraded to `clarify` rather than acted on.
+
+## Inbound webhooks
+
+```
+POST /v1/webhooks/{agent}
+     X-Roundclaw-Signature: sha256=<hmac of the raw body>
+```
+
+A separate door from the rest of the API, because the callers are different: a
+GitHub or CI webhook cannot hold a bearer token and would not be updated when
+one rotates. It signs its body with a shared secret instead
+(`ROUNDCLAW_WEBHOOK_SECRET`), so this route sits outside the bearer middleware
+and authenticates by signature.
+
+GitHub's own header names (`X-Hub-Signature-256`, `X-GitHub-Event`,
+`X-GitHub-Delivery`) are accepted, so its webhooks work with no proxy in front.
+The delivery ID is used as the idempotency key: senders redeliver on a timeout,
+and that must land on the original turn rather than running the work twice.
+
+With no secret configured every webhook is refused. The alternative is an open
+door to billable work.
+
+The payload reaches the agent as-is, pretty-printed when it is JSON. roundclaw
+has no idea what a given sender's schema means, and summarising would drop the
+field that mattered — the agent can read JSON.
 
 ## Who can run what
 

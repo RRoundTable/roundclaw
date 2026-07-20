@@ -300,6 +300,22 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	if agent.RequireMention {
+		mentioned, stripped := d.stripMention(m, text)
+		if !mentioned {
+			// Someone else's conversation. Answering it would be both wrong and
+			// billable.
+			return
+		}
+		text = stripped
+		if text == "" {
+			// A bare mention with nothing after it. Prompting for a request is
+			// friendlier than sending an empty one to the agent.
+			d.reply(m.ChannelID, "👋 What would you like me to do?")
+			return
+		}
+	}
+
 	prompt, err := d.attachFiles(ctx, agent.ID, text, m.Attachments)
 	if err != nil {
 		d.reply(m.ChannelID, "⚠️ "+err.Error())
@@ -325,6 +341,36 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if sub.QueuePosition > 0 {
 		d.reply(m.ChannelID, fmt.Sprintf("⏳ Queued (%d ahead) — turn #%d", sub.QueuePosition, sub.TurnID))
 	}
+}
+
+// stripMention reports whether the bot was addressed, and returns the message
+// with the mention removed.
+//
+// Discord delivers a mention as <@id> or <@!id> in the content, and separately
+// in Mentions. The IDs are checked rather than the rendered text because the
+// display name is not in the payload and changes whenever someone renames the
+// bot or gives it a per-server nickname.
+func (d *Discord) stripMention(m *discordgo.MessageCreate, text string) (bool, string) {
+	self := d.session.State.User
+	if self == nil {
+		return false, text
+	}
+
+	mentioned := false
+	for _, u := range m.Mentions {
+		if u.ID == self.ID {
+			mentioned = true
+			break
+		}
+	}
+	if !mentioned {
+		return false, text
+	}
+
+	for _, form := range []string{"<@" + self.ID + ">", "<@!" + self.ID + ">"} {
+		text = strings.ReplaceAll(text, form, " ")
+	}
+	return true, strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 }
 
 // routeUnbound handles a message in a channel bound to no agent.

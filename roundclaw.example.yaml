@@ -71,6 +71,9 @@ http:
   # descriptors before anything else shows strain.
   max_sse_per_agent: 8
   callback_secret_env: ROUNDCLAW_CALLBACK_SECRET
+  # Shared secret inbound webhooks sign their payloads with. Empty refuses every
+  # webhook — without it any caller on the network could queue billable work.
+  webhook_secret_env: ROUNDCLAW_WEBHOOK_SECRET
 
 # What roundclaw is allowed to spend.
 #
@@ -146,6 +149,10 @@ agents:
       - Bash
     # Mounted read-only and exposed via --add-dir.
     additional_dirs: []
+    # Answer only messages that @-mention the bot. Any shared channel needs
+    # this, or the agent replies to other people's conversations and bills for
+    # it. Managed through the API: require_mention.
+    #
     # A channel may be bound to exactly one agent; two bindings is a config
     # error, because ambiguous routing would send replies to the wrong session.
     discord_channels:

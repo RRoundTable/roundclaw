@@ -195,6 +195,7 @@ func (d *Discord) handleAgentForm(i *discordgo.InteractionCreate) {
 		agent.AdditionalDirs = existing.AdditionalDirs
 		agent.WorkDir = existing.WorkDir
 		agent.DenyPaths = existing.DenyPaths
+		agent.RequireMention = existing.RequireMention
 		agent.Enabled = existing.Enabled
 
 		updated, err := d.disp.Registry().Update(ctx, agent)
@@ -235,6 +236,9 @@ func (d *Discord) showAgent(i *discordgo.InteractionCreate, agentID string) {
 	b.WriteString("\n" + describeAgent(agent) + "\n")
 	if agent.AgentName != "" {
 		fmt.Fprintf(&b, "runs as subagent `%s`\n", agent.AgentName)
+	}
+	if agent.RequireMention {
+		b.WriteString("answers only when @-mentioned\n")
 	}
 	if agent.WorkDir != "" {
 		fmt.Fprintf(&b, "works in `%s` (read-write)\n", agent.WorkDir)

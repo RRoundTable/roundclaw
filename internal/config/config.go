@@ -171,6 +171,10 @@ type HTTPConfig struct {
 	// CallbackSecretEnv names an env var holding the HMAC key used to sign
 	// outbound callback deliveries.
 	CallbackSecretEnv string `yaml:"callback_secret_env"`
+	// WebhookSecretEnv names an env var holding the shared secret inbound
+	// webhooks sign their payloads with. Empty refuses every webhook, because
+	// without it any caller on the network could queue billable work.
+	WebhookSecretEnv string `yaml:"webhook_secret_env"`
 }
 
 // RouterConfig controls what happens to a plain message in a channel bound to
@@ -337,6 +341,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.HTTP.CallbackSecretEnv == "" {
 		c.HTTP.CallbackSecretEnv = "ROUNDCLAW_CALLBACK_SECRET"
+	}
+	if c.HTTP.WebhookSecretEnv == "" {
+		c.HTTP.WebhookSecretEnv = "ROUNDCLAW_WEBHOOK_SECRET"
 	}
 	if c.Router.Timeout == 0 {
 		c.Router.Timeout = 30 * time.Second

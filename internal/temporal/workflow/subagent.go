@@ -65,6 +65,7 @@ func SubAgent(ctx workflow.Context, in Input) error {
 		queue:        append([]core.Request(nil), in.Queue...),
 		turnCount:    in.TurnCount,
 		sessionReady: in.SessionReady,
+		sessionLost:  in.SessionLost,
 		lifecycle:    core.AgentIdle,
 	}
 
@@ -109,6 +110,9 @@ func SubAgent(ctx workflow.Context, in Input) error {
 				// Carried across, or the agent would try to create a session
 				// that already exists after every history truncation.
 				SessionReady: state.sessionReady,
+				// Likewise: a truncation landing between a lost session and the
+				// next turn would otherwise swallow the one chance to rebuild.
+				SessionLost: state.sessionLost,
 			})
 		}
 
@@ -127,6 +131,10 @@ type agentState struct {
 	// sessionReady is observed, not counted: it is set when a turn reports that
 	// the CLI opened the session, and cleared when a resume attempt fails to.
 	sessionReady bool
+	// sessionLost marks that the next turn is starting over after a resume
+	// found nothing, so it should carry a recap. Cleared once that turn runs —
+	// the recap is for the first turn of the new session, not every turn after.
+	sessionLost bool
 }
 
 func (s *agentState) status() (Status, error) {
@@ -252,6 +260,9 @@ func (s *agentState) runTurn(
 		// CLI started still advanced the count, and every later turn tried to
 		// resume a session that was never created.
 		Resume: s.sessionReady,
+		// Set for the turn that follows a lost session: it starts a fresh one,
+		// so the activity prepends a recap built from the turn record.
+		RebuildContext: s.sessionLost,
 	})
 
 	var (
@@ -296,6 +307,10 @@ func (s *agentState) runTurn(
 	s.currentTurnID = 0
 	s.lifecycle = core.AgentIdle
 
+	// Consumed by the turn just run; the recap belongs to the first turn of the
+	// new session, not to every turn that follows it.
+	s.sessionLost = false
+
 	switch {
 	case result.SessionEstablished:
 		s.sessionReady = true
@@ -304,9 +319,10 @@ func (s *agentState) runTurn(
 		// Clearing this makes the next turn create a fresh one rather than
 		// retrying a resume that cannot succeed. The conversation is lost, but
 		// the agent recovers instead of failing forever.
-		log.Warn("resume did not open a session; the next turn will start a new one",
+		log.Warn("resume did not open a session; the next turn will start a new one with a recap",
 			"agent", s.agentID, "turn_id", req.TurnID)
 		s.sessionReady = false
+		s.sessionLost = true
 	}
 
 	if actErr != nil {

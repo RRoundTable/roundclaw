@@ -72,7 +72,23 @@ type RunTurnInput struct {
 	// Resume is false only for an agent's very first turn. It selects
 	// --resume over --session-id.
 	Resume bool `json:"resume"`
+
+	// RebuildContext asks for a recap of recent turns to be prepended, because
+	// the previous Claude session was lost and this turn starts a new one.
+	//
+	// Set by the workflow, which is the only thing that knows a resume failed:
+	// that fact spans turns and has to survive worker restarts, which is
+	// precisely what it is kept in workflow state for.
+	RebuildContext bool `json:"rebuild_context,omitempty"`
 }
+
+// recapTurns is how many past turns are summarised when a session is lost.
+// Enough to re-establish what the agent was working on, few enough that the
+// recap does not crowd out the actual request.
+const recapTurns = 10
+
+// maxRecapField bounds each quoted request and result.
+const maxRecapField = 400
 
 // TurnProgress is the heartbeat payload. It is visible through
 // DescribeWorkflowExecution, which makes a stuck turn diagnosable without
@@ -133,6 +149,21 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		PermissionMode:  agentCfg.PermissionMode,
 		AllowedTools:    agentCfg.AllowedTools,
 		Prompt:          in.Prompt,
+	}
+
+	if in.RebuildContext {
+		// The conversation itself is gone; this is a reconstruction from the
+		// turn record, and it is labelled as one so the agent does not treat a
+		// summary as though it remembered the exchange.
+		recap, err := buildRecap(ctx, st)
+		if err != nil {
+			log.Warn("could not rebuild context after a lost session",
+				"agent", in.AgentID, "error", err)
+		} else if recap != "" {
+			spec.Prompt = recap + spec.Prompt
+			log.Info("rebuilt context from the turn history after a lost session",
+				"agent", in.AgentID, "turn_id", in.TurnID)
+		}
 	}
 
 	args, err := spec.Args()
@@ -504,4 +535,66 @@ func workDirFor(cfg *config.Config, agent registry.Agent) string {
 		return agent.WorkDir
 	}
 	return cfg.WorkDir(agent.ID)
+}
+
+// buildRecap summarises recent turns for an agent whose session was lost.
+//
+// This is the one place the turn window is fed back into a prompt. On an
+// ordinary turn it is not: the live Claude session already holds that history,
+// and repeating it would pay for the same context twice. Here the session is
+// gone, so the record is all there is.
+//
+// Only finished turns are included, and each field is truncated: the point is
+// to re-establish what the agent was working on, not to replay it.
+func buildRecap(ctx context.Context, st *store.Store) (string, error) {
+	turns, err := st.RecentTurns(ctx, recapTurns)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	var included int
+	// RecentTurns is newest first; the recap reads oldest first, like a
+	// conversation.
+	for i := len(turns) - 1; i >= 0; i-- {
+		t := turns[i]
+		if t.Status == core.TurnRunning {
+			continue // the turn being started now
+		}
+		fmt.Fprintf(&b, "- asked: %s\n", truncateField(t.Request))
+		switch {
+		case t.Status == core.TurnDone && t.Result != "":
+			fmt.Fprintf(&b, "  answered: %s\n", truncateField(t.Result))
+		case t.Status == core.TurnError:
+			fmt.Fprintf(&b, "  failed: %s\n", truncateField(t.Error))
+		case t.Status == core.TurnStopped:
+			b.WriteString("  stopped before finishing\n")
+		}
+		included++
+	}
+	if included == 0 {
+		return "", nil
+	}
+
+	// The wording matters more than it looks. An earlier version said to treat
+	// the recap "as background, not as memory", and the agent read that as "this
+	// is unreliable" — it was handed a fact it had recorded itself and still
+	// answered that it did not know. The distinction to draw is between what is
+	// accurate (the record) and what is missing (everything else), not between
+	// trustworthy and untrustworthy.
+	return "Your previous session was lost and this is a fresh one. Below is an" +
+		" accurate record of what you were asked and what you answered. The" +
+		" details in it are reliable — use them. What is gone is everything" +
+		" around them: your reasoning, files you had read, tool results. So" +
+		" answer from this record where it covers the question, and say what" +
+		" you no longer have where it does not.\n\n" +
+		b.String() + "\n---\n\n", nil
+}
+
+func truncateField(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= maxRecapField {
+		return s
+	}
+	return s[:maxRecapField] + "…"
 }

@@ -58,4 +58,9 @@ type AgentInput struct {
 	// It must survive Continue-As-New or the agent would try to create an
 	// already-existing session after every history truncation.
 	SessionReady bool `json:"session_ready,omitempty"`
+
+	// SessionLost carries a pending recap across Continue-As-New, so a
+	// truncation landing between the loss and the next turn does not swallow
+	// the one chance to rebuild context.
+	SessionLost bool `json:"session_lost,omitempty"`
 }

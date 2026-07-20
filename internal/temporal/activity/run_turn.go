@@ -49,14 +49,18 @@ type Activities struct {
 	stores  *store.Registry
 	reg     *registry.Store
 	discord DiscordSender
+	// signal queues scheduled requests. Nil when the worker was built without
+	// a Temporal client, which only happens in tests.
+	signal TemporalSignaller
 }
 
 // NewActivities builds the activity set. The store registry must be opened in
 // ReadWrite mode: this is the only writer. discord may be nil when Discord is
 // not configured; discord-origin deliveries then fail as non-retryable rather
 // than blocking startup.
-func NewActivities(cfg *config.Config, stores *store.Registry, reg *registry.Store, discord DiscordSender) *Activities {
-	return &Activities{cfg: cfg, stores: stores, reg: reg, discord: discord}
+func NewActivities(cfg *config.Config, stores *store.Registry, reg *registry.Store,
+	discord DiscordSender, signal TemporalSignaller) *Activities {
+	return &Activities{cfg: cfg, stores: stores, reg: reg, discord: discord, signal: signal}
 }
 
 // RunTurnInput is one agent turn.

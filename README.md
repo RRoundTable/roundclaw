@@ -171,6 +171,51 @@ read-write hands the agent everything in it.
 The managed directory stays the default deliberately. Pointing an agent at a
 project gives it that project — including whatever is uncommitted in it.
 
+## Schedules
+
+Recurring work. The definition lives in the registry; Temporal owns the trigger.
+
+```bash
+curl -X PUT localhost:8099/v1/schedules/daily-report \
+  -H "Authorization: Bearer $TOKEN" -d '{
+    "agent_id":"reporter",
+    "cron":"0 9 * * 1-5", "timezone":"Asia/Seoul",
+    "prompt":"Run the daily report.",
+    "channel_id":"123456789",
+    "suppress_if":"nothing to report"}'
+```
+
+```
+GET    /v1/schedules                    list, with live next-run and pause state
+GET    /v1/schedules/{id}
+PUT    /v1/schedules/{id}               create or replace
+DELETE /v1/schedules/{id}
+POST   /v1/schedules/{id}/pause
+POST   /v1/schedules/{id}/resume
+```
+
+A firing joins the agent's ordinary queue, so scheduled work shares one session,
+one ordering rule and one set of spend limits with everything else. There is no
+second execution path to keep in step.
+
+The definition is read **at fire time**, not baked into the Temporal schedule,
+so editing a prompt takes effect on the next run without recreating anything.
+Temporal stays authoritative for timing — pause state and next-run time are read
+back from it rather than mirrored into SQLite where the two could disagree.
+
+Three behaviours worth knowing:
+
+- **`suppress_if` hides a message, not a run.** A daily job that usually has
+  nothing to say would otherwise post "nothing to report" every morning, and
+  people stop reading a channel that does that. The turn is still recorded, so
+  `/status` and the API show it ran.
+- **Overlapping firings are skipped.** A run still queued when the next firing
+  comes round means the agent is behind, not that it needs another request.
+- **A disabled agent quiets its schedules**, without having to pause each one.
+
+Each firing is keyed by its scheduled time, so a Temporal retry of the enqueue
+cannot queue the same run twice.
+
 ## File input
 
 Attach a file to `/ask`, or post one in a bound channel, or send it with an API

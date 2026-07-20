@@ -80,6 +80,7 @@ func run(configPath string, log *slog.Logger) error {
 	defer tc.Close()
 
 	disp := adapter.NewDispatcher(cfg, tc, stores, reg)
+	disp.SetSchedules(scheduleBackend{tc.ScheduleClient()})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -202,4 +203,31 @@ func dialTemporal(cfg *config.Config, log *slog.Logger) (client.Client, error) {
 		time.Sleep(wait)
 	}
 	return nil, fmt.Errorf("temporal at %s did not become reachable: %w", cfg.Temporal.HostPort, lastErr)
+}
+
+// scheduleBackend adapts Temporal's schedule client to the narrow interface the
+// dispatcher uses. The SDK addresses a schedule through a handle rather than by
+// ID on every call, so each method fetches one; that is a local object, not a
+// round trip.
+type scheduleBackend struct{ sc client.ScheduleClient }
+
+func (b scheduleBackend) Create(ctx context.Context, opts client.ScheduleOptions) error {
+	_, err := b.sc.Create(ctx, opts)
+	return err
+}
+
+func (b scheduleBackend) Delete(ctx context.Context, id string) error {
+	return b.sc.GetHandle(ctx, id).Delete(ctx)
+}
+
+func (b scheduleBackend) Pause(ctx context.Context, id, note string) error {
+	return b.sc.GetHandle(ctx, id).Pause(ctx, client.SchedulePauseOptions{Note: note})
+}
+
+func (b scheduleBackend) Unpause(ctx context.Context, id, note string) error {
+	return b.sc.GetHandle(ctx, id).Unpause(ctx, client.ScheduleUnpauseOptions{Note: note})
+}
+
+func (b scheduleBackend) Describe(ctx context.Context, id string) (*client.ScheduleDescription, error) {
+	return b.sc.GetHandle(ctx, id).Describe(ctx)
 }

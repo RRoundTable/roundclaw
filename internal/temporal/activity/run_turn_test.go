@@ -91,7 +91,7 @@ func newActivities(t *testing.T, runtimePath string) (*Activities, *store.Store,
 	}
 
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-credential")
-	return NewActivities(cfg, stores, reg, nil), st, dir
+	return NewActivities(cfg, stores, reg, nil, nil), st, dir
 }
 
 func runTurn(t *testing.T, a *Activities, in RunTurnInput) (core.TurnResult, error) {

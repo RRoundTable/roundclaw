@@ -30,6 +30,12 @@ type Request struct {
 	Origin Origin `json:"origin"`
 
 	ReceivedAt time.Time `json:"received_at"`
+
+	// SuppressIf, when the result contains it, stops delivery. Set by
+	// schedules: a daily job that usually has nothing to say would otherwise
+	// post "nothing to report" every morning, and people stop reading a channel
+	// that does that. The turn is still recorded, so the run is auditable.
+	SuppressIf string `json:"suppress_if,omitempty"`
 }
 
 // Validate checks a Request at the adapter boundary.

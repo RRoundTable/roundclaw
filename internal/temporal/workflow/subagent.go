@@ -13,45 +13,27 @@ import (
 
 	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/temporal/activity"
+	"github.com/roundtable/roundclaw/internal/temporal/contract"
 )
 
-// Signal and query names. These are part of the wire contract with the
-// gateway, so renaming one breaks in-flight workflows.
+// Re-exported from the contract package so callers have one import for the
+// workflow and its wire names.
 const (
-	SignalEnqueue = "enqueue"
-	SignalStop    = "stop"
-	SignalSteer   = "steer"
-	QueryStatus   = "status"
+	SignalEnqueue = contract.SignalEnqueue
+	SignalStop    = contract.SignalStop
+	SignalSteer   = contract.SignalSteer
+	QueryStatus   = contract.QueryStatus
 )
+
+// Input starts or continues a SubAgentWorkflow.
+type Input = contract.AgentInput
 
 // maxTurnsPerRun bounds workflow history before Continue-As-New. Temporal also
 // suggests continuing on its own; whichever fires first wins.
 const maxTurnsPerRun = 100
 
-// WorkflowID builds the deterministic workflow ID for an agent. The Claude
-// session UUID is derived from this string, so it must stay stable for the life
-// of the agent — changing the format orphans every existing session.
-func WorkflowID(agentID string) string {
-	return "roundclaw-agent-" + agentID
-}
-
-// Input starts or continues a SubAgentWorkflow.
-type Input struct {
-	AgentID string `json:"agent_id"`
-
-	// Queue carries requests across Continue-As-New so nothing is dropped at
-	// the boundary.
-	Queue []core.Request `json:"queue,omitempty"`
-
-	// TurnCount is cumulative across Continue-As-New, and is reported by the
-	// status query. It does not decide --session-id versus --resume.
-	TurnCount int `json:"turn_count,omitempty"`
-
-	// SessionReady records that some turn actually opened the Claude session.
-	// It must survive Continue-As-New or the agent would try to create an
-	// already-existing session after every history truncation.
-	SessionReady bool `json:"session_ready,omitempty"`
-}
+// WorkflowID builds the deterministic workflow ID for an agent.
+var WorkflowID = contract.WorkflowID
 
 // StopSignal asks the agent to abandon its current turn.
 type StopSignal struct {
@@ -368,9 +350,10 @@ func (s *agentState) deliver(ctx workflow.Context, req core.Request, result core
 		})
 
 	err := workflow.ExecuteActivity(deliverCtx, (*activity.Activities).DeliverResponse, activity.DeliverInput{
-		AgentID: s.agentID,
-		Origin:  req.Origin,
-		Result:  result,
+		AgentID:    s.agentID,
+		Origin:     req.Origin,
+		Result:     result,
+		SuppressIf: req.SuppressIf,
 	}).Get(deliverCtx, nil)
 	if err != nil {
 		// Delivery is best-effort by design: the result is already durable in

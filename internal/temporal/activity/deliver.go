@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"go.temporal.io/sdk/activity"
 
 	"github.com/roundtable/roundclaw/internal/core"
 )
@@ -25,6 +27,9 @@ type DeliverInput struct {
 	AgentID string          `json:"agent_id"`
 	Origin  core.Origin     `json:"origin"`
 	Result  core.TurnResult `json:"result"`
+	// SuppressIf stops delivery when the result contains it. The turn stays
+	// recorded either way — this hides a message, it does not hide a run.
+	SuppressIf string `json:"suppress_if,omitempty"`
 }
 
 // DiscordSender sends a message to a channel. The worker uses discordgo's REST
@@ -41,6 +46,12 @@ type DiscordSender interface {
 // convenience rather than the system of record. That is deliberate: a deleted
 // Discord channel or a dead callback host must not be able to fail an agent.
 func (a *Activities) DeliverResponse(ctx context.Context, in DeliverInput) error {
+	if in.SuppressIf != "" && strings.Contains(in.Result.Text, in.SuppressIf) {
+		activity.GetLogger(ctx).Info("suppressed a scheduled result",
+			"agent", in.AgentID, "turn_id", in.Result.TurnID, "match", in.SuppressIf)
+		return nil
+	}
+
 	switch in.Origin.Type {
 	case core.OriginHTTPPoll:
 		// Nothing to push. The client collects the result via

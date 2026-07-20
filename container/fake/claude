@@ -19,9 +19,17 @@ PROMPT=""
 SESSION=""
 MODE=""
 
-# The prompt is the final positional argument.
+# The prompt is the argument immediately after -p, matching what roundclaw
+# builds. Taking the last argument instead would diverge from the real CLI,
+# where --allowedTools is variadic and swallows anything after it — and a fake
+# that accepts what the real one rejects makes every test using it a lie.
+prev=""
 for arg in "$@"; do
-    PROMPT="$arg"
+    if [ "$prev" = "-p" ] || [ "$prev" = "--print" ]; then
+        PROMPT="$arg"
+        break
+    fi
+    prev="$arg"
 done
 
 # shellcheck disable=SC2068

@@ -80,6 +80,9 @@ limits:
   # (5): it bounds host resources, and excess turns wait rather than fail.
   max_concurrent_turns: 5
 
+# Recurring work is not configured here — schedules live in the runtime
+# registry alongside agents, and are managed through /v1/schedules.
+
 # Routing for messages in channels bound to no agent.
 #
 # Off by default and deliberately so: every such message costs an LLM call, and

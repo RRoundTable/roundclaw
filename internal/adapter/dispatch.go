@@ -46,10 +46,11 @@ type TemporalClient interface {
 // because "what is it doing?" is the question a user asks precisely when
 // something is wrong.
 type Dispatcher struct {
-	cfg    *config.Config
-	tc     TemporalClient
-	stores *store.Registry
-	reg    *registry.Store
+	cfg       *config.Config
+	tc        TemporalClient
+	stores    *store.Registry
+	reg       *registry.Store
+	schedules ScheduleBackend
 }
 
 // NewDispatcher builds a dispatcher. stores must be opened ReadWrite: the

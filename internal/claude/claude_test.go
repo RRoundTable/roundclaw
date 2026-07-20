@@ -266,3 +266,32 @@ func TestDecodeRateLimitEventWithoutInfo(t *testing.T) {
 		t.Fatalf("got %+v", events)
 	}
 }
+
+// --allowedTools is variadic: it keeps consuming arguments. A prompt placed
+// after it is swallowed and `claude` exits with "Input must be provided",
+// having never seen the request. This went unnoticed until the first agent was
+// configured with tools — which is the documented, recommended configuration.
+func TestArgsPromptPrecedesVariadicFlags(t *testing.T) {
+	s := baseSpec()
+	s.AllowedTools = []string{"Read", "Write", "Bash"}
+	s.AdditionalDirs = []string{"/srv/docs"}
+	args, err := s.Args()
+	if err != nil {
+		t.Fatalf("args: %v", err)
+	}
+
+	promptAt := slices.Index(args, s.Prompt)
+	if promptAt < 0 {
+		t.Fatalf("prompt is missing from argv: %v", args)
+	}
+	// Directly after -p, which is the only position no flag can consume it from.
+	if args[promptAt-1] != "-p" {
+		t.Errorf("prompt follows %q, want it directly after -p", args[promptAt-1])
+	}
+	for _, flag := range []string{"--allowedTools", "--add-dir", "--output-format"} {
+		at := slices.Index(args, flag)
+		if at >= 0 && at < promptAt {
+			t.Errorf("%s at %d precedes the prompt at %d; it can swallow it", flag, at, promptAt)
+		}
+	}
+}

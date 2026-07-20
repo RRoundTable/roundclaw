@@ -24,6 +24,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/roundtable/roundclaw/internal/claude"
 	"github.com/roundtable/roundclaw/internal/core"
 )
 
@@ -42,6 +43,8 @@ CREATE TABLE IF NOT EXISTS agents (
     permission_mode TEXT NOT NULL DEFAULT '',
     allowed_tools   TEXT NOT NULL DEFAULT '[]',
     additional_dirs TEXT NOT NULL DEFAULT '[]',
+    work_dir        TEXT NOT NULL DEFAULT '',
+    deny_paths      TEXT NOT NULL DEFAULT '[]',
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
@@ -57,14 +60,36 @@ CREATE TABLE IF NOT EXISTS agent_channels (
 CREATE INDEX IF NOT EXISTS idx_agent_channels_agent ON agent_channels(agent_id);
 `
 
+// migrations add columns to a database created by an older build.
+//
+// CREATE TABLE IF NOT EXISTS does nothing to a table that already exists, so a
+// new column in the schema above is invisible to any deployment that has run
+// before — every query then fails with "no such column" and the process
+// crash-loops. Each statement here is applied on open and its "duplicate
+// column" error ignored, which makes running them repeatedly a no-op.
+//
+// Only ever append. Rewriting or reordering these would diverge fresh
+// databases from migrated ones.
+var migrations = []string{
+	`ALTER TABLE agents ADD COLUMN work_dir TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents ADD COLUMN deny_paths TEXT NOT NULL DEFAULT '[]'`,
+}
+
 // Agent is a runtime agent definition.
 type Agent struct {
-	ID              string    `json:"id"`
-	Description     string    `json:"description"`
-	AgentName       string    `json:"agent_name"`
-	PermissionMode  string    `json:"permission_mode"`
-	AllowedTools    []string  `json:"allowed_tools"`
-	AdditionalDirs  []string  `json:"additional_dirs"`
+	ID             string   `json:"id"`
+	Description    string   `json:"description"`
+	AgentName      string   `json:"agent_name"`
+	PermissionMode string   `json:"permission_mode"`
+	AllowedTools   []string `json:"allowed_tools"`
+	AdditionalDirs []string `json:"additional_dirs"`
+	// WorkDir points the agent's /workspace at an existing host directory,
+	// read-write, instead of the empty one roundclaw manages. Empty keeps the
+	// managed directory, which is the safe default.
+	WorkDir string `json:"work_dir"`
+	// DenyPaths are shadowed with /dev/null inside the workspace. Relative to
+	// the workspace root.
+	DenyPaths       []string  `json:"deny_paths"`
 	DiscordChannels []string  `json:"discord_channels"`
 	Enabled         bool      `json:"enabled"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -79,6 +104,14 @@ func (a Agent) Validate() error {
 	for _, d := range a.AdditionalDirs {
 		if !filepath.IsAbs(d) {
 			return fmt.Errorf("additional dir %q must be absolute", d)
+		}
+	}
+	if a.WorkDir != "" && !filepath.IsAbs(a.WorkDir) {
+		return fmt.Errorf("work dir %q must be absolute", a.WorkDir)
+	}
+	for _, d := range a.DenyPaths {
+		if err := claude.ValidateDenyPath(d); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -119,6 +152,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply registry schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate registry: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -129,7 +166,7 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) List(ctx context.Context) ([]Agent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
-		       allowed_tools, additional_dirs, enabled, created_at, updated_at
+		       allowed_tools, additional_dirs, work_dir, deny_paths, enabled, created_at, updated_at
 		FROM agents ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
@@ -159,7 +196,7 @@ func (s *Store) List(ctx context.Context) ([]Agent, error) {
 func (s *Store) Get(ctx context.Context, id string) (Agent, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
-		       allowed_tools, additional_dirs, enabled, created_at, updated_at
+		       allowed_tools, additional_dirs, work_dir, deny_paths, enabled, created_at, updated_at
 		FROM agents WHERE id = ?`, id)
 
 	a, err := scanAgent(row)
@@ -212,10 +249,12 @@ func (s *Store) Create(ctx context.Context, a Agent) (Agent, error) {
 	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agents (id, description, agent_name, permission_mode,
-		                    allowed_tools, additional_dirs, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                    allowed_tools, additional_dirs, work_dir, deny_paths,
+		                    enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.Description, a.AgentName, a.PermissionMode,
-		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs), boolToInt(a.Enabled), now, now,
+		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
+		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.Enabled), now, now,
 	); err != nil {
 		return Agent{}, fmt.Errorf("insert agent %s: %w", a.ID, err)
 	}
@@ -246,10 +285,12 @@ func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
 
 	res, err := tx.ExecContext(ctx, `
 		UPDATE agents SET description = ?, agent_name = ?, permission_mode = ?,
-		       allowed_tools = ?, additional_dirs = ?, enabled = ?, updated_at = ?
+		       allowed_tools = ?, additional_dirs = ?, work_dir = ?, deny_paths = ?,
+		       enabled = ?, updated_at = ?
 		WHERE id = ?`,
 		a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
+		a.WorkDir, encodeList(a.DenyPaths),
 		boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
 	if err != nil {
 		return Agent{}, fmt.Errorf("update agent %s: %w", a.ID, err)
@@ -351,16 +392,17 @@ type scanner interface{ Scan(dest ...any) error }
 func scanAgent(row scanner) (Agent, error) {
 	var (
 		a                    Agent
-		tools, dirs          string
+		tools, dirs, deny    string
 		enabled              int
 		createdAt, updatedAt int64
 	)
 	if err := row.Scan(&a.ID, &a.Description, &a.AgentName, &a.PermissionMode,
-		&tools, &dirs, &enabled, &createdAt, &updatedAt); err != nil {
+		&tools, &dirs, &a.WorkDir, &deny, &enabled, &createdAt, &updatedAt); err != nil {
 		return Agent{}, err
 	}
 	a.AllowedTools = decodeList(tools)
 	a.AdditionalDirs = decodeList(dirs)
+	a.DenyPaths = decodeList(deny)
 	a.Enabled = enabled != 0
 	a.CreatedAt = time.UnixMilli(createdAt)
 	a.UpdatedAt = time.UnixMilli(updatedAt)
@@ -412,4 +454,22 @@ func applySchema(db *sql.DB, ddl string) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return err
+}
+
+// migrate applies each migration, treating "already applied" as success.
+//
+// SQLite has no ADD COLUMN IF NOT EXISTS, so the duplicate-column error is the
+// signal that a migration has already run. Any other error is real and stops
+// startup, because continuing with a half-migrated database would corrupt data
+// rather than merely fail.
+func migrate(db *sql.DB) error {
+	for _, stmt := range migrations {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return nil
 }

@@ -43,9 +43,14 @@ type Input struct {
 	// the boundary.
 	Queue []core.Request `json:"queue,omitempty"`
 
-	// TurnCount is cumulative across Continue-As-New. It is what decides
-	// --session-id versus --resume, so it must never reset.
+	// TurnCount is cumulative across Continue-As-New, and is reported by the
+	// status query. It does not decide --session-id versus --resume.
 	TurnCount int `json:"turn_count,omitempty"`
+
+	// SessionReady records that some turn actually opened the Claude session.
+	// It must survive Continue-As-New or the agent would try to create an
+	// already-existing session after every history truncation.
+	SessionReady bool `json:"session_ready,omitempty"`
 }
 
 // StopSignal asks the agent to abandon its current turn.
@@ -74,10 +79,11 @@ func SubAgent(ctx workflow.Context, in Input) error {
 	log := workflow.GetLogger(ctx)
 
 	state := &agentState{
-		agentID:   in.AgentID,
-		queue:     append([]core.Request(nil), in.Queue...),
-		turnCount: in.TurnCount,
-		lifecycle: core.AgentIdle,
+		agentID:      in.AgentID,
+		queue:        append([]core.Request(nil), in.Queue...),
+		turnCount:    in.TurnCount,
+		sessionReady: in.SessionReady,
+		lifecycle:    core.AgentIdle,
 	}
 
 	if err := workflow.SetQueryHandler(ctx, QueryStatus, state.status); err != nil {
@@ -118,6 +124,9 @@ func SubAgent(ctx workflow.Context, in Input) error {
 				AgentID:   state.agentID,
 				Queue:     state.queue,
 				TurnCount: state.turnCount,
+				// Carried across, or the agent would try to create a session
+				// that already exists after every history truncation.
+				SessionReady: state.sessionReady,
 			})
 		}
 
@@ -133,6 +142,9 @@ type agentState struct {
 	turnCount     int
 	currentTurnID int64
 	lifecycle     core.AgentStatus
+	// sessionReady is observed, not counted: it is set when a turn reports that
+	// the CLI opened the session, and cleared when a resume attempt fails to.
+	sessionReady bool
 }
 
 func (s *agentState) status() (Status, error) {
@@ -219,6 +231,8 @@ func (s *agentState) runTurn(
 	// A child context so a stop cancels only this turn. The workflow context
 	// itself stays live, which is what lets the next turn start immediately
 	// after a steer.
+	attemptedResume := s.sessionReady
+
 	turnCtx, cancelTurn := workflow.WithCancel(ctx)
 	defer cancelTurn()
 
@@ -251,10 +265,11 @@ func (s *agentState) runTurn(
 		TurnID:     req.TurnID,
 		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		Prompt:     req.Text,
-		// The first turn of an agent's life creates the session; every later
-		// turn resumes it. TurnCount is cumulative across Continue-As-New, so
-		// this stays correct after the history is truncated.
-		Resume: s.turnCount > 0,
+		// Resume only once a turn has actually opened the session. Deriving
+		// this from a turn counter instead meant a turn that failed before the
+		// CLI started still advanced the count, and every later turn tried to
+		// resume a session that was never created.
+		Resume: s.sessionReady,
 	})
 
 	var (
@@ -298,6 +313,19 @@ func (s *agentState) runTurn(
 	s.turnCount++
 	s.currentTurnID = 0
 	s.lifecycle = core.AgentIdle
+
+	switch {
+	case result.SessionEstablished:
+		s.sessionReady = true
+	case attemptedResume:
+		// A resume that never reached an init event means the session is gone.
+		// Clearing this makes the next turn create a fresh one rather than
+		// retrying a resume that cannot succeed. The conversation is lost, but
+		// the agent recovers instead of failing forever.
+		log.Warn("resume did not open a session; the next turn will start a new one",
+			"agent", s.agentID, "turn_id", req.TurnID)
+		s.sessionReady = false
+	}
 
 	if actErr != nil {
 		if temporal.IsCanceledError(actErr) {

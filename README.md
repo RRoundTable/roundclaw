@@ -154,6 +154,23 @@ Two behaviours worth knowing:
 Editing a definition takes effect on the agent's **next** turn. The turn already
 running keeps the arguments it started with.
 
+### Working in an existing project
+
+By default an agent gets an empty workspace roundclaw manages. `work_dir` points
+it at a real directory instead, mounted read-write:
+
+```json
+{"id":"reviewer","work_dir":"/home/me/my-project","deny_paths":["env",".env"]}
+```
+
+`deny_paths` shadows files with `/dev/null` inside the workspace, so a secret
+that has to stay on disk for other tooling is still unreadable to the agent.
+Repositories routinely keep `.env` out of git but not off disk, and mounting one
+read-write hands the agent everything in it.
+
+The managed directory stays the default deliberately. Pointing an agent at a
+project gives it that project — including whatever is uncommitted in it.
+
 ## File input
 
 Attach a file to `/ask`, or post one in a bound channel, or send it with an API
@@ -319,6 +336,10 @@ the refresh token out from under whoever is still using that session.
 - **The `~/.claude` mount.** Session transcripts live there. The container is
   `--rm`, so if that directory is not a persistent host mount, `--resume` fails
   on the second turn.
+- **`--allowedTools` is variadic.** It keeps consuming arguments, so the prompt
+  must come immediately after `-p` and before any flag. Put it last and `claude`
+  exits with "Input must be provided", having never seen the request. This is
+  invisible until the first agent is configured with tools.
 - **One Temporal namespace per environment.** A workflow ID is
   `roundclaw-agent-<id>` and encodes nothing about the deployment, so two
   configs sharing a namespace collide on any agent ID they have in common.

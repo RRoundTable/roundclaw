@@ -117,7 +117,8 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           a.cfg.Container.Image,
 		ContainerName:   claude.ContainerName(in.AgentID, in.TurnID),
-		WorkDir:         a.cfg.WorkDir(in.AgentID),
+		WorkDir:         workDirFor(a.cfg, agentCfg),
+		DenyPaths:       agentCfg.DenyPaths,
 		ClaudeHome:      a.cfg.ClaudeHomeDir(in.AgentID),
 		AdditionalDirs:  agentCfg.AdditionalDirs,
 		CredentialEnv:   cred.EnvName,
@@ -193,6 +194,7 @@ func (a *Activities) stream(
 		progress = TurnProgress{TurnID: in.TurnID, StartedAt: time.Now().UTC().Format(time.RFC3339)}
 		final    core.TurnResult
 		sawFinal bool
+		sawInit  bool
 	)
 
 	onEvent := func(ev claude.Event) error {
@@ -213,6 +215,9 @@ func (a *Activities) stream(
 				final.Status = core.TurnError
 				final.ErrorMessage = ev.Text
 			}
+		}
+		if ev.Kind == claude.KindInit {
+			sawInit = true
 		}
 		if ev.Kind == claude.KindInit && ev.SessionID != "" && ev.SessionID != spec.SessionID {
 			// Not fatal, but it means resume did not attach to the session we
@@ -249,7 +254,9 @@ func (a *Activities) stream(
 			waitErr := cmd.Wait()
 			mu.Lock()
 			defer mu.Unlock()
-			return a.finish(in.TurnID, final, sawFinal, scanErr, waitErr, stderr.String()), nil
+			result := a.finish(in.TurnID, final, sawFinal, scanErr, waitErr, stderr.String())
+			result.SessionEstablished = sawInit
+			return result, nil
 
 		case <-ctx.Done():
 			// Cancellation arrives only because a heartbeat carried it back,
@@ -260,10 +267,11 @@ func (a *Activities) stream(
 			_ = cmd.Wait()
 			mu.Lock()
 			stopped := core.TurnResult{
-				TurnID:  in.TurnID,
-				Status:  core.TurnStopped,
-				Text:    final.Text,
-				CostUSD: final.CostUSD,
+				TurnID:             in.TurnID,
+				Status:             core.TurnStopped,
+				Text:               final.Text,
+				CostUSD:            final.CostUSD,
+				SessionEstablished: sawInit,
 			}
 			mu.Unlock()
 			return stopped, ctx.Err()
@@ -479,4 +487,17 @@ func (a *Activities) AbandonTurns(ctx context.Context, in AbandonInput) error {
 	activity.GetLogger(ctx).Info("abandoned queued turns",
 		"agent", in.AgentID, "turns", len(in.TurnIDs), "reason", in.Reason)
 	return nil
+}
+
+// workDirFor picks the directory mounted at the container's /workspace.
+//
+// An agent that names a project directory works in it directly, read-write;
+// otherwise it gets the empty one roundclaw manages. The managed directory
+// stays the default because pointing an agent at a real repository hands it
+// everything in that repository.
+func workDirFor(cfg *config.Config, agent registry.Agent) string {
+	if agent.WorkDir != "" {
+		return agent.WorkDir
+	}
+	return cfg.WorkDir(agent.ID)
 }

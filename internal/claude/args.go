@@ -40,6 +40,15 @@ type RunSpec struct {
 	// AdditionalDirs are mounted read-only and exposed via --add-dir.
 	AdditionalDirs []string
 
+	// DenyPaths are shadowed with /dev/null inside the workspace, so a file
+	// that has to stay on disk for other tooling is still unreadable to the
+	// agent. Paths are relative to the workspace root.
+	//
+	// This matters most when WorkDir points at a real project: mounting a
+	// repository read-write hands the agent everything in it, including the
+	// .env files that repositories routinely keep out of git but not off disk.
+	DenyPaths []string
+
 	// CredentialEnv is the environment variable name to set inside the
 	// container (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN), and
 	// CredentialValue is its value. Both are needed because `claude` accepts
@@ -89,6 +98,28 @@ func (s RunSpec) Validate() error {
 			return fmt.Errorf("runspec: additional dir %q must be absolute", d)
 		}
 	}
+	for _, d := range s.DenyPaths {
+		if err := ValidateDenyPath(d); err != nil {
+			return fmt.Errorf("runspec: %w", err)
+		}
+	}
+	return nil
+}
+
+// ValidateDenyPath rejects a shadow target that would not land inside the
+// workspace. A deny path that escaped would mount /dev/null over something on
+// the host — turning a protection into a way to destroy an arbitrary file.
+func ValidateDenyPath(p string) error {
+	if strings.TrimSpace(p) == "" {
+		return fmt.Errorf("deny path is empty")
+	}
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("deny path %q must be relative to the workspace", p)
+	}
+	clean := filepath.Clean(p)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("deny path %q escapes the workspace", p)
+	}
 	return nil
 }
 
@@ -111,6 +142,14 @@ func (s RunSpec) Args() ([]string, error) {
 		"-e", s.CredentialEnv,
 	}
 
+	// Shadowing has to come after the workspace mount so it lands on top of it.
+	// Docker orders nested mounts by path depth, so listing them here is
+	// enough; /dev/null is read-only and reads as empty.
+	for _, d := range s.DenyPaths {
+		target := filepath.Join(ContainerWorkspace, filepath.Clean(d))
+		args = append(args, "-v", "/dev/null:"+target+":ro")
+	}
+
 	var addDirs []string
 	for _, d := range s.AdditionalDirs {
 		mount := filepath.Join("/mnt", filepath.Base(d))
@@ -118,7 +157,13 @@ func (s RunSpec) Args() ([]string, error) {
 		addDirs = append(addDirs, mount)
 	}
 
-	args = append(args, s.Image, "claude", "-p")
+	// The prompt goes immediately after -p, before any flag.
+	//
+	// --allowedTools is variadic: it keeps consuming arguments, so a prompt
+	// placed after it is swallowed and `claude` exits with "Input must be
+	// provided", having never seen the request. exec.Command does not involve a
+	// shell, so the prompt needs no quoting or escaping here.
+	args = append(args, s.Image, "claude", "-p", s.Prompt)
 
 	if s.Resume {
 		args = append(args, "--resume", s.SessionID)
@@ -145,10 +190,6 @@ func (s RunSpec) Args() ([]string, error) {
 	for _, d := range addDirs {
 		args = append(args, "--add-dir", d)
 	}
-
-	// The prompt goes last, as a single argv entry. exec.Command does not
-	// involve a shell, so no quoting or metacharacter escaping is needed.
-	args = append(args, s.Prompt)
 	return args, nil
 }
 

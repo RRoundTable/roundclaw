@@ -189,6 +189,8 @@ func (d *Discord) handleAgentForm(i *discordgo.InteractionCreate) {
 		// Fields the form does not show are preserved rather than blanked.
 		agent.AgentName = existing.AgentName
 		agent.AdditionalDirs = existing.AdditionalDirs
+		agent.WorkDir = existing.WorkDir
+		agent.DenyPaths = existing.DenyPaths
 		agent.Enabled = existing.Enabled
 
 		updated, err := d.disp.Registry().Update(ctx, agent)
@@ -229,6 +231,12 @@ func (d *Discord) showAgent(i *discordgo.InteractionCreate, agentID string) {
 	b.WriteString("\n" + describeAgent(agent) + "\n")
 	if agent.AgentName != "" {
 		fmt.Fprintf(&b, "runs as subagent `%s`\n", agent.AgentName)
+	}
+	if agent.WorkDir != "" {
+		fmt.Fprintf(&b, "works in `%s` (read-write)\n", agent.WorkDir)
+	}
+	if len(agent.DenyPaths) > 0 {
+		fmt.Fprintf(&b, "hidden from it: `%s`\n", strings.Join(agent.DenyPaths, ", "))
 	}
 	if len(agent.AdditionalDirs) > 0 {
 		fmt.Fprintf(&b, "extra dirs (read-only): `%s`\n", strings.Join(agent.AdditionalDirs, ", "))

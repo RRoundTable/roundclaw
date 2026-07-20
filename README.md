@@ -154,6 +154,34 @@ Two behaviours worth knowing:
 Editing a definition takes effect on the agent's **next** turn. The turn already
 running keeps the arguments it started with.
 
+## File input
+
+Attach a file to `/ask`, or post one in a bound channel, or send it with an API
+request:
+
+```bash
+curl -X POST localhost:8099/v1/agents/pr-reviewer/requests \
+  -H "Authorization: Bearer $TOKEN" \
+  -F 'text=summarise this' -F 'file=@report.pdf'
+```
+
+Uploads are written into the agent's own workspace under `inbox/` and their
+paths are named at the top of the prompt. The agent opens them with `Read`.
+
+Handing over a path rather than the contents is deliberate: the agent decides
+how much of a 20MB file to pull in, and the file never gets copied into the
+request text that is stored, logged and quoted back. Per-agent inboxes also mean
+one agent can never read another's uploads.
+
+Upload names are treated as hostile — only the base name survives, separators
+and control characters are stripped, and each request's files get a shared
+random prefix so two uploads of `report.pdf` cannot collide. Limits are 8 files
+of 25MB each; a file that exceeds the cap is removed rather than left
+half-written.
+
+A download that fails aborts the whole request. Answering a question about a
+document that never arrived is worse than saying so.
+
 ## HTTP API
 
 Turn IDs come from a per-agent SQLite `AUTOINCREMENT`, so they are unique only
@@ -201,7 +229,7 @@ second agent run.
 ## Discord
 
 ```
-/ask     agent:<name> prompt:<...>   call any agent from any channel
+/ask     agent:<name> prompt:<...> [file:]  call any agent, optionally with a file
 /agents                              list the agents and what each is for
 /status  [agent:<name>]              what an agent is doing right now
 /stop    [agent:<name>]              cancel the current turn, clear the queue

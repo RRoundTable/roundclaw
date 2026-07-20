@@ -112,6 +112,14 @@ func (d *Discord) registerCommands() error {
 					Description: "What you want the agent to do",
 					Required:    true,
 				},
+				{
+					// Saved into the agent's workspace and named in the prompt,
+					// so the agent opens it with Read rather than receiving its
+					// contents inline.
+					Type:        discordgo.ApplicationCommandOptionAttachment,
+					Name:        "file",
+					Description: "A file for the agent to read",
+				},
 			},
 		},
 		{
@@ -221,7 +229,7 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	agent, err := d.disp.Registry().ByChannel(ctx, m.ChannelID)
@@ -232,9 +240,15 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	prompt, err := d.attachFiles(ctx, agent.ID, text, m.Attachments)
+	if err != nil {
+		d.reply(m.ChannelID, "⚠️ "+err.Error())
+		return
+	}
+
 	// The Discord message ID is a natural idempotency key: a gateway
 	// reconnection can redeliver the same message, and this makes that a no-op.
-	sub, submitErr := d.disp.Submit(ctx, agent.ID, text, core.DiscordOrigin(m.ChannelID, m.ID), "discord:"+m.ID)
+	sub, submitErr := d.disp.Submit(ctx, agent.ID, prompt, core.DiscordOrigin(m.ChannelID, m.ID), "discord:"+m.ID)
 	err = submitErr
 	if err != nil {
 		d.log.Error("failed to queue discord message", "channel", m.ChannelID, "error", err)
@@ -339,7 +353,7 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 
 	switch data.Name {
 	case "ask":
-		d.handleAsk(i, agent.ID, optionString(data.Options, "prompt"))
+		d.handleAsk(i, agent.ID, optionString(data.Options, "prompt"), discordAttachments(data))
 	case "status":
 		d.handleStatus(i, agent.ID)
 	case "stop":
@@ -424,11 +438,20 @@ func (d *Discord) handleAgents(i *discordgo.InteractionCreate) {
 
 // handleAsk is the direct-invocation path. It defers first because signalling
 // Temporal can outlast Discord's three-second interaction deadline.
-func (d *Discord) handleAsk(i *discordgo.InteractionCreate, agentID, prompt string) {
+func (d *Discord) handleAsk(i *discordgo.InteractionCreate, agentID, prompt string, files []*discordgo.MessageAttachment) {
 	d.defer_(i)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Downloads get their own budget: a 25MB file over a slow link would
+	// otherwise eat the whole request timeout and leave the user with a
+	// timeout instead of a queued turn.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+
+	prompt, err := d.attachFiles(ctx, agentID, prompt, files)
+	if err != nil {
+		d.followUp(i, "⚠️ "+err.Error())
+		return
+	}
 
 	// The interaction ID is a natural idempotency key: Discord can redeliver an
 	// interaction, and this makes that a no-op instead of a second agent run.

@@ -91,9 +91,12 @@ type submitResponse struct {
 func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agent")
 
-	var body submitBody
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed JSON body: "+err.Error())
+	body, files, cleanup, err := readSubmission(w, r)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -121,12 +124,22 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 		idempotencyKey = "http:" + agentID + ":" + idempotencyKey
 	}
 
+	prompt := body.Text
+	if len(files) > 0 {
+		paths, err := h.disp.SaveAttachments(agentID, files)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		prompt = PromptWithAttachments(prompt, paths)
+	}
+
 	submit := h.disp.Submit
 	if body.Steer {
 		submit = h.disp.Steer
 	}
 
-	sub, err := submit(r.Context(), agentID, body.Text, origin, idempotencyKey)
+	sub, err := submit(r.Context(), agentID, prompt, origin, idempotencyKey)
 	if err != nil {
 		if errors.Is(err, ErrUnknownAgent) {
 			writeError(w, http.StatusNotFound, err.Error())

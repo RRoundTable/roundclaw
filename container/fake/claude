@@ -1,0 +1,65 @@
+#!/bin/sh
+# A stand-in for the `claude` CLI used by roundclaw's end-to-end tests.
+#
+# It speaks just enough stream-json to exercise the real code paths — session
+# flags, tool events, cancellation, the terminal result — without an Anthropic
+# credential or a token spend. Nothing in roundclaw knows this exists; it is
+# selected purely by pointing container.image at the fake tag.
+#
+# Behaviour is driven by markers in the prompt:
+#   sleep:<n>   stay busy for n seconds (used to test /stop and /steer)
+#   fail        emit a result with is_error true
+#
+# It records its own argv to /workspace/last-args so tests can assert that
+# roundclaw passed --session-id on the first turn and --resume afterwards.
+
+set -e
+
+PROMPT=""
+SESSION=""
+MODE=""
+
+# The prompt is the final positional argument.
+for arg in "$@"; do
+    PROMPT="$arg"
+done
+
+# shellcheck disable=SC2068
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --session-id) MODE="create"; SESSION="$2"; shift 2 ;;
+        --resume)     MODE="resume"; SESSION="$2"; shift 2 ;;
+        *)            shift ;;
+    esac
+done
+
+printf '%s %s\n' "$MODE" "$SESSION" >> /workspace/last-args
+
+emit() { printf '%s\n' "$1"; }
+
+emit "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$SESSION\",\"model\":\"fake\"}"
+emit "{\"type\":\"assistant\",\"session_id\":\"$SESSION\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"working on it\"}]}}"
+emit "{\"type\":\"assistant\",\"session_id\":\"$SESSION\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"/workspace/main.go\"}}]}}"
+
+# A busy period long enough for a test to cancel mid-turn. Emitting a line each
+# second also proves the live log keeps growing while the turn runs.
+case "$PROMPT" in
+    *sleep:*)
+        SECONDS_TO_SLEEP=$(printf '%s' "$PROMPT" | sed -n 's/.*sleep:\([0-9]*\).*/\1/p')
+        i=0
+        while [ "$i" -lt "$SECONDS_TO_SLEEP" ]; do
+            emit "{\"type\":\"assistant\",\"session_id\":\"$SESSION\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"still working ($i)\"}]}}"
+            sleep 1
+            i=$((i + 1))
+        done
+        ;;
+esac
+
+case "$PROMPT" in
+    *fail*)
+        emit "{\"type\":\"result\",\"subtype\":\"error\",\"result\":\"the fake agent failed on purpose\",\"total_cost_usd\":0.001,\"is_error\":true,\"session_id\":\"$SESSION\"}"
+        ;;
+    *)
+        emit "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done: $PROMPT\",\"total_cost_usd\":0.0123,\"is_error\":false,\"session_id\":\"$SESSION\"}"
+        ;;
+esac

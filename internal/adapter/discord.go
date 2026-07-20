@@ -1,0 +1,516 @@
+package adapter
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/roundtable/roundclaw/internal/claude"
+	"github.com/roundtable/roundclaw/internal/core"
+)
+
+// statusTailLines is how much recent transcript /status shows. Enough to see
+// what the agent is doing without pushing past Discord's message limit.
+const statusTailLines = 12
+
+// Discord is the Discord inbound adapter. It owns the single gateway websocket
+// connection; the worker sends replies over REST only.
+type Discord struct {
+	session *discordgo.Session
+	disp    *Dispatcher
+	log     *slog.Logger
+	guildID string
+	// router is nil when routing is disabled, which is the default. Unbound
+	// channels are then simply ignored.
+	router *claude.Router
+
+	registered []*discordgo.ApplicationCommand
+}
+
+// SetRouter enables routing of messages in channels bound to no agent.
+func (d *Discord) SetRouter(r *claude.Router) { d.router = r }
+
+// NewDiscord builds the adapter. token is the bot token; guildID scopes slash
+// command registration (empty registers globally, which Discord propagates
+// slowly).
+func NewDiscord(token, guildID string, disp *Dispatcher, log *slog.Logger) (*Discord, error) {
+	session, err := discordgo.New("Bot " + token)
+	if err != nil {
+		return nil, fmt.Errorf("create discord session: %w", err)
+	}
+	// Message content is a privileged intent; without it every message body
+	// arrives empty and the bot silently does nothing.
+	session.Identify.Intents = discordgo.IntentsGuildMessages |
+		discordgo.IntentsDirectMessages |
+		discordgo.IntentMessageContent
+
+	return &Discord{session: session, disp: disp, log: log, guildID: guildID}, nil
+}
+
+// Start connects and registers slash commands.
+func (d *Discord) Start(ctx context.Context) error {
+	d.session.AddHandler(d.onMessage)
+	d.session.AddHandler(d.onInteraction)
+
+	if err := d.session.Open(); err != nil {
+		return fmt.Errorf("open discord gateway: %w", err)
+	}
+	if err := d.registerCommands(); err != nil {
+		d.session.Close()
+		return err
+	}
+	d.log.Info("discord adapter connected", "user", d.session.State.User.Username)
+	return nil
+}
+
+// Close disconnects and removes the slash commands this process registered.
+func (d *Discord) Close() error {
+	for _, cmd := range d.registered {
+		if err := d.session.ApplicationCommandDelete(d.session.State.User.ID, d.guildID, cmd.ID); err != nil {
+			d.log.Warn("failed to remove slash command", "command", cmd.Name, "error", err)
+		}
+	}
+	return d.session.Close()
+}
+
+// agentOption is the shared "which agent?" argument.
+//
+// It is optional everywhere: omitting it uses the channel's bound agent, and
+// naming one addresses that agent from any channel. Autocomplete is on so
+// nobody has to remember agent IDs.
+func agentOption(required bool) *discordgo.ApplicationCommandOption {
+	return &discordgo.ApplicationCommandOption{
+		Type:         discordgo.ApplicationCommandOptionString,
+		Name:         "agent",
+		Description:  "Which agent to talk to (defaults to this channel's agent)",
+		Required:     required,
+		Autocomplete: true,
+	}
+}
+
+func (d *Discord) registerCommands() error {
+	commands := []*discordgo.ApplicationCommand{
+		{
+			// The direct-invocation path: call any agent from anywhere, without
+			// needing the channel to be bound to it.
+			Name:        "ask",
+			Description: "Send a request to a specific agent",
+			Options: []*discordgo.ApplicationCommandOption{
+				agentOption(true),
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "prompt",
+					Description: "What you want the agent to do",
+					Required:    true,
+				},
+			},
+		},
+		{
+			Name:        "agents",
+			Description: "List the agents you can call and what each one is for",
+		},
+		{
+			Name:        "status",
+			Description: "Show what an agent is doing right now",
+			Options:     []*discordgo.ApplicationCommandOption{agentOption(false)},
+		},
+		{
+			Name:        "stop",
+			Description: "Stop the current turn and drop anything queued behind it",
+			Options:     []*discordgo.ApplicationCommandOption{agentOption(false)},
+		},
+		{
+			Name:        "steer",
+			Description: "Interrupt the current turn and redirect the agent, keeping context",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "instruction",
+					Description: "What the agent should do instead",
+					Required:    true,
+				},
+				agentOption(false),
+			},
+		},
+	}
+
+	// Discord enforces this before the interaction reaches us, so an ordinary
+	// member cannot stop another person's turn or spend tokens. It is not a
+	// substitute for authorisation inside roundclaw, but it is free and it
+	// applies immediately.
+	permission := d.disp.Config().Discord.CommandPermissionBits()
+
+	for _, cmd := range commands {
+		cmd.DefaultMemberPermissions = permission
+		created, err := d.session.ApplicationCommandCreate(d.session.State.User.ID, d.guildID, cmd)
+		if err != nil {
+			return fmt.Errorf("register /%s: %w", cmd.Name, err)
+		}
+		d.registered = append(d.registered, created)
+	}
+	return nil
+}
+
+// onMessage turns a plain channel message into a queued request.
+func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author == nil || m.Author.Bot {
+		return
+	}
+
+	text := strings.TrimSpace(m.Content)
+	if text == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	agent, err := d.disp.Registry().ByChannel(ctx, m.ChannelID)
+	if err != nil {
+		// No binding. Either the router picks an agent, or the message is not
+		// ours — an unbound channel stays silent rather than guessing.
+		d.routeUnbound(m, text)
+		return
+	}
+
+	// The Discord message ID is a natural idempotency key: a gateway
+	// reconnection can redeliver the same message, and this makes that a no-op.
+	sub, submitErr := d.disp.Submit(ctx, agent.ID, text, core.DiscordOrigin(m.ChannelID, m.ID), "discord:"+m.ID)
+	err = submitErr
+	if err != nil {
+		d.log.Error("failed to queue discord message", "channel", m.ChannelID, "error", err)
+		d.reply(m.ChannelID, "⚠️ Could not queue that request: "+err.Error())
+		return
+	}
+	if sub.Duplicate {
+		return
+	}
+
+	// Only acknowledge when the request has to wait. Acknowledging every
+	// message would double the bot's chatter for the common case where it can
+	// start immediately.
+	if sub.QueuePosition > 0 {
+		d.reply(m.ChannelID, fmt.Sprintf("⏳ Queued (%d ahead) — turn #%d", sub.QueuePosition, sub.TurnID))
+	}
+}
+
+// routeUnbound handles a message in a channel bound to no agent.
+//
+// Routing runs in its own goroutine: it is an LLM call, and blocking Discord's
+// event handler on it would stall every other message the bot is receiving.
+func (d *Discord) routeUnbound(m *discordgo.MessageCreate, text string) {
+	if d.router == nil || !d.disp.Config().Router.RoutesChannel(m.ChannelID) {
+		return
+	}
+
+	go func() {
+		cfg := d.disp.Config()
+		summaries := make([]claude.AgentSummary, 0, len(cfg.AllAgents()))
+		for _, a := range cfg.AllAgents() {
+			summaries = append(summaries, claude.AgentSummary{ID: a.ID, Description: a.Description})
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Router.Timeout+15*time.Second)
+		defer cancel()
+
+		decision, err := d.router.Route(ctx, text, summaries)
+		if err != nil {
+			// A router failure must stay silent. Unbound channels carry
+			// ordinary conversation, and an error reply to every message would
+			// be worse than doing nothing.
+			d.log.Warn("routing failed", "channel", m.ChannelID, "error", err)
+			return
+		}
+
+		switch decision.Action {
+		case claude.RouteIgnore:
+			return
+		case claude.RouteClarify:
+			d.reply(m.ChannelID, "🤔 I am not sure which agent should take that. Try `/ask agent:<name> prompt:…`, or `/agents` to see the options.")
+			return
+		}
+
+		sub, err := d.disp.Submit(ctx, decision.AgentID, text,
+			core.DiscordOrigin(m.ChannelID, m.ID), "discord:"+m.ID)
+		if err != nil {
+			d.log.Error("failed to queue routed message", "agent", decision.AgentID, "error", err)
+			return
+		}
+		// Routing is a guess, so it says which agent it picked. Otherwise a
+		// wrong choice is invisible until the answer comes back off-target.
+		d.reply(m.ChannelID, fmt.Sprintf("📨 Routed to `%s` — turn #%d.", decision.AgentID, sub.TurnID))
+	}()
+}
+
+func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	switch i.Type {
+	case discordgo.InteractionApplicationCommandAutocomplete:
+		d.handleAutocomplete(i)
+		return
+	case discordgo.InteractionApplicationCommand:
+	default:
+		return
+	}
+
+	data := i.ApplicationCommandData()
+
+	// /agents needs no target and must work in an unbound channel, since that
+	// is exactly where someone is trying to find out what to call.
+	if data.Name == "agents" {
+		d.handleAgents(i)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	agent, err := ResolveAgent(ctx, d.disp.Registry(), optionString(data.Options, "agent"), i.ChannelID)
+	if err != nil {
+		d.respondNow(i, "⚠️ "+err.Error()+"\nRun `/agents` to see what is available.")
+		return
+	}
+
+	switch data.Name {
+	case "ask":
+		d.handleAsk(i, agent.ID, optionString(data.Options, "prompt"))
+	case "status":
+		d.handleStatus(i, agent.ID)
+	case "stop":
+		d.handleStop(i, agent.ID)
+	case "steer":
+		d.handleSteer(i, agent.ID, optionString(data.Options, "instruction"))
+	}
+}
+
+// handleAutocomplete offers agent IDs as the user types. It reads only static
+// config, so it comfortably fits inside Discord's interaction deadline.
+func (d *Discord) handleAutocomplete(i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
+	typed := strings.ToLower(optionString(data.Options, "agent"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	agents, err := d.disp.Registry().List(ctx)
+	if err != nil {
+		d.log.Warn("autocomplete could not read the registry", "error", err)
+		return
+	}
+
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	for _, a := range agents {
+		if typed != "" && !strings.Contains(strings.ToLower(a.ID), typed) {
+			continue
+		}
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+			Name:  a.Label(),
+			Value: a.ID,
+		})
+		// Discord caps autocomplete at 25 choices.
+		if len(choices) == 25 {
+			break
+		}
+	}
+
+	if err := d.session.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+		Data: &discordgo.InteractionResponseData{Choices: choices},
+	}); err != nil {
+		d.log.Warn("failed to answer autocomplete", "error", err)
+	}
+}
+
+func (d *Discord) handleAgents(i *discordgo.InteractionCreate) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	agents, err := d.disp.Registry().List(ctx)
+	if err != nil {
+		d.respondNow(i, "⚠️ Could not read the agent registry: "+err.Error())
+		return
+	}
+	if len(agents) == 0 {
+		d.respondNow(i, "No agents are registered yet. Create one with `POST /v1/agents`.")
+		return
+	}
+
+	bound, _ := d.disp.Registry().ByChannel(ctx, i.ChannelID)
+
+	var b strings.Builder
+	b.WriteString("**Agents**\n")
+	for _, a := range agents {
+		fmt.Fprintf(&b, "• `%s`", a.ID)
+		if a.Description != "" {
+			fmt.Fprintf(&b, " — %s", a.Description)
+		}
+		if bound.ID == a.ID {
+			b.WriteString("  _(this channel)_")
+		}
+		if !a.Enabled {
+			b.WriteString("  _(disabled)_")
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\nCall one with `/ask agent:<name> prompt:<...>`.")
+	d.respondNow(i, b.String())
+}
+
+// handleAsk is the direct-invocation path. It defers first because signalling
+// Temporal can outlast Discord's three-second interaction deadline.
+func (d *Discord) handleAsk(i *discordgo.InteractionCreate, agentID, prompt string) {
+	d.defer_(i)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// The interaction ID is a natural idempotency key: Discord can redeliver an
+	// interaction, and this makes that a no-op instead of a second agent run.
+	sub, err := d.disp.Submit(ctx, agentID, prompt,
+		core.DiscordOrigin(i.ChannelID, i.ID), "discord-ask:"+i.ID)
+	if err != nil {
+		d.followUp(i, "⚠️ Could not queue that: "+err.Error())
+		return
+	}
+
+	msg := fmt.Sprintf("📨 Sent to `%s` — turn #%d.", agentID, sub.TurnID)
+	if sub.QueuePosition > 0 {
+		msg += fmt.Sprintf(" %d request(s) ahead of it.", sub.QueuePosition)
+	}
+	d.followUp(i, msg)
+}
+
+// optionString reads a string option by name, returning "" when absent.
+func optionString(options []*discordgo.ApplicationCommandInteractionDataOption, name string) string {
+	for _, opt := range options {
+		if opt.Name == name {
+			return opt.StringValue()
+		}
+	}
+	return ""
+}
+
+// handleStatus answers within Discord's three-second interaction budget by
+// reading SQLite directly. No Temporal round trip, no LLM: this has to stay
+// fast and available precisely when the agent is busy.
+func (d *Discord) handleStatus(i *discordgo.InteractionCreate, agentID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	report, err := d.disp.Status(ctx, agentID, statusTailLines)
+	if err != nil {
+		d.respondNow(i, "⚠️ "+err.Error())
+		return
+	}
+	d.respondNow(i, formatStatus(report))
+}
+
+// handleStop and handleSteer defer first: signalling Temporal can exceed the
+// three-second interaction deadline, and a late response on an un-deferred
+// interaction is discarded by Discord.
+func (d *Discord) handleStop(i *discordgo.InteractionCreate, agentID string) {
+	d.defer_(i)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := d.disp.Stop(ctx, agentID, "stopped from discord"); err != nil {
+		d.followUp(i, "⚠️ Could not stop: "+err.Error())
+		return
+	}
+	d.followUp(i, "🛑 Stopping the current turn and clearing the queue.")
+}
+
+func (d *Discord) handleSteer(i *discordgo.InteractionCreate, agentID, instruction string) {
+	d.defer_(i)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// A steer is a distinct turn, keyed by interaction ID so a Discord retry
+	// cannot interrupt the agent twice.
+	sub, err := d.disp.Steer(ctx, agentID, instruction,
+		core.DiscordOrigin(i.ChannelID, i.ID), "discord-steer:"+i.ID)
+	if err != nil {
+		d.followUp(i, "⚠️ Could not steer: "+err.Error())
+		return
+	}
+	d.followUp(i, fmt.Sprintf("↪️ Redirecting — turn #%d. Context is preserved; the interrupted turn's unfinished work is not.", sub.TurnID))
+}
+
+func formatStatus(r StatusReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s** — %s", r.AgentID, r.State)
+	if r.CurrentTurn > 0 {
+		fmt.Fprintf(&b, " (turn #%d)", r.CurrentTurn)
+	}
+	if r.QueueLength > 0 {
+		fmt.Fprintf(&b, " · %d queued", r.QueueLength)
+	}
+	b.WriteString("\n")
+
+	if len(r.Recent) == 0 {
+		b.WriteString("_no activity recorded for the current turn_")
+		return b.String()
+	}
+
+	b.WriteString("```\n")
+	for _, e := range r.Recent {
+		line := strings.ReplaceAll(e.Content, "```", "'''")
+		if len(line) > 160 {
+			line = line[:160] + "…"
+		}
+		fmt.Fprintf(&b, "%-11s %s\n", e.Kind, line)
+	}
+	b.WriteString("```")
+
+	out := b.String()
+	if len(out) > 1900 {
+		out = out[:1900] + "\n…```"
+	}
+	return out
+}
+
+func (d *Discord) reply(channelID, content string) {
+	if _, err := d.session.ChannelMessageSend(channelID, content); err != nil {
+		d.log.Warn("failed to send discord message", "channel", channelID, "error", err)
+	}
+}
+
+func (d *Discord) respondNow(i *discordgo.InteractionCreate, content string) {
+	err := d.session.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: content},
+	})
+	if err != nil {
+		d.log.Warn("failed to respond to interaction", "error", err)
+	}
+}
+
+func (d *Discord) defer_(i *discordgo.InteractionCreate) {
+	err := d.session.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		d.log.Warn("failed to defer interaction", "error", err)
+	}
+}
+
+func (d *Discord) followUp(i *discordgo.InteractionCreate, content string) {
+	if _, err := d.session.FollowupMessageCreate(i.Interaction, true,
+		&discordgo.WebhookParams{Content: content}); err != nil {
+		d.log.Warn("failed to send interaction follow-up", "error", err)
+	}
+}
+
+// RESTSender returns a REST-only Discord client for the worker's delivery
+// activity. It never opens a websocket, so it cannot double-consume events.
+func RESTSender(token string) (*discordgo.Session, error) {
+	s, err := discordgo.New("Bot " + token)
+	if err != nil {
+		return nil, fmt.Errorf("create discord rest client: %w", err)
+	}
+	return s, nil
+}

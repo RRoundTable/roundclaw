@@ -1,0 +1,178 @@
+// Command gateway runs roundclaw's inbound edges: the Discord listener and the
+// HTTP API. It owns no agent execution — it admits requests, signals Temporal,
+// and answers status questions straight from SQLite.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"go.temporal.io/sdk/client"
+
+	"github.com/roundtable/roundclaw/internal/adapter"
+	"github.com/roundtable/roundclaw/internal/claude"
+	"github.com/roundtable/roundclaw/internal/config"
+	"github.com/roundtable/roundclaw/internal/registry"
+	"github.com/roundtable/roundclaw/internal/store"
+)
+
+func main() {
+	configPath := flag.String("config", "roundclaw.yaml", "path to the roundclaw config file")
+	flag.Parse()
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if err := run(*configPath, log); err != nil {
+		log.Error("gateway exited", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(configPath string, log *slog.Logger) error {
+	// Local convenience: a .env beside the config file fills in anything the
+	// real environment has not already set.
+	if err := config.LoadEnvFile(configPath); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	// ReadWrite because the gateway inserts the turn row before signalling —
+	// HTTP has to hand back a turn_id in its 202, and a workflow cannot write
+	// to SQLite without breaking determinism.
+	stores := store.NewRegistry(store.ReadWrite, cfg.DBPath)
+	defer stores.Close()
+
+	// Agent definitions live in the registry, not the config file. The config's
+	// agents list is a one-time bootstrap: once the registry has any agent,
+	// editing the YAML has no effect.
+	reg, err := registry.Open(filepath.Join(cfg.WorkspaceRoot, "registry.db"))
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+
+	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
+	if err != nil {
+		return err
+	}
+	if seeded > 0 {
+		log.Info("seeded the agent registry from the config file; the YAML agents list is now ignored",
+			"agents", seeded)
+	}
+
+	tc, err := client.Dial(client.Options{
+		HostPort:  cfg.Temporal.HostPort,
+		Namespace: cfg.Temporal.Namespace,
+		Logger:    log,
+	})
+	if err != nil {
+		return err
+	}
+	defer tc.Close()
+
+	disp := adapter.NewDispatcher(cfg, tc, stores, reg)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if token := os.Getenv(cfg.Discord.TokenEnv); token != "" {
+		dc, err := adapter.NewDiscord(token, cfg.Discord.GuildID, disp, log)
+		if err != nil {
+			return err
+		}
+		if cfg.Router.Enabled {
+			cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
+			if err != nil {
+				return fmt.Errorf("router.enabled is set but %w", err)
+			}
+			dc.SetRouter(&claude.Router{
+				Runtime:         cfg.Container.Runtime,
+				Image:           cfg.Container.Image,
+				Model:           cfg.Router.Model,
+				Timeout:         cfg.Router.Timeout,
+				CredentialEnv:   cred.EnvName,
+				CredentialValue: cred.Value,
+			})
+			log.Info("routing enabled for unbound channels",
+				"model", cfg.Router.Model, "channels", len(cfg.Router.Channels))
+		}
+		if err := dc.Start(ctx); err != nil {
+			return err
+		}
+		defer dc.Close()
+	} else {
+		log.Warn("discord token is unset; running with the HTTP API only",
+			"env", cfg.Discord.TokenEnv)
+	}
+
+	tokens := adapter.TokensFromEnv(os.Getenv(cfg.HTTP.TokensEnv))
+	if len(tokens) == 0 {
+		// Better to say so loudly at startup than to have every API call come
+		// back 503 with no explanation.
+		log.Warn("no API tokens configured; the HTTP API will reject every request",
+			"env", cfg.HTTP.TokensEnv)
+	}
+
+	api := adapter.NewHTTP(disp, log, tokens, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
+	srv := &http.Server{
+		Addr:              cfg.HTTP.Addr,
+		Handler:           api.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// No WriteTimeout: SSE streams are long-lived and a write deadline
+		// would sever them mid-turn.
+		IdleTimeout: 2 * time.Minute,
+	}
+
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Info("http api listening", "addr", cfg.HTTP.Addr, "agents", len(cfg.Agents))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+		log.Info("shutting down")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+// configAgents converts the config file's agent list into registry records for
+// the one-time bootstrap.
+func configAgents(cfg *config.Config) []registry.Agent {
+	out := make([]registry.Agent, 0, len(cfg.Agents))
+	for _, a := range cfg.Agents {
+		out = append(out, registry.Agent{
+			ID:              a.ID,
+			Description:     a.Description,
+			AgentName:       a.AgentName,
+			PermissionMode:  a.PermissionMode,
+			AllowedTools:    a.AllowedTools,
+			AdditionalDirs:  a.AdditionalDirs,
+			DiscordChannels: a.DiscordChannels,
+			Enabled:         true,
+		})
+	}
+	return out
+}

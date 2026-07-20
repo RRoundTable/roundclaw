@@ -1,0 +1,318 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/roundtable/roundclaw/internal/core"
+)
+
+// ErrNotFound is returned when a turn or runtime row does not exist.
+var ErrNotFound = errors.New("not found")
+
+// Runtime is the display-facing agent state that /status reads without going
+// near Temporal.
+type Runtime struct {
+	AgentID     string
+	Status      core.AgentStatus
+	CurrentTurn int64
+	SessionID   string
+	UpdatedAt   time.Time
+}
+
+// Turn is one agent turn.
+type Turn struct {
+	ID         int64
+	Request    string
+	Result     string
+	Status     core.TurnStatus
+	CostUSD    float64
+	Origin     core.Origin
+	Error      string
+	QueuedAt   time.Time
+	FinishedAt time.Time
+}
+
+// LogEntry is one live_logs row.
+//
+// The JSON tags are part of the public API: this type is serialised directly
+// into GET /v1/agents/{id} responses, so without them the wire format would
+// leak Go field names.
+type LogEntry struct {
+	ID        int64        `json:"id"`
+	TurnID    int64        `json:"turn_id"`
+	Kind      core.LogKind `json:"kind"`
+	Content   string       `json:"content"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+// SetRuntime upserts the agent's coarse state.
+func (s *Store) SetRuntime(ctx context.Context, status core.AgentStatus, currentTurn int64, sessionID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_runtime (agent_id, status, current_turn, session_id, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET
+			status       = excluded.status,
+			current_turn = excluded.current_turn,
+			session_id   = excluded.session_id,
+			updated_at   = excluded.updated_at`,
+		s.agentID, string(status), currentTurn, sessionID, time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("set runtime for %s: %w", s.agentID, err)
+	}
+	return nil
+}
+
+// GetRuntime reads the agent's state. A missing row means the agent has never
+// run, which is reported as idle rather than as an error.
+func (s *Store) GetRuntime(ctx context.Context) (Runtime, error) {
+	var (
+		rt        Runtime
+		sessionID sql.NullString
+		updatedAt int64
+		status    string
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT agent_id, status, current_turn, session_id, updated_at
+		FROM agent_runtime WHERE agent_id = ?`, s.agentID).
+		Scan(&rt.AgentID, &status, &rt.CurrentTurn, &sessionID, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Runtime{AgentID: s.agentID, Status: core.AgentIdle}, nil
+	}
+	if err != nil {
+		return rt, fmt.Errorf("get runtime for %s: %w", s.agentID, err)
+	}
+	rt.Status = core.AgentStatus(status)
+	rt.SessionID = sessionID.String
+	rt.UpdatedAt = time.UnixMilli(updatedAt)
+	return rt, nil
+}
+
+// CreateTurn records a queued turn and returns its ID.
+//
+// idempotencyKey may be empty for sources that dedupe by other means. When it
+// is set, this is atomic: a repeated key returns the original turn ID and
+// existed=true, and no second turn is created. Without that atomicity a client
+// retry racing the original would start two agent runs.
+func (s *Store) CreateTurn(ctx context.Context, request string, origin core.Origin, idempotencyKey string) (turnID int64, existed bool, err error) {
+	encodedOrigin, err := core.EncodeOrigin(origin)
+	if err != nil {
+		return 0, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("begin create turn: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	if idempotencyKey != "" {
+		var existingID int64
+		err := tx.QueryRowContext(ctx, `SELECT turn_id FROM idempotency WHERE key = ?`, idempotencyKey).Scan(&existingID)
+		if err == nil {
+			return existingID, true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, fmt.Errorf("lookup idempotency key: %w", err)
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO turns (request, status, origin, queued_at)
+		VALUES (?, ?, ?, ?)`,
+		request, string(core.TurnRunning), encodedOrigin, now)
+	if err != nil {
+		return 0, false, fmt.Errorf("insert turn: %w", err)
+	}
+	turnID, err = res.LastInsertId()
+	if err != nil {
+		return 0, false, fmt.Errorf("turn id: %w", err)
+	}
+
+	if idempotencyKey != "" {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO idempotency (key, turn_id, created_at) VALUES (?, ?, ?)`,
+			idempotencyKey, turnID, now); err != nil {
+			return 0, false, fmt.Errorf("record idempotency key: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit create turn: %w", err)
+	}
+	return turnID, false, nil
+}
+
+// FinishTurn closes out a turn. It is safe to call more than once; a turn that
+// already reached a terminal state keeps its first outcome, so a delivery retry
+// cannot rewrite a stopped turn into a done one.
+func (s *Store) FinishTurn(ctx context.Context, turnID int64, result core.TurnResult) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE turns
+		SET result = ?, status = ?, cost_usd = ?, error = ?, finished_at = ?
+		WHERE id = ? AND status = ?`,
+		result.Text, string(result.Status), result.CostUSD, result.ErrorMessage,
+		time.Now().UnixMilli(), turnID, string(core.TurnRunning))
+	if err != nil {
+		return fmt.Errorf("finish turn %d: %w", turnID, err)
+	}
+	return nil
+}
+
+// GetTurn reads one turn.
+func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
+	var (
+		t          Turn
+		result     sql.NullString
+		cost       sql.NullFloat64
+		errMsg     sql.NullString
+		originJSON string
+		status     string
+		queuedAt   int64
+		finishedAt sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, request, result, status, cost_usd, origin, error, queued_at, finished_at
+		FROM turns WHERE id = ?`, turnID).
+		Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg, &queuedAt, &finishedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return t, ErrNotFound
+	}
+	if err != nil {
+		return t, fmt.Errorf("get turn %d: %w", turnID, err)
+	}
+
+	t.Result = result.String
+	t.Status = core.TurnStatus(status)
+	t.CostUSD = cost.Float64
+	t.Error = errMsg.String
+	t.QueuedAt = time.UnixMilli(queuedAt)
+	if finishedAt.Valid {
+		t.FinishedAt = time.UnixMilli(finishedAt.Int64)
+	}
+	if t.Origin, err = core.DecodeOrigin(originJSON); err != nil {
+		return t, fmt.Errorf("turn %d: %w", turnID, err)
+	}
+	return t, nil
+}
+
+// RecentTurns returns the most recent turns, newest first. This is the "window"
+// the plan reserves for display and for rebuilding context after a lost Claude
+// session — it is not fed back into the prompt on a normal turn, because the
+// live session already holds that history.
+func (s *Store) RecentTurns(ctx context.Context, limit int) ([]Turn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, request, result, status, cost_usd, origin, error, queued_at, finished_at
+		FROM turns ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent turns: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Turn
+	for rows.Next() {
+		var (
+			t          Turn
+			result     sql.NullString
+			cost       sql.NullFloat64
+			errMsg     sql.NullString
+			originJSON string
+			status     string
+			queuedAt   int64
+			finishedAt sql.NullInt64
+		)
+		if err := rows.Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg, &queuedAt, &finishedAt); err != nil {
+			return nil, fmt.Errorf("scan turn: %w", err)
+		}
+		t.Result = result.String
+		t.Status = core.TurnStatus(status)
+		t.CostUSD = cost.Float64
+		t.Error = errMsg.String
+		t.QueuedAt = time.UnixMilli(queuedAt)
+		if finishedAt.Valid {
+			t.FinishedAt = time.UnixMilli(finishedAt.Int64)
+		}
+		// A row with an unreadable origin is still worth showing, so decode
+		// failures degrade to an empty origin rather than failing the query.
+		t.Origin, _ = core.DecodeOrigin(originJSON)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// AppendLog writes one live-log line. This is on the hot path — the activity
+// calls it for every stream-json event — so it stays a single INSERT.
+func (s *Store) AppendLog(ctx context.Context, turnID int64, kind core.LogKind, content string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO live_logs (turn_id, kind, content, created_at) VALUES (?, ?, ?, ?)`,
+		turnID, string(kind), content, time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("append log to turn %d: %w", turnID, err)
+	}
+	return nil
+}
+
+// LogsAfter returns log entries for a turn with ID greater than afterID, oldest
+// first. Passing 0 starts from the beginning. This is the SSE cursor as well as
+// the /status tail, so the caller controls how much it pulls.
+func (s *Store) LogsAfter(ctx context.Context, turnID, afterID int64, limit int) ([]LogEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, turn_id, kind, content, created_at
+		FROM live_logs WHERE turn_id = ? AND id > ?
+		ORDER BY id ASC LIMIT ?`, turnID, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("logs after %d for turn %d: %w", afterID, turnID, err)
+	}
+	defer rows.Close()
+
+	var out []LogEntry
+	for rows.Next() {
+		var (
+			e         LogEntry
+			kind      string
+			createdAt int64
+		)
+		if err := rows.Scan(&e.ID, &e.TurnID, &kind, &e.Content, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan log: %w", err)
+		}
+		e.Kind = core.LogKind(kind)
+		e.CreatedAt = time.UnixMilli(createdAt)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// TailLogs returns the last n log entries for a turn, oldest first. /status
+// uses this to show what the agent is doing right now.
+func (s *Store) TailLogs(ctx context.Context, turnID int64, n int) ([]LogEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, turn_id, kind, content, created_at FROM (
+			SELECT id, turn_id, kind, content, created_at
+			FROM live_logs WHERE turn_id = ?
+			ORDER BY id DESC LIMIT ?
+		) ORDER BY id ASC`, turnID, n)
+	if err != nil {
+		return nil, fmt.Errorf("tail logs for turn %d: %w", turnID, err)
+	}
+	defer rows.Close()
+
+	var out []LogEntry
+	for rows.Next() {
+		var (
+			e         LogEntry
+			kind      string
+			createdAt int64
+		)
+		if err := rows.Scan(&e.ID, &e.TurnID, &kind, &e.Content, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan log: %w", err)
+		}
+		e.Kind = core.LogKind(kind)
+		e.CreatedAt = time.UnixMilli(createdAt)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

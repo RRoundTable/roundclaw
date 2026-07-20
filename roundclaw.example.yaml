@@ -1,0 +1,119 @@
+# roundclaw configuration.
+#
+# Secrets are never written here — every secret is named by the environment
+# variable that holds it, so this file is safe to commit.
+#
+# Required environment:
+#   ANTHROPIC_API_KEY          Anthropic credential, injected into containers
+#   DISCORD_TOKEN              bot token (omit to run with the HTTP API only)
+#   ROUNDCLAW_API_TOKENS       comma-separated bearer tokens for the HTTP API
+#   ROUNDCLAW_CALLBACK_SECRET  HMAC key for signing outbound callbacks
+
+# Relative paths resolve against this file's directory, not the process CWD,
+# so the worker and gateway agree no matter where they are started from.
+workspace_root: workspace
+
+temporal:
+  host_port: localhost:7233
+  namespace: default
+  task_queue: roundclaw
+
+container:
+  runtime: docker
+  # Must contain the `claude` binary. roundclaw ships no code into it.
+  image: roundclaw/claude:latest
+  # Two ways to authenticate; the OAuth token wins when both are present.
+  #
+  #   CLAUDE_CODE_OAUTH_TOKEN  from `claude setup-token` — a long-lived token
+  #                            made for headless use. Preferred.
+  #   ANTHROPIC_API_KEY        a console.anthropic.com API key.
+  #
+  # Do not mount ~/.claude/.credentials.json instead: those belong to an
+  # interactive session, and a container refreshing them can rotate the refresh
+  # token out from under the human still using it.
+  oauth_token_env: CLAUDE_CODE_OAUTH_TOKEN
+  api_key_env: ANTHROPIC_API_KEY
+  # Bounds a single agent turn end to end.
+  turn_timeout: 30m
+  # How long SIGINT gets before SIGKILL when a turn is cancelled. `claude`
+  # writes its session transcript on the way out, so cutting this too short
+  # can cost the next turn its history.
+  stop_grace: 10s
+
+discord:
+  token_env: DISCORD_TOKEN
+  # Scopes slash-command registration. Empty registers globally, which Discord
+  # propagates slowly — set it during development.
+  guild_id: ""
+  # Who can see and run the slash commands. Discord enforces this before the
+  # interaction reaches roundclaw, so it is the cheapest guard against a member
+  # stopping someone else's work or spending tokens. Defaults to the
+  # restrictive option; an unrecognised value falls back to it too.
+  #   manage_guild (default) | administrator | everyone
+  command_permission: manage_guild
+
+http:
+  addr: ":8080"
+  tokens_env: ROUNDCLAW_API_TOKENS
+  # ?wait=true is a convenience only; past this the request demotes to 202 and
+  # the caller polls the turn instead.
+  wait_timeout: 60s
+  # SSE connections are long-lived; without a cap the gateway runs out of file
+  # descriptors before anything else shows strain.
+  max_sse_per_agent: 8
+  callback_secret_env: ROUNDCLAW_CALLBACK_SECRET
+
+# Routing for messages in channels bound to no agent.
+#
+# Off by default and deliberately so: every such message costs an LLM call, and
+# `/ask agent:<name>` already covers the same ground for free. Turn it on when
+# you want plain conversation in a shared channel to reach the right agent.
+router:
+  enabled: false
+  # A small fast model — this is a classification, not the work itself.
+  model: haiku
+  timeout: 30s
+  # Restrict routing to these channels. Empty means every unbound channel the
+  # bot can see, which on a busy server is a large bill.
+  channels: []
+
+# Agents are a ONE-TIME BOOTSTRAP of the runtime registry.
+#
+# On first start, if the registry is empty, these are copied into it and the
+# startup log says so. After that the registry is the only source of truth and
+# editing this list has no effect — manage agents through the API instead:
+#
+#   GET    /v1/agents
+#   POST   /v1/agents                     {"id":"...","description":"...",...}
+#   GET    /v1/agents/{id}/definition
+#   PUT    /v1/agents/{id}/definition
+#   DELETE /v1/agents/{id}                (keeps the workspace and session)
+agents:
+  - id: pr-reviewer
+    # Shown in /agents and in slash-command autocomplete, and given to the
+    # router as the basis for choosing this agent. Worth writing carefully.
+    description: Reviews pull requests and diffs
+    # Passed to `claude --agent`, so it must name a subagent definition the
+    # image can resolve. Leave empty to run the default Claude Code prompt.
+    agent_name: ""
+    permission_mode: acceptEdits
+    allowed_tools:
+      - Read
+      - Grep
+      - Glob
+      - Bash
+    # Mounted read-only and exposed via --add-dir.
+    additional_dirs: []
+    # A channel may be bound to exactly one agent; two bindings is a config
+    # error, because ambiguous routing would send replies to the wrong session.
+    discord_channels:
+      - "000000000000000000"
+
+  - id: ops-helper
+    description: Answers infrastructure and deployment questions
+    permission_mode: default
+    allowed_tools:
+      - Read
+      - Grep
+      - WebSearch
+    discord_channels: []

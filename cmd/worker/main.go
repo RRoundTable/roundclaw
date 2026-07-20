@@ -1,0 +1,135 @@
+// Command worker runs roundclaw's Temporal worker: it executes agent turns in
+// containers and delivers the results. It holds no inbound listeners, so it can
+// be scaled or restarted independently of the gateway.
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"time"
+
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/worker"
+
+	"github.com/roundtable/roundclaw/internal/adapter"
+	"github.com/roundtable/roundclaw/internal/config"
+	"github.com/roundtable/roundclaw/internal/registry"
+	"github.com/roundtable/roundclaw/internal/store"
+	"github.com/roundtable/roundclaw/internal/temporal/activity"
+	rcworkflow "github.com/roundtable/roundclaw/internal/temporal/workflow"
+)
+
+func main() {
+	configPath := flag.String("config", "roundclaw.yaml", "path to the roundclaw config file")
+	flag.Parse()
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if err := run(*configPath, log); err != nil {
+		log.Error("worker exited", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(configPath string, log *slog.Logger) error {
+	// Local convenience: a .env beside the config file fills in anything the
+	// real environment has not already set.
+	if err := config.LoadEnvFile(configPath); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	stores := store.NewRegistry(store.ReadWrite, cfg.DBPath)
+	defer stores.Close()
+
+	// Agent definitions live in the registry, not the config file. The config's
+	// agents list is a one-time bootstrap: once the registry has any agent,
+	// editing the YAML has no effect.
+	reg, err := registry.Open(filepath.Join(cfg.WorkspaceRoot, "registry.db"))
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+
+	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
+	if err != nil {
+		return err
+	}
+	if seeded > 0 {
+		log.Info("seeded the agent registry from the config file; the YAML agents list is now ignored",
+			"agents", seeded)
+	}
+
+	// REST-only Discord client. The gateway owns the single websocket
+	// connection; a second one here would double-consume every inbound event.
+	var discord activity.DiscordSender
+	if token := os.Getenv(cfg.Discord.TokenEnv); token != "" {
+		sender, err := adapter.RESTSender(token)
+		if err != nil {
+			return err
+		}
+		discord = sender
+	} else {
+		log.Warn("discord token is unset; discord deliveries will fail",
+			"env", cfg.Discord.TokenEnv)
+	}
+
+	tc, err := client.Dial(client.Options{
+		HostPort:  cfg.Temporal.HostPort,
+		Namespace: cfg.Temporal.Namespace,
+		Logger:    log,
+	})
+	if err != nil {
+		return err
+	}
+	defer tc.Close()
+
+	w := worker.New(tc, cfg.Temporal.TaskQueue, worker.Options{
+		// Calling RecordHeartbeat often is not enough on its own: the SDK
+		// throttles what it actually sends to roughly 80% of HeartbeatTimeout,
+		// and cancellation only reaches an activity on the heartbeat response.
+		// With a 30s HeartbeatTimeout that would make /stop and /steer take up
+		// to ~24 seconds to reach the container. Capping the throttle decouples
+		// "how often we report" from "how long before we're declared dead".
+		MaxHeartbeatThrottleInterval: time.Second,
+	})
+	w.RegisterWorkflow(rcworkflow.SubAgent)
+	// Registering the struct exposes every exported method as an activity,
+	// which is why Activities carries no exported non-activity methods.
+	w.RegisterActivity(activity.NewActivities(cfg, stores, reg, discord))
+
+	log.Info("worker starting",
+		"task_queue", cfg.Temporal.TaskQueue,
+		"agents", len(cfg.Agents),
+		"image", cfg.Container.Image)
+
+	// InterruptCh makes the worker drain in-flight activity tasks on SIGTERM
+	// rather than abandoning a running container.
+	return w.Run(worker.InterruptCh())
+}
+
+// configAgents converts the config file's agent list into registry records for
+// the one-time bootstrap.
+func configAgents(cfg *config.Config) []registry.Agent {
+	out := make([]registry.Agent, 0, len(cfg.Agents))
+	for _, a := range cfg.Agents {
+		out = append(out, registry.Agent{
+			ID:              a.ID,
+			Description:     a.Description,
+			AgentName:       a.AgentName,
+			PermissionMode:  a.PermissionMode,
+			AllowedTools:    a.AllowedTools,
+			AdditionalDirs:  a.AdditionalDirs,
+			DiscordChannels: a.DiscordChannels,
+			Enabled:         true,
+		})
+	}
+	return out
+}

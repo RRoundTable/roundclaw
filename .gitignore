@@ -1,0 +1,14 @@
+# Secrets — never commit.
+.env
+.env.*
+!.env.example
+
+# Per-agent workspaces, databases and session transcripts.
+/workspace/
+
+# Local config (copy roundclaw.example.yaml).
+roundclaw.yaml
+
+# Built binaries.
+/worker
+/gateway

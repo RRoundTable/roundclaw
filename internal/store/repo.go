@@ -342,3 +342,55 @@ func (s *Store) UsageSince(ctx context.Context, since time.Time) (Usage, error) 
 	u.CostUSD = cost.Float64
 	return u, nil
 }
+
+// Pruned reports what a retention pass removed.
+type Pruned struct {
+	Logs  int64
+	Turns int64
+	Keys  int64
+}
+
+// Prune removes history older than the cutoffs.
+//
+// live_logs is the reason this exists: every stream-json event of every turn
+// appends a row, and nothing ever deleted them. A busy agent grows its database
+// without bound, and the transcript of a turn from six weeks ago is not what
+// anyone is reading in /status.
+//
+// Logs are pruned harder than turns. A turn row is small and is the audit
+// trail — what was asked, what came back, what it cost — while its transcript
+// is bulky and only interesting while the work is recent.
+//
+// Rows belonging to a turn that is still running are never touched, however old
+// the cutoff: a long turn is exactly the one someone is watching.
+func (s *Store) Prune(ctx context.Context, logsBefore, turnsBefore time.Time) (Pruned, error) {
+	var p Pruned
+
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM live_logs WHERE turn_id IN (
+			SELECT id FROM turns WHERE finished_at IS NOT NULL AND finished_at < ?
+		)`, logsBefore.UnixMilli())
+	if err != nil {
+		return p, fmt.Errorf("prune logs for %s: %w", s.agentID, err)
+	}
+	p.Logs, _ = res.RowsAffected()
+
+	res, err = s.db.ExecContext(ctx, `
+		DELETE FROM turns WHERE finished_at IS NOT NULL AND finished_at < ?`,
+		turnsBefore.UnixMilli())
+	if err != nil {
+		return p, fmt.Errorf("prune turns for %s: %w", s.agentID, err)
+	}
+	p.Turns, _ = res.RowsAffected()
+
+	// Idempotency keys outlive their usefulness the moment a client would have
+	// given up retrying, and they are pure overhead after that.
+	res, err = s.db.ExecContext(ctx,
+		`DELETE FROM idempotency WHERE created_at < ?`, turnsBefore.UnixMilli())
+	if err != nil {
+		return p, fmt.Errorf("prune idempotency keys for %s: %w", s.agentID, err)
+	}
+	p.Keys, _ = res.RowsAffected()
+
+	return p, nil
+}

@@ -305,6 +305,15 @@ second agent run.
 /agent delete  agent:<name>          remove the definition, keep the workspace
 ```
 
+```
+/schedule create agent:<name>        open a form to schedule recurring work
+/schedule list                       schedules with their next run times
+/schedule show   schedule:<id>
+/schedule pause  schedule:<id>
+/schedule resume schedule:<id>
+/schedule delete schedule:<id>
+```
+
 Full CRUD without leaving Discord. Create and edit open a modal rather than
 taking flat options: an agent has more fields than a command line reads
 comfortably, and tools and channels are free-form lists. In the channels field,
@@ -346,6 +355,44 @@ Three properties are deliberate:
   a router failure stays silent rather than replying to every message.
 
 An agent ID the model invents is downgraded to `clarify` rather than acted on.
+
+## Who can run what
+
+Discord's own permission gate comes first: commands are registered with
+`default_member_permissions`, so members without it never see them.
+`command_permission` chooses the bit (`manage_guild` by default; an unrecognised
+value falls back to it rather than opening things up).
+
+On top of that, `allowed_roles` and `allowed_users` are roundclaw's own
+allow-list. Discord can express "Manage Server"; it cannot express "these three
+people may spend tokens". Empty means anyone Discord lets through.
+
+`/status`, `/workflow` and `/agents` stay open regardless. They cost nothing,
+and refusing to say what an agent is doing makes the bot look broken to whoever
+is best placed to notice a problem.
+
+## History retention
+
+`live_logs` gains a row per stream-json event per turn and nothing deleted them,
+so a busy agent's database grew without bound. `retention` prunes it:
+
+```yaml
+retention:
+  transcript_days: 14   # live_logs for finished turns
+  turn_days: 180        # turn rows — the audit trail, kept much longer
+  interval: 6h
+```
+
+Transcripts are pruned harder than turns on purpose: a turn row is small and is
+the record of what was asked, what came back and what it cost, while its
+transcript is bulky and only interesting while the work is recent. Zero means
+keep forever, so deleting history is always something an operator asked for.
+
+A turn that is still running is never pruned, however old the cutoff — a long
+turn is exactly the one somebody is watching.
+
+The sweep runs in the worker, not the gateway: a sweep holding SQLite's write
+lock is the last thing that should sit in front of `/status`.
 
 ## Testing
 

@@ -108,6 +108,11 @@ func run(configPath string, log *slog.Logger) error {
 	// which is why Activities carries no exported non-activity methods.
 	w.RegisterActivity(activity.NewActivities(cfg, stores, reg, discord, tc))
 
+	// Cancelled when the worker stops, so a sweep cannot outlive the process.
+	retentionCtx, stopRetention := context.WithCancel(context.Background())
+	defer stopRetention()
+	go runRetention(retentionCtx, cfg, reg, stores, log)
+
 	log.Info("worker starting",
 		"task_queue", cfg.Temporal.TaskQueue,
 		"agents", len(cfg.Agents),

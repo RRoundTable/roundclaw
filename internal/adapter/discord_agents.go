@@ -150,6 +150,10 @@ func row(input discordgo.TextInput) discordgo.MessageComponent {
 // handleAgentForm applies a submitted create or edit form.
 func (d *Discord) handleAgentForm(i *discordgo.InteractionCreate) {
 	data := i.ModalSubmitData()
+	if strings.HasPrefix(data.CustomID, modalScheduleCreate) {
+		d.handleScheduleForm(i)
+		return
+	}
 	editing := strings.HasPrefix(data.CustomID, modalEditPrefix)
 	if !editing && data.CustomID != modalCreate {
 		return

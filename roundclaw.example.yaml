@@ -51,6 +51,15 @@ discord:
   # restrictive option; an unrecognised value falls back to it too.
   #   manage_guild (default) | administrator | everyone
   command_permission: manage_guild
+  # roundclaw's own allow-list, applied on top of Discord's gate. Discord can
+  # express "Manage Server"; it cannot express "these three people may spend
+  # tokens". Empty means anyone Discord lets through.
+  #
+  # /status, /workflow and /agents stay open regardless: they cost nothing, and
+  # refusing to say what an agent is doing makes the bot look broken to whoever
+  # is best placed to notice a problem.
+  allowed_roles: []
+  allowed_users: []
 
 http:
   addr: ":8080"
@@ -79,6 +88,19 @@ limits:
   # Containers running at once. Unlike the spend ceilings this has a default
   # (5): it bounds host resources, and excess turns wait rather than fail.
   max_concurrent_turns: 5
+
+# How much history each agent keeps.
+#
+# live_logs gains a row per stream-json event per turn, so without this a busy
+# agent's database grows without bound. Transcripts are pruned harder than turns
+# on purpose: a turn row is the small, durable audit trail; its transcript is
+# bulky and only interesting while the work is recent.
+#
+# 0 keeps that dimension forever. A turn still running is never pruned.
+retention:
+  transcript_days: 14
+  turn_days: 180
+  interval: 6h
 
 # Recurring work is not configured here — schedules live in the runtime
 # registry alongside agents, and are managed through /v1/schedules.

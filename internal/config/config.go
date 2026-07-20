@@ -30,6 +30,7 @@ type Config struct {
 	HTTP      HTTPConfig      `yaml:"http"`
 	Router    RouterConfig    `yaml:"router"`
 	Limits    LimitsConfig    `yaml:"limits"`
+	Retention RetentionConfig `yaml:"retention"`
 
 	Agents []AgentConfig `yaml:"agents"`
 
@@ -80,6 +81,58 @@ type DiscordConfig struct {
 	//
 	// One of: manage_guild (default), administrator, everyone.
 	CommandPermission string `yaml:"command_permission"`
+
+	// AllowedRoles restricts who may run roundclaw's commands, by Discord role
+	// ID. Empty means anyone Discord's own permission gate lets through.
+	//
+	// This is checked inside roundclaw rather than left to Discord because
+	// Discord's gate is coarse: it can say "Manage Server" but not "the three
+	// people who are allowed to spend tokens". Both apply — Discord filters
+	// first, this filters second.
+	AllowedRoles []string `yaml:"allowed_roles"`
+
+	// AllowedUsers restricts by user ID, for people who should have access
+	// without being given a role.
+	AllowedUsers []string `yaml:"allowed_users"`
+
+	// ReadOnlyCommands are exempt from the role check. Asking what an agent is
+	// doing costs nothing and helps whoever is confused about why it is busy;
+	// gating it makes the bot feel broken rather than secure.
+	readOnly map[string]bool
+}
+
+// CommandsRestricted reports whether an allow-list is configured at all.
+func (d DiscordConfig) CommandsRestricted() bool {
+	return len(d.AllowedRoles) > 0 || len(d.AllowedUsers) > 0
+}
+
+// PermitsCommand reports whether a caller may run a command.
+//
+// Read-only commands are always allowed: they cost nothing, and refusing to say
+// what an agent is doing makes the bot look broken to the person best placed to
+// notice something is wrong.
+func (d DiscordConfig) PermitsCommand(command, userID string, roleIDs []string) bool {
+	if !d.CommandsRestricted() {
+		return true
+	}
+	if d.readOnly[command] {
+		return true
+	}
+	for _, u := range d.AllowedUsers {
+		if u == userID {
+			return true
+		}
+	}
+	allowed := make(map[string]bool, len(d.AllowedRoles))
+	for _, r := range d.AllowedRoles {
+		allowed[r] = true
+	}
+	for _, r := range roleIDs {
+		if allowed[r] {
+			return true
+		}
+	}
+	return false
 }
 
 // Discord permission bits used for command gating.
@@ -170,6 +223,27 @@ type LimitsConfig struct {
 	// MaxConcurrentTurns caps containers running at once across all agents.
 	// Applied to the Temporal worker, so excess turns wait rather than fail.
 	MaxConcurrentTurns int `yaml:"max_concurrent_turns"`
+}
+
+// RetentionConfig bounds how much history each agent keeps.
+//
+// live_logs grows by a row per stream-json event per turn and had no delete
+// path at all, so a busy agent's database grew without limit. Transcripts are
+// pruned harder than turns: a turn row is the small, durable audit trail, while
+// its transcript is bulky and only interesting while the work is recent.
+type RetentionConfig struct {
+	// TranscriptDays keeps live_logs for finished turns this long.
+	TranscriptDays int `yaml:"transcript_days"`
+	// TurnDays keeps turn rows this long. Should exceed TranscriptDays.
+	TurnDays int `yaml:"turn_days"`
+	// Interval is how often the sweep runs.
+	Interval time.Duration `yaml:"interval"`
+}
+
+// Enabled reports whether pruning is configured. Zero means keep everything,
+// so deleting history is always something an operator asked for.
+func (r RetentionConfig) Enabled() bool {
+	return r.TranscriptDays > 0 || r.TurnDays > 0
 }
 
 // AgentConfig is one persistent agent: an identity, a Claude Code agent
@@ -269,6 +343,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Router.Model == "" {
 		c.Router.Model = "haiku"
+	}
+	// Commands that only read. Everything else can spend money or destroy work
+	// in progress, so it needs the allow-list when one is configured.
+	c.Discord.readOnly = map[string]bool{
+		"agents": true, "status": true, "workflow": true,
+	}
+	if c.Retention.Interval == 0 {
+		c.Retention.Interval = 6 * time.Hour
 	}
 	if c.Limits.MaxConcurrentTurns == 0 {
 		// Unlike the spend ceilings, this one gets a default: it bounds host

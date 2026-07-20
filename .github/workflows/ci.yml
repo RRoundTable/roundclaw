@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# A second push supersedes the first; there is no value in finishing a run for
+# a commit nobody will look at again.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Checked rather than applied: CI reporting a diff is a prompt to fix it
+      # locally, whereas CI rewriting the tree hides the habit that caused it.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            gofmt -d $unformatted
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # -race matters here: the activity streams container output on one
+      # goroutine while heartbeating from another, and the adapters serve
+      # concurrent HTTP requests against shared SQLite handles.
+      - name: test
+        run: go test -race -count=1 ./...
+
+      # go.mod and go.sum must already be tidy; a diff means a dependency change
+      # was committed without one, which breaks builds for everyone else.
+      - name: go mod tidy is committed
+        run: |
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "go.mod or go.sum is not tidy; run 'go mod tidy' and commit:"
+            git diff go.mod go.sum
+            exit 1
+          fi
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both images are part of the contract: the real one carries the `claude`
+      # binary agents run, and the fake one has to keep matching the argument
+      # order roundclaw builds, or every test using it quietly tests nothing.
+      - name: build the agent images
+        run: |
+          docker build -t roundclaw/claude:ci container
+          docker build -t roundclaw/claude-fake:ci container/fake
+
+      - name: the fake agent still honours the real argument order
+        run: |
+          out=$(docker run --rm roundclaw/claude-fake:ci \
+            claude -p "ci probe" --output-format stream-json --verbose \
+            --allowedTools Read,Write)
+          echo "$out"
+          # --allowedTools is variadic in the real CLI, so a prompt placed after
+          # it is swallowed. The fake must agree, or it would accept an
+          # invocation the real one rejects.
+          echo "$out" | grep -q '"result":"done: ci probe"'
+
+      - name: roundclaw builds as a container
+        run: docker build -t roundclaw:ci .

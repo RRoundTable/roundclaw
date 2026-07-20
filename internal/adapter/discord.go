@@ -82,10 +82,21 @@ func (d *Discord) Close() error {
 	return d.session.Close()
 }
 
+// scheduleOption names a schedule, with autocomplete over the registered ones.
+func scheduleOption() *discordgo.ApplicationCommandOption {
+	return &discordgo.ApplicationCommandOption{
+		Type:         discordgo.ApplicationCommandOptionString,
+		Name:         "schedule",
+		Description:  "Which schedule",
+		Required:     true,
+		Autocomplete: true,
+	}
+}
+
 // agentOption is the shared "which agent?" argument.
 //
-// It is optional everywhere: omitting it uses the channel's bound agent, and
-// naming one addresses that agent from any channel. Autocomplete is on so
+// It is optional on most commands: omitting it uses the channel's bound agent,
+// and naming one addresses that agent from any channel. Autocomplete is on so
 // nobody has to remember agent IDs.
 func agentOption(required bool) *discordgo.ApplicationCommandOption {
 	return &discordgo.ApplicationCommandOption{
@@ -170,6 +181,47 @@ func (d *Discord) registerCommands() error {
 					Name:        "delete",
 					Description: "Delete an agent's definition (its workspace and conversation are kept)",
 					Options:     []*discordgo.ApplicationCommandOption{agentOption(true)},
+				},
+			},
+		},
+		{
+			Name:        "schedule",
+			Description: "Run an agent on a recurring schedule",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "create",
+					Description: "Open a form to schedule recurring work for an agent",
+					Options:     []*discordgo.ApplicationCommandOption{agentOption(true)},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "list",
+					Description: "List schedules with their next run times",
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "show",
+					Description: "Show one schedule in full",
+					Options:     []*discordgo.ApplicationCommandOption{scheduleOption()},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "pause",
+					Description: "Stop a schedule firing, keeping its definition",
+					Options:     []*discordgo.ApplicationCommandOption{scheduleOption()},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "resume",
+					Description: "Let a schedule fire again",
+					Options:     []*discordgo.ApplicationCommandOption{scheduleOption()},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "delete",
+					Description: "Delete a schedule and its trigger",
+					Options:     []*discordgo.ApplicationCommandOption{scheduleOption()},
 				},
 			},
 		},
@@ -338,8 +390,19 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 
 	data := i.ApplicationCommandData()
 
+	if !d.permitted(i, data.Name) {
+		d.respondNow(i, "⛔ You are not on this bot's allow-list. Ask an administrator to add your role.")
+		d.log.Info("refused a command from an unlisted caller",
+			"command", data.Name, "user", interactionUser(i))
+		return
+	}
+
 	if data.Name == "agent" {
 		d.handleAgentCommand(i, data)
+		return
+	}
+	if data.Name == "schedule" {
+		d.handleScheduleCommand(i, data)
 		return
 	}
 
@@ -373,34 +436,48 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 }
 
+// permitted applies roundclaw's own allow-list on top of Discord's permission
+// gate. Discord can express "Manage Server"; it cannot express "these three
+// people may spend tokens".
+func (d *Discord) permitted(i *discordgo.InteractionCreate, command string) bool {
+	cfg := d.disp.Config().Discord
+	if !cfg.CommandsRestricted() {
+		return true
+	}
+
+	var userID string
+	var roles []string
+	if i.Member != nil {
+		roles = i.Member.Roles
+		if i.Member.User != nil {
+			userID = i.Member.User.ID
+		}
+	}
+	if userID == "" && i.User != nil {
+		// A direct message carries no member, and so no roles: only an
+		// explicitly listed user can act from one.
+		userID = i.User.ID
+	}
+	return cfg.PermitsCommand(command, userID, roles)
+}
+
 // handleAutocomplete offers agent IDs as the user types. It reads only static
 // config, so it comfortably fits inside Discord's interaction deadline.
 func (d *Discord) handleAutocomplete(i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
-	typed := strings.ToLower(optionString(data.Options, "agent"))
+	// Subcommands nest their options one level down.
+	opts := data.Options
+	if len(opts) == 1 && opts[0].Type == discordgo.ApplicationCommandOptionSubCommand {
+		opts = opts[0].Options
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	agents, err := d.disp.Registry().List(ctx)
+	choices, err := d.autocompleteChoices(ctx, opts)
 	if err != nil {
 		d.log.Warn("autocomplete could not read the registry", "error", err)
 		return
-	}
-
-	var choices []*discordgo.ApplicationCommandOptionChoice
-	for _, a := range agents {
-		if typed != "" && !strings.Contains(strings.ToLower(a.ID), typed) {
-			continue
-		}
-		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
-			Name:  a.Label(),
-			Value: a.ID,
-		})
-		// Discord caps autocomplete at 25 choices.
-		if len(choices) == 25 {
-			break
-		}
 	}
 
 	if err := d.session.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -409,6 +486,63 @@ func (d *Discord) handleAutocomplete(i *discordgo.InteractionCreate) {
 	}); err != nil {
 		d.log.Warn("failed to answer autocomplete", "error", err)
 	}
+}
+
+// autocompleteChoices offers agents or schedules depending on which option is
+// being typed into. Discord caps the list at 25.
+func (d *Discord) autocompleteChoices(
+	ctx context.Context,
+	opts []*discordgo.ApplicationCommandInteractionDataOption,
+) ([]*discordgo.ApplicationCommandOptionChoice, error) {
+	var choices []*discordgo.ApplicationCommandOptionChoice
+
+	if typed, ok := focusedOption(opts, "schedule"); ok {
+		schedules, err := d.disp.Registry().ListSchedules(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range schedules {
+			if typed != "" && !strings.Contains(strings.ToLower(s.ID), typed) {
+				continue
+			}
+			label := s.ID + " — " + s.AgentID + " · " + s.Cron
+			if len(label) > 100 {
+				label = label[:97] + "..."
+			}
+			choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: label, Value: s.ID})
+			if len(choices) == 25 {
+				break
+			}
+		}
+		return choices, nil
+	}
+
+	typed, _ := focusedOption(opts, "agent")
+	agents, err := d.disp.Registry().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range agents {
+		if typed != "" && !strings.Contains(strings.ToLower(a.ID), typed) {
+			continue
+		}
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: a.Label(), Value: a.ID})
+		if len(choices) == 25 {
+			break
+		}
+	}
+	return choices, nil
+}
+
+// focusedOption reports what has been typed into a named option, and whether
+// that option is present at all.
+func focusedOption(opts []*discordgo.ApplicationCommandInteractionDataOption, name string) (string, bool) {
+	for _, o := range opts {
+		if o.Name == name {
+			return strings.ToLower(o.StringValue()), true
+		}
+	}
+	return "", false
 }
 
 func (d *Discord) handleAgents(i *discordgo.InteractionCreate) {

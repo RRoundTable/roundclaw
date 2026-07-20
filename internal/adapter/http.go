@@ -62,6 +62,7 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents/{agent}", h.getStatus)
 	mux.HandleFunc("GET /v1/agents/{agent}/turns/{turn}", h.getTurn)
 	mux.HandleFunc("GET /v1/agents/{agent}/turns/{turn}/stream", h.streamTurn)
+	mux.HandleFunc("GET /v1/agents/{agent}/workflow", h.getWorkflow)
 	h.registerAgentRoutes(mux)
 	return h.authenticate(mux)
 }
@@ -141,11 +142,15 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := submit(r.Context(), agentID, prompt, origin, idempotencyKey)
 	if err != nil {
-		if errors.Is(err, ErrUnknownAgent) {
+		switch {
+		case errors.Is(err, ErrUnknownAgent):
 			writeError(w, http.StatusNotFound, err.Error())
-			return
+		case errors.Is(err, ErrLimitReached):
+			// 429 rather than 400: the request is fine, it just has to wait.
+			writeError(w, http.StatusTooManyRequests, err.Error())
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -208,6 +213,17 @@ func (h *HTTP) waitForTurn(ctx context.Context, agentID string, turnID int64) (s
 			}
 		}
 	}
+}
+
+// getWorkflow reports the agent's Temporal execution: whether it is alive, what
+// it is waiting on, and whether an activity is retrying.
+func (h *HTTP) getWorkflow(w http.ResponseWriter, r *http.Request) {
+	info, err := h.disp.Workflow(r.Context(), r.PathValue("agent"))
+	if err != nil {
+		h.writeLookupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 func (h *HTTP) getStatus(w http.ResponseWriter, r *http.Request) {

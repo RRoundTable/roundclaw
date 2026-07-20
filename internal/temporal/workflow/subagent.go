@@ -103,7 +103,7 @@ func SubAgent(ctx workflow.Context, in Input) error {
 				var sig StopSignal
 				c.Receive(ctx, &sig)
 				if sig.ClearQueue {
-					state.queue = nil
+					state.abandonQueue(ctx, sig.Reason)
 				}
 			})
 			sel.Select(ctx)
@@ -160,6 +160,44 @@ func (s *agentState) receive(ctx workflow.Context, c workflow.ReceiveChannel, fr
 		s.queue = append([]core.Request{req}, s.queue...)
 	} else {
 		s.queue = append(s.queue, req)
+	}
+}
+
+// abandonQueue drops everything waiting and closes out its turn rows.
+//
+// Dropping the slice alone would leave those rows open forever: they would show
+// as running in /status and keep counting against the hourly rate limit, so one
+// /stop would permanently eat part of the agent's budget.
+func (s *agentState) abandonQueue(ctx workflow.Context, reason string) {
+	if len(s.queue) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(s.queue))
+	for _, req := range s.queue {
+		ids = append(ids, req.TurnID)
+	}
+	s.queue = nil
+
+	// Disconnected so a stop that arrives with the workflow itself being
+	// cancelled still records the outcome.
+	disconnected, cancel := workflow.NewDisconnectedContext(ctx)
+	defer cancel()
+
+	actCtx := workflow.WithActivityOptions(disconnected, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval: time.Second,
+			MaximumAttempts: 3,
+		},
+	})
+	err := workflow.ExecuteActivity(actCtx, (*activity.Activities).AbandonTurns, activity.AbandonInput{
+		AgentID: s.agentID,
+		TurnIDs: ids,
+		Reason:  reason,
+	}).Get(actCtx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Error("failed to close out abandoned turns",
+			"agent", s.agentID, "turns", len(ids), "error", err)
 	}
 }
 
@@ -247,7 +285,7 @@ func (s *agentState) runTurn(
 			var sig StopSignal
 			c.Receive(ctx, &sig)
 			if sig.ClearQueue {
-				s.queue = nil
+				s.abandonQueue(ctx, sig.Reason)
 			}
 			s.lifecycle = core.AgentStopping
 			log.Info("stop received; cancelling current turn", "turn_id", req.TurnID, "reason", sig.Reason)

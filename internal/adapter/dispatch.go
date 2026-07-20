@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 
@@ -34,6 +35,7 @@ type TemporalClient interface {
 		options client.StartWorkflowOptions, workflow any, workflowArgs ...any) (client.WorkflowRun, error)
 	SignalWorkflow(ctx context.Context, workflowID, runID, signalName string, arg any) error
 	QueryWorkflow(ctx context.Context, workflowID, runID, queryType string, args ...any) (converter.EncodedValue, error)
+	DescribeWorkflowExecution(ctx context.Context, workflowID, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
 }
 
 // Dispatcher admits requests and answers status questions.
@@ -109,6 +111,11 @@ func (d *Dispatcher) Steer(ctx context.Context, agentID, text string, origin cor
 
 func (d *Dispatcher) submit(ctx context.Context, agentID, text string, origin core.Origin, idempotencyKey, signal string) (Submission, error) {
 	if _, err := d.requireAgent(ctx, agentID); err != nil {
+		return Submission{}, err
+	}
+	// Before the turn row is written, so a refused request leaves no trace and
+	// the caller is told rather than left waiting on work that will not run.
+	if err := d.checkLimits(ctx, agentID); err != nil {
 		return Submission{}, err
 	}
 	text = strings.TrimSpace(text)
@@ -192,6 +199,7 @@ type StatusReport struct {
 	QueueLength int              `json:"queue_length"`
 	Recent      []store.LogEntry `json:"recent,omitempty"`
 	UpdatedAt   time.Time        `json:"updated_at,omitempty"`
+	Budget      Budget           `json:"budget"`
 }
 
 // Status answers "what is this agent doing right now?" straight from SQLite.
@@ -224,6 +232,12 @@ func (d *Dispatcher) Status(ctx context.Context, agentID string, tail int) (Stat
 		UpdatedAt:   rt.UpdatedAt,
 		QueueLength: d.queueDepth(ctx, agentID),
 	}
+	// Best-effort: a status report is more useful without spend figures than
+	// not at all.
+	if budget, err := d.Budget(ctx, agentID); err == nil {
+		report.Budget = budget
+	}
+
 	if rt.CurrentTurn > 0 && tail > 0 {
 		if logs, err := st.TailLogs(ctx, rt.CurrentTurn, tail); err == nil {
 			report.Recent = logs

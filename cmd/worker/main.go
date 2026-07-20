@@ -96,6 +96,10 @@ func run(configPath string, log *slog.Logger) error {
 		// to ~24 seconds to reach the container. Capping the throttle decouples
 		// "how often we report" from "how long before we're declared dead".
 		MaxHeartbeatThrottleInterval: time.Second,
+		// Bounds containers running at once. Excess turns wait in Temporal
+		// rather than being refused, which is the right shape for a resource
+		// ceiling as opposed to a spend ceiling.
+		MaxConcurrentActivityExecutionSize: cfg.Limits.MaxConcurrentTurns,
 	})
 	w.RegisterWorkflow(rcworkflow.SubAgent)
 	// Registering the struct exposes every exported method as an activity,

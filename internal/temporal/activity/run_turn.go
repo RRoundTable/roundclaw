@@ -439,3 +439,44 @@ var errNonRetryable = errors.New("roundclaw: non-retryable")
 func newNonRetryable(err error) error {
 	return fmt.Errorf("%w: %w", errNonRetryable, err)
 }
+
+// AbandonInput names turns that were queued but will never run.
+type AbandonInput struct {
+	AgentID string  `json:"agent_id"`
+	TurnIDs []int64 `json:"turn_ids"`
+	Reason  string  `json:"reason"`
+}
+
+// AbandonTurns closes out turns dropped from an agent's queue.
+//
+// Clearing the queue on /stop leaves their rows open otherwise: they stay
+// "running" forever, show as in-flight in /status, and keep counting against
+// the hourly rate limit — which counts queued turns, so a single /stop would
+// permanently consume part of the agent's budget.
+//
+// No response is delivered for them. Whoever ran /stop was already told, and
+// fifteen separate cancellation notices would be worse than none.
+func (a *Activities) AbandonTurns(ctx context.Context, in AbandonInput) error {
+	if len(in.TurnIDs) == 0 {
+		return nil
+	}
+	st, err := a.stores.Get(in.AgentID)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+
+	for _, id := range in.TurnIDs {
+		result := core.TurnResult{
+			TurnID:  id,
+			Status:  core.TurnStopped,
+			Text:    "",
+			CostUSD: 0,
+		}
+		if err := st.FinishTurn(ctx, id, result); err != nil {
+			return fmt.Errorf("abandon turn %d: %w", id, err)
+		}
+	}
+	activity.GetLogger(ctx).Info("abandoned queued turns",
+		"agent", in.AgentID, "turns", len(in.TurnIDs), "reason", in.Reason)
+	return nil
+}

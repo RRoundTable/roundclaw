@@ -179,6 +179,14 @@ func (d *Discord) registerCommands() error {
 			Options:     []*discordgo.ApplicationCommandOption{agentOption(false)},
 		},
 		{
+			// The other half of /status: SQLite says what the agent has done,
+			// this says whether its workflow is actually alive and whether an
+			// activity is quietly retrying.
+			Name:        "workflow",
+			Description: "Show an agent's Temporal execution — alive, waiting, or retrying",
+			Options:     []*discordgo.ApplicationCommandOption{agentOption(false)},
+		},
+		{
 			Name:        "stop",
 			Description: "Stop the current turn and drop anything queued behind it",
 			Options:     []*discordgo.ApplicationCommandOption{agentOption(false)},
@@ -356,6 +364,8 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		d.handleAsk(i, agent.ID, optionString(data.Options, "prompt"), discordAttachments(data))
 	case "status":
 		d.handleStatus(i, agent.ID)
+	case "workflow":
+		d.handleWorkflow(i, agent.ID)
 	case "stop":
 		d.handleStop(i, agent.ID)
 	case "steer":

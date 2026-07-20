@@ -29,6 +29,7 @@ type Config struct {
 	Discord   DiscordConfig   `yaml:"discord"`
 	HTTP      HTTPConfig      `yaml:"http"`
 	Router    RouterConfig    `yaml:"router"`
+	Limits    LimitsConfig    `yaml:"limits"`
 
 	Agents []AgentConfig `yaml:"agents"`
 
@@ -149,6 +150,28 @@ func (r RouterConfig) RoutesChannel(channelID string) bool {
 	return r.channelSet[channelID]
 }
 
+// LimitsConfig bounds what roundclaw is allowed to spend.
+//
+// Every agent turn costs real money, and the paths that start one — a Discord
+// command, an API call, a schedule — are all cheap to trigger. Without a
+// ceiling the only feedback is the bill.
+//
+// A zero value means unlimited for that dimension, so an operator opts into
+// each ceiling deliberately rather than discovering an invented default.
+type LimitsConfig struct {
+	// TurnsPerHour caps how often a single agent can be asked to run.
+	TurnsPerHour int `yaml:"turns_per_hour"`
+	// CostPerDayUSD caps one agent's daily spend.
+	CostPerDayUSD float64 `yaml:"cost_per_day_usd"`
+	// GlobalCostPerDayUSD caps everything together. This is the backstop: a
+	// per-agent limit does nothing about twenty agents each staying just under
+	// theirs.
+	GlobalCostPerDayUSD float64 `yaml:"global_cost_per_day_usd"`
+	// MaxConcurrentTurns caps containers running at once across all agents.
+	// Applied to the Temporal worker, so excess turns wait rather than fail.
+	MaxConcurrentTurns int `yaml:"max_concurrent_turns"`
+}
+
 // AgentConfig is one persistent agent: an identity, a Claude Code agent
 // definition to run as, and the channels bound to it.
 type AgentConfig struct {
@@ -246,6 +269,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Router.Model == "" {
 		c.Router.Model = "haiku"
+	}
+	if c.Limits.MaxConcurrentTurns == 0 {
+		// Unlike the spend ceilings, this one gets a default: it bounds host
+		// resources rather than money, and an unbounded worker will happily
+		// start a container per queued turn.
+		c.Limits.MaxConcurrentTurns = 5
 	}
 	c.Router.channelSet = make(map[string]bool, len(c.Router.Channels))
 	for _, ch := range c.Router.Channels {

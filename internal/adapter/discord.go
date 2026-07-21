@@ -305,20 +305,27 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	if agent.RequireMention {
-		mentioned, stripped := d.stripMention(m, text)
-		if !mentioned {
-			// Someone else's conversation. Answering it would be both wrong and
-			// billable.
-			return
-		}
+	// A mention gates a bound channel, or the bot would answer everyone's
+	// chatter. But a thread the agent is already talking in is an ongoing
+	// conversation of its own: requiring a mention on every line there would
+	// break the back-and-forth — and drive the user back to the channel, where a
+	// fresh mention spawns a *new* thread and a new session, losing the context.
+	// So the gate applies to plain channels and to threads the agent has not yet
+	// engaged, never to a live thread.
+	mentioned, stripped := d.stripMention(m, text)
+	if mentioned {
 		text = stripped
-		if text == "" {
-			// A bare mention with nothing after it. Prompting for a request is
-			// friendlier than sending an empty one to the agent.
+	}
+	if agent.RequireMention && !mentioned && !d.conversationLive(ctx, agent.ID, conversationID) {
+		return
+	}
+	if text == "" {
+		// A bare mention with nothing after it. Prompting is friendlier than
+		// sending an empty request to the agent.
+		if mentioned {
 			d.reply(m.ChannelID, "👋 What would you like me to do?")
-			return
 		}
+		return
 	}
 
 	prompt, err := d.attachFiles(ctx, agent.ID, text, m.Attachments)
@@ -394,6 +401,23 @@ func (d *Discord) showTyping(channelID, agentID string, turnID int64) {
 			}
 		}
 	}
+}
+
+// conversationLive reports whether the agent already has a turn in this
+// conversation — an ongoing thread rather than a plain channel or an untouched
+// one. Such a conversation continues without a fresh mention. The turn row is
+// written at submit time, so the reply-in-thread agent's own first turn already
+// marks the thread live for the user's next line.
+func (d *Discord) conversationLive(ctx context.Context, agentID, conversationID string) bool {
+	if conversationID == "" {
+		return false
+	}
+	st, err := d.disp.Store(ctx, agentID)
+	if err != nil {
+		return false
+	}
+	turns, err := st.RecentTurnsIn(ctx, conversationID, 1)
+	return err == nil && len(turns) > 0
 }
 
 // startThread spins a Discord thread off a message so a reply-in-thread agent's

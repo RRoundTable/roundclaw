@@ -120,13 +120,12 @@ func run(configPath string, log *slog.Logger) error {
 			log.Info("routing enabled for unbound channels",
 				"model", cfg.Router.Model, "channels", len(cfg.Router.Channels))
 		}
-		if cfg.Discord.AdminChannel != "" {
-			// The admin planner runs the same kind of credentialed --json-schema
-			// call as the router.
-			cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
-			if err != nil {
-				return fmt.Errorf("discord.admin_channel is set but %w", err)
-			}
+		// Natural-language admin powers both the /admin command and the optional
+		// admin channel. It runs the same kind of credentialed --json-schema call
+		// as the router, so it needs a credential — the one the agents use.
+		if cred, err := cfg.Container.ResolveCredential(os.LookupEnv); err != nil {
+			log.Warn("natural-language admin disabled: no credential", "error", err)
+		} else {
 			dc.SetAdmin(&claude.Admin{
 				Runtime:         cfg.Container.Runtime,
 				Image:           cfg.Container.Image,
@@ -136,7 +135,8 @@ func run(configPath string, log *slog.Logger) error {
 				CredentialValue: cred.Value,
 				Bare:            cfg.Container.IsAPIKey(cred),
 			}, cfg.Discord.AdminChannel)
-			log.Info("natural-language admin enabled", "channel", cfg.Discord.AdminChannel)
+			log.Info("natural-language admin enabled",
+				"slash_command", true, "admin_channel", cfg.Discord.AdminChannel)
 		}
 		if err := dc.Start(ctx); err != nil {
 			return err

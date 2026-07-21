@@ -149,6 +149,20 @@ func (d *Discord) registerCommands() error {
 			Description: "List the agents you can call and what each one is for",
 		},
 		{
+			// Natural-language management: "create an agent called pr-bot",
+			// "schedule dev to report at 9am". roundclaw validates and applies it.
+			Name:        "admin",
+			Description: "Manage roundclaw in natural language (create agents, schedules)",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "request",
+					Description: "What to do — e.g. create an agent called pr-bot for reviews",
+					Required:    true,
+				},
+			},
+		},
+		{
 			// Management. Creating and editing open a form rather than taking
 			// flat options: an agent has more fields than a slash command reads
 			// comfortably, and tools and channels are free text.
@@ -456,32 +470,52 @@ func (d *Discord) handleAdmin(m *discordgo.MessageCreate, text string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	_ = d.session.ChannelTyping(m.ChannelID)
+	d.reply(m.ChannelID, d.runAdmin(ctx, text, m.ChannelID))
+}
 
+// handleAdminCommand is the /admin slash command: the same natural-language
+// management as the admin channel, usable from anywhere without dedicating a
+// channel to it. Permission-gated like the other management commands.
+func (d *Discord) handleAdminCommand(i *discordgo.InteractionCreate, request string) {
+	if d.admin == nil {
+		d.respondNow(i, "⚠️ Natural-language admin is not configured (no credential).")
+		return
+	}
+	if strings.TrimSpace(request) == "" {
+		d.respondNow(i, "⚠️ Tell me what to do, e.g. `create an agent called pr-bot`.")
+		return
+	}
+	d.defer_(i)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	d.followUp(i, d.runAdmin(ctx, request, i.ChannelID))
+}
+
+// runAdmin plans and executes one management request, returning the result text.
+// Shared by the admin channel and the /admin command.
+func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID string) string {
 	agents, err := d.disp.Registry().List(ctx)
 	if err != nil {
-		d.reply(m.ChannelID, "⚠️ Could not read the registry: "+err.Error())
-		return
+		return "⚠️ Could not read the registry: " + err.Error()
 	}
 	summaries := make([]claude.AgentSummary, 0, len(agents))
 	for _, a := range agents {
 		summaries = append(summaries, claude.AgentSummary{ID: a.ID, Description: a.Description})
 	}
 
-	action, err := d.admin.Plan(ctx, text, claude.AdminContext{
+	action, err := d.admin.Plan(ctx, request, claude.AdminContext{
 		Agents:           summaries,
-		CurrentChannelID: m.ChannelID,
+		CurrentChannelID: currentChannelID,
 	})
 	if err != nil {
-		d.log.Warn("admin planning failed", "channel", m.ChannelID, "error", err)
-		d.reply(m.ChannelID, "⚠️ I could not work out what to do: "+err.Error())
-		return
+		d.log.Warn("admin planning failed", "channel", currentChannelID, "error", err)
+		return "⚠️ I could not work out what to do: " + err.Error()
 	}
 	result, err := d.disp.ExecuteAdmin(ctx, action)
 	if err != nil {
-		d.reply(m.ChannelID, "⚠️ "+err.Error())
-		return
+		return "⚠️ " + err.Error()
 	}
-	d.reply(m.ChannelID, result)
+	return result
 }
 
 // startThread spins a Discord thread off a message so a reply-in-thread agent's
@@ -649,6 +683,11 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	// is exactly where someone is trying to find out what to call.
 	if data.Name == "agents" {
 		d.handleAgents(i)
+		return
+	}
+
+	if data.Name == "admin" {
+		d.handleAdminCommand(i, optionString(data.Options, "request"))
 		return
 	}
 

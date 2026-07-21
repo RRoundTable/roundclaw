@@ -73,6 +73,11 @@ type ContainerConfig struct {
 
 type DiscordConfig struct {
 	TokenEnv string `yaml:"token_env"`
+	// AdminChannel is a Discord channel where messages manage roundclaw itself
+	// in natural language — creating agents and schedules — rather than running
+	// an agent turn. Empty disables it. Give it a private channel: a message here
+	// can create or reconfigure agents.
+	AdminChannel string `yaml:"admin_channel"`
 	// GuildID scopes slash-command registration. Empty registers globally,
 	// which Discord propagates slowly; set it during development.
 	GuildID string `yaml:"guild_id"`

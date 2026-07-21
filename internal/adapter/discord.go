@@ -28,11 +28,22 @@ type Discord struct {
 	// channels are then simply ignored.
 	router *claude.Router
 
+	// admin turns natural-language management requests in adminChannel into
+	// registry changes. Nil (and adminChannel empty) when not configured.
+	admin        *claude.Admin
+	adminChannel string
+
 	registered []*discordgo.ApplicationCommand
 }
 
 // SetRouter enables routing of messages in channels bound to no agent.
 func (d *Discord) SetRouter(r *claude.Router) { d.router = r }
+
+// SetAdmin enables natural-language management in channelID.
+func (d *Discord) SetAdmin(a *claude.Admin, channelID string) {
+	d.admin = a
+	d.adminChannel = channelID
+}
 
 // NewDiscord builds the adapter. token is the bot token; guildID scopes slash
 // command registration (empty registers globally, which Discord propagates
@@ -297,6 +308,13 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// agent's default conversation.
 	agentChannel, conversationID := d.conversation(m.ChannelID)
 
+	// The admin channel is not a normal agent: a message here manages roundclaw
+	// itself, in natural language, rather than running a turn.
+	if d.admin != nil && agentChannel == d.adminChannel {
+		go d.handleAdmin(m, text)
+		return
+	}
+
 	agent, err := d.disp.Registry().ByChannel(ctx, agentChannel)
 	if err != nil {
 		// No binding. Either the router picks an agent, or the message is not
@@ -418,6 +436,52 @@ func (d *Discord) conversationLive(ctx context.Context, agentID, conversationID 
 	}
 	turns, err := st.RecentTurnsIn(ctx, conversationID, 1)
 	return err == nil && len(turns) > 0
+}
+
+// handleAdmin turns a natural-language management message into a registry
+// change. It runs its own credentialed planner (like the router) to propose a
+// structured action, then roundclaw validates and executes it — the LLM never
+// touches the API or a token. Runs in its own goroutine: it makes an LLM call
+// and must not block Discord's event loop.
+func (d *Discord) handleAdmin(m *discordgo.MessageCreate, text string) {
+	// A leading mention is stripped so "@bot create an agent…" and "create an
+	// agent…" read the same; a mention is not required in the admin channel.
+	if _, stripped := d.stripMention(m, text); stripped != "" {
+		text = stripped
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	_ = d.session.ChannelTyping(m.ChannelID)
+
+	agents, err := d.disp.Registry().List(ctx)
+	if err != nil {
+		d.reply(m.ChannelID, "⚠️ Could not read the registry: "+err.Error())
+		return
+	}
+	summaries := make([]claude.AgentSummary, 0, len(agents))
+	for _, a := range agents {
+		summaries = append(summaries, claude.AgentSummary{ID: a.ID, Description: a.Description})
+	}
+
+	action, err := d.admin.Plan(ctx, text, claude.AdminContext{
+		Agents:           summaries,
+		CurrentChannelID: m.ChannelID,
+	})
+	if err != nil {
+		d.log.Warn("admin planning failed", "channel", m.ChannelID, "error", err)
+		d.reply(m.ChannelID, "⚠️ I could not work out what to do: "+err.Error())
+		return
+	}
+	result, err := d.disp.ExecuteAdmin(ctx, action)
+	if err != nil {
+		d.reply(m.ChannelID, "⚠️ "+err.Error())
+		return
+	}
+	d.reply(m.ChannelID, result)
 }
 
 // startThread spins a Discord thread off a message so a reply-in-thread agent's

@@ -47,6 +47,13 @@ container:
 
 discord:
   token_env: DISCORD_TOKEN
+  # A channel where messages manage roundclaw itself in natural language —
+  # "create an agent called pr-bot", "schedule dev to report at 9am" — instead
+  # of running an agent turn. The message is turned into a structured action and
+  # roundclaw validates and applies it; the model never holds a token. Give it a
+  # PRIVATE channel: a message here can create or reconfigure agents. Empty
+  # disables it. Uses the router's model/credential.
+  admin_channel: ""
   # Scopes slash-command registration. Empty registers globally, which Discord
   # propagates slowly — set it during development.
   guild_id: ""

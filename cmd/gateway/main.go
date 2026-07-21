@@ -120,6 +120,24 @@ func run(configPath string, log *slog.Logger) error {
 			log.Info("routing enabled for unbound channels",
 				"model", cfg.Router.Model, "channels", len(cfg.Router.Channels))
 		}
+		if cfg.Discord.AdminChannel != "" {
+			// The admin planner runs the same kind of credentialed --json-schema
+			// call as the router.
+			cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
+			if err != nil {
+				return fmt.Errorf("discord.admin_channel is set but %w", err)
+			}
+			dc.SetAdmin(&claude.Admin{
+				Runtime:         cfg.Container.Runtime,
+				Image:           cfg.Container.Image,
+				Model:           cfg.Router.Model,
+				Timeout:         cfg.Router.Timeout,
+				CredentialEnv:   cred.EnvName,
+				CredentialValue: cred.Value,
+				Bare:            cfg.Container.IsAPIKey(cred),
+			}, cfg.Discord.AdminChannel)
+			log.Info("natural-language admin enabled", "channel", cfg.Discord.AdminChannel)
+		}
 		if err := dc.Start(ctx); err != nil {
 			return err
 		}

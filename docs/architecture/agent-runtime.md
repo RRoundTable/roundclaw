@@ -1,0 +1,114 @@
+# Agent runtime
+
+An agent turn is one `claude` process inside one container. roundclaw ships no
+code into that container and does not use the Agent SDK — it drives everything
+through argv and stream-json on stdout.
+
+## Session identity
+
+```go
+sessionNamespace = 6f0a1c2e-9d4b-5a7f-8c31-0b2d4e6f8a10   // fixed forever
+SessionID(workflowID) = uuid.NewSHA1(sessionNamespace, workflowID)
+```
+
+This is the load-bearing trick of the design. Because the session UUID is a pure
+function of the workflow ID, a retried activity — or one picked up by a
+different worker after a crash — reconnects to the same Claude session. Nothing
+has to capture a session ID from process output and persist it, so there is no
+window in which that write can be lost.
+
+Consequences:
+
+- `sessionNamespace` and `contract.WorkflowID`'s format can never change.
+  Either would orphan every existing session.
+- Whether to pass `--session-id` (create) or `--resume` (continue) is decided by
+  `sessionReady` — *observed* session establishment, not turn count. An early
+  failure once wedged an agent permanently because `turnCount > 0` claimed a
+  session existed that never had.
+
+## Container invocation
+
+`internal/claude/args.go` builds the argv:
+
+```
+docker run --rm --name roundclaw-<agent>-<turn>
+  --workdir /workspace
+  -v <agent>/work:/workspace
+  -v <agent>/claude-home:/home/node/.claude
+  -e CLAUDE_CODE_OAUTH_TOKEN            # by name, never by value
+  [-v /dev/null:<denied path>:ro] ...
+  [-v <dir>:/mnt/<base>:ro] ...
+  <image> claude -p "<prompt>"
+    (--session-id <uuid> | --resume <uuid>)
+    --output-format stream-json --verbose
+    [--agent NAME] [--permission-mode MODE]
+    [--allowedTools a,b,c] [--add-dir /mnt/x] ...
+```
+
+Details that are load-bearing rather than stylistic:
+
+- **The prompt sits immediately after `-p`.** `--allowedTools` is variadic; a
+  prompt after it is swallowed and `claude` exits with "Input must be provided",
+  having never seen the request.
+- **Credentials pass by name (`-e NAME`), not value**, so the secret appears
+  neither in the process table nor in a Temporal history event.
+- **`--verbose` is required** for stream-json to emit anything before the final
+  result. `--include-partial-messages` is deliberately omitted: a token-level
+  delta per event would turn one turn into thousands of SQLite inserts.
+- **Deny paths are `/dev/null` mounts** layered over the workspace mount. Docker
+  orders nested mounts by path depth, so listing them after is enough;
+  `/dev/null` is read-only and reads as empty. `ValidateDenyPath` rejects
+  escapes.
+- **The container name is deterministic** (`agent` + `turn`), and
+  `RemoveArgs` force-removes a leftover before a retry. That is what makes
+  reusing the name safe after a crash.
+- **Stopping is explicit**: `SIGINT`, wait `container.stop_grace`, then
+  `SIGKILL`.
+
+## Streaming
+
+`internal/claude/stream.go` decodes stream-json into `core.LogKind` values:
+text, tool use, tool result, API retry, system, and `rate_limit` — the last
+added after the real CLI began emitting `rate_limit_event` per turn and the raw
+JSON leaked into `/status`. An unrecognised event becomes `KindOther` and is
+preserved verbatim, so a newer CLI cannot silently drop information.
+
+## Workspaces and conversation isolation
+
+`internal/temporal/activity/workspace.go`. Conversations run in parallel, so
+they cannot share a working tree.
+
+| Agent's workspace | A conversation gets |
+|-------------------|---------------------|
+| managed directory (`work_dir` empty) | its own subdirectory — it starts empty anyway |
+| a git repository | `git worktree add --detach` |
+| a non-repo `work_dir` | refused, unless `share_workspace` is set on the agent |
+
+The worktree is **detached** on purpose: a worktree checked out on a branch
+locks that branch, so two conversations — or a person working in the original
+checkout — would fight over it.
+
+Removal goes through `git worktree remove`, not `rm -rf`, or the repository
+keeps an administrative entry pointing at a directory that no longer exists. It
+is never automatic: a quiet thread usually still has uncommitted work in it.
+
+The **default conversation** always uses the agent's workspace directly. It is
+what `/ask`, schedules and webhooks share, and it is what existed before
+conversations did.
+
+## Authentication
+
+`container.oauth_token_env` (from `claude setup-token`) wins over
+`container.api_key_env`. Reusing `~/.claude/.credentials.json` would be a
+mistake: those credentials belong to an interactive session, and a container
+refreshing them can rotate the refresh token out from under the human still
+using it.
+
+## The image
+
+`container/Dockerfile`: `node:22-slim` + `git`, `ca-certificates`, `ripgrep`,
+and `npm install -g @anthropic-ai/claude-code`. Nothing else.
+
+`container/fake/claude` is a scripted stand-in used by CI to assert the argument
+order the real CLI requires — the `-p` positioning bug above was invisible until
+an agent had tools configured, so the ordering is now a test.

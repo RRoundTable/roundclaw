@@ -54,6 +54,9 @@ window in which that write can be lost.
 The turn itself is retried from the start; the *conversation* survives, the
 interrupted turn's unfinished work does not.
 
+**Using it** — how to send an agent work from Discord or the API, watch it,
+steer or stop it, and schedule runs — is in [docs/usage.md](docs/usage.md).
+
 Full architecture documentation — layer by layer, with import rules and the
 constraints that are easy to break — is in [docs/architecture/](docs/architecture/README.md).
 

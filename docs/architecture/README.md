@@ -6,7 +6,8 @@ as `claude -p --output-format stream-json` inside a container that holds nothing
 but the `claude` binary.
 
 This document describes what the code does today. Layer detail lives in the
-files listed under [Layer index](#layer-index).
+files listed under [Layer index](#layer-index). For how to *use* an agent from
+Discord or the API rather than how it is built, see [../usage.md](../usage.md).
 
 ## System overview
 

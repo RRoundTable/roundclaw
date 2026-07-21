@@ -67,8 +67,10 @@ Details that are load-bearing rather than stylistic:
 
 ## Native subagents
 
-`--agent NAME` runs the whole session under one of Claude's own subagent
-personas. roundclaw's involvement is a single argv flag:
+`--agent NAME`. **This is Claude Code's own subagent feature — the same `.claude/agents/*.md`
+personas you would use from the CLI directly.** roundclaw does not wrap it,
+reimplement it, or invent a subagent system of its own; it uses the CLI's as-is.
+Its entire involvement is a single argv flag:
 
 ```go
 if s.AgentName != "" {
@@ -77,24 +79,37 @@ if s.AgentName != "" {
 ```
 
 The name comes from the agent's `agent_name` field in `registry.db`. That is the
-entire integration — and the boundary is deliberate:
+whole integration, and the boundary is deliberate:
 
-- **roundclaw does not define subagents.** It passes a *name*, never a
+- **roundclaw does not define the subagent.** It passes a *name*, never a
   definition. The persona must already exist where the CLI looks for it (the
   mounted `claude-home` or the workspace's `.claude/`). roundclaw never writes
   those files, so `--agents` JSON is not passed either.
-- **roundclaw does not track their history.** A native subagent's transcript
-  lives inside the Claude session, which `--resume` already restores. There is
-  nothing for roundclaw to persist.
-- **Temporal never sees them.** The `SubAgent` *workflow* (whose name is an
-  unrelated coincidence — see [orchestration.md](orchestration.md)) drives the
-  container; what persona runs inside it is opaque to the workflow. Selecting a
-  different `agent_name` changes no orchestration behaviour, only the argv of the
-  next turn.
+- **roundclaw does not track its history.** A native subagent's transcript lives
+  inside the Claude session, which `--resume` already restores. There is nothing
+  for roundclaw to persist.
 
-The one-line integration is the point: native subagents already do definition,
-history and resumption correctly, so reimplementing any of it would only add a
-way to disagree with the CLI.
+Native subagents already do definition, history and resumption correctly, so
+reimplementing any of it would only add a way to disagree with the CLI.
+
+### Relationship to Temporal: none
+
+A native subagent lives **entirely below the Temporal boundary.** It exists only
+as argv handed to the `claude` process that `RunClaudeTurn` starts inside the
+agent container. The `SubAgent` *workflow* — which drives that activity and does
+own queue, signals and Continue-As-New ([orchestration.md](orchestration.md)) —
+never learns which persona is running, and does not need to:
+
+| | Native subagent (`--agent NAME`) | `SubAgent` workflow |
+|---|---|---|
+| What it is | a Claude Code persona | a Temporal execution |
+| Where it runs | inside the activity's container | in the worker, as workflow code |
+| Owned by | the CLI | Temporal |
+| Named "subagent" because | it is one | historical coincidence |
+
+So changing `agent_name` changes only the argv of the next turn — the queue, the
+session identity, cancellation, retries and Continue-As-New are all unaffected.
+The name collision between the two is exactly that: a collision, not a link.
 
 ## Streaming
 

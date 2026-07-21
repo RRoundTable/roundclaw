@@ -60,6 +60,11 @@ type ContainerConfig struct {
 	// them can rotate the refresh token out from under the human still using
 	// it. `claude setup-token` exists precisely to avoid that.
 	OAuthTokenEnv string `yaml:"oauth_token_env"`
+	// SecretsKeyEnv names the host env var holding the master key that encrypts
+	// registered agent secrets at rest. Empty (the default env var unset)
+	// disables the secret store: agents that use no secrets are unaffected, and
+	// any attempt to register one fails closed rather than storing plaintext.
+	SecretsKeyEnv string `yaml:"secrets_key_env"`
 	// TurnTimeout bounds a single agent turn end to end.
 	TurnTimeout time.Duration `yaml:"turn_timeout"`
 	// StopGrace is how long SIGINT gets before SIGKILL when a turn is cancelled.
@@ -317,6 +322,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Container.OAuthTokenEnv == "" {
 		c.Container.OAuthTokenEnv = "CLAUDE_CODE_OAUTH_TOKEN"
+	}
+	if c.Container.SecretsKeyEnv == "" {
+		c.Container.SecretsKeyEnv = "ROUNDCLAW_SECRET_KEY"
 	}
 	if c.Container.TurnTimeout == 0 {
 		c.Container.TurnTimeout = 30 * time.Minute

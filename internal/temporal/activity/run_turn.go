@@ -143,6 +143,16 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		return core.TurnResult{}, err
 	}
 
+	// Registered secrets to inject as container env vars. Nil when no master key
+	// is configured, so an agent that uses none is unaffected. The credential is
+	// injected separately and must win, so a same-named secret is dropped rather
+	// than allowed to shadow it.
+	secrets, err := a.reg.SecretsForAgent(ctx, in.AgentID)
+	if err != nil {
+		return core.TurnResult{}, fmt.Errorf("load secrets for %s: %w", in.AgentID, err)
+	}
+	delete(secrets, cred.EnvName)
+
 	spec := claude.RunSpec{
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           a.cfg.Container.Image,
@@ -158,6 +168,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		AgentName:       agentCfg.AgentName,
 		PermissionMode:  agentCfg.PermissionMode,
 		AllowedTools:    agentCfg.AllowedTools,
+		Secrets:         secrets,
 		Prompt:          in.Prompt,
 	}
 
@@ -221,7 +232,13 @@ func (a *Activities) stream(
 	// runtime client and orphan the container. Shutdown is handled explicitly
 	// below so `claude` gets a chance to flush its session transcript.
 	cmd := exec.Command(spec.Runtime, args...)
+	// The credential and every registered secret are set here, on the subprocess
+	// environment, and referenced by name in argv — so no value appears in the
+	// process table or a Temporal history event.
 	cmd.Env = append(os.Environ(), spec.CredentialEnv+"="+spec.CredentialValue)
+	for name, value := range spec.Secrets {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -95,6 +95,53 @@ func TestArgsPassesAPIKeyByNameNotValue(t *testing.T) {
 	}
 }
 
+func TestArgsInjectsSecretsByNameNotValue(t *testing.T) {
+	s := baseSpec()
+	s.Secrets = map[string]string{"GITHUB_TOKEN": "ghp_secret", "STRIPE_KEY": "sk_live_secret"}
+	args, err := s.Args()
+	if err != nil {
+		t.Fatalf("args: %v", err)
+	}
+	for _, a := range args {
+		if strings.Contains(a, "ghp_secret") || strings.Contains(a, "sk_live_secret") {
+			t.Fatalf("secret value leaked into argv: %v", args)
+		}
+	}
+	if !hasPair(args, "-e", "GITHUB_TOKEN") || !hasPair(args, "-e", "STRIPE_KEY") {
+		t.Errorf("secrets must be passed by name, got %v", args)
+	}
+	// Deterministic order: sorted, so the fake-CLI argv check and any
+	// reproducibility comparison are stable.
+	gh, stripe := indexOfPair(args, "-e", "GITHUB_TOKEN"), indexOfPair(args, "-e", "STRIPE_KEY")
+	if gh < 0 || stripe < 0 || gh > stripe {
+		t.Errorf("secret env flags are not in sorted order, got %v", args)
+	}
+	// The credential must still win over any same-named secret: its -e comes
+	// first (secrets are appended after), and the activity also filters the
+	// collision. Here just assert secrets land before the image/prompt.
+	if img := indexOf(args, s.Image); img >= 0 && gh > img {
+		t.Errorf("secret env flags must precede the image, got %v", args)
+	}
+}
+
+func indexOf(args []string, want string) int {
+	for i, a := range args {
+		if a == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func indexOfPair(args []string, flag, val string) int {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == val {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestArgsAdditionalDirsAreReadOnlyAndAdvertised(t *testing.T) {
 	s := baseSpec()
 	s.AdditionalDirs = []string{"/srv/shared/docs"}

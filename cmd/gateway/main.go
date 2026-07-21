@@ -64,6 +64,17 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	defer reg.Close()
 
+	// The gateway encrypts secrets as they are registered through the API, so it
+	// needs the same master key as the worker. Without one, the secret endpoints
+	// fail closed rather than storing plaintext.
+	if enabled, err := reg.EnableSecretsFromEnv(cfg.Container.SecretsKeyEnv); err != nil {
+		return err
+	} else if enabled {
+		log.Info("secret store enabled", "key_env", cfg.Container.SecretsKeyEnv)
+	} else {
+		log.Info("secret store disabled; master key unset", "key_env", cfg.Container.SecretsKeyEnv)
+	}
+
 	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
 	if err != nil {
 		return err

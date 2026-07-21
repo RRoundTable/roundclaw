@@ -33,6 +33,11 @@ container:
   # token out from under the human still using it.
   oauth_token_env: CLAUDE_CODE_OAUTH_TOKEN
   api_key_env: ANTHROPIC_API_KEY
+  # Names the env var holding the master key that encrypts registered agent
+  # secrets at rest (see `roundclaw secret` / the /v1/secrets API). Leave the
+  # variable unset to keep the secret store off; agents that use no secrets are
+  # unaffected. Use a strong random value: `openssl rand -base64 32`.
+  secrets_key_env: ROUNDCLAW_SECRET_KEY
   # Bounds a single agent turn end to end.
   turn_timeout: 30m
   # How long SIGINT gets before SIGKILL when a turn is cancelled. `claude`

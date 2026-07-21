@@ -13,6 +13,7 @@ package registry
 
 import (
 	"context"
+	"crypto/cipher"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -147,7 +148,12 @@ func (a Agent) Label() string {
 }
 
 // Store is the registry database.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+	// aead encrypts and decrypts secret values. Nil until UseSecretKey is
+	// called, and secret operations fail closed while it is.
+	aead cipher.AEAD
+}
 
 // Open opens (and creates) the registry at path.
 func Open(path string) (*Store, error) {
@@ -164,7 +170,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open registry %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := applySchema(db, schema+scheduleSchema); err != nil {
+	if err := applySchema(db, schema+scheduleSchema+secretSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply registry schema: %w", err)
 	}

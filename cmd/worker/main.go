@@ -59,6 +59,17 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	defer reg.Close()
 
+	// The worker decrypts registered secrets to inject them into agent
+	// containers, so it needs the master key. Without one, the secret store stays
+	// off and agents that use no secrets run exactly as before.
+	if enabled, err := reg.EnableSecretsFromEnv(cfg.Container.SecretsKeyEnv); err != nil {
+		return err
+	} else if enabled {
+		log.Info("secret store enabled", "key_env", cfg.Container.SecretsKeyEnv)
+	} else {
+		log.Info("secret store disabled; master key unset", "key_env", cfg.Container.SecretsKeyEnv)
+	}
+
 	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
 	if err != nil {
 		return err

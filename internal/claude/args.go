@@ -3,8 +3,20 @@ package claude
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+// sortedKeys returns a map's keys in a stable order, so argv built from a map
+// is deterministic.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // Container-side paths. roundclaw ships no code into the image, so these are
 // the only two things it needs the image to agree about.
@@ -55,6 +67,13 @@ type RunSpec struct {
 	// either credential and picks by variable name.
 	CredentialEnv   string
 	CredentialValue string
+
+	// Secrets are extra environment variables the agent's container should
+	// receive — a GITHUB_TOKEN, a tool's API key. Like the credential they pass
+	// by name (-e NAME): Args emits only the names, and the caller sets the
+	// values on the runtime subprocess's environment, so no value reaches argv,
+	// the process table, or a Temporal history event.
+	Secrets map[string]string
 
 	// SessionID is derived from the workflow ID. Resume selects which flag
 	// carries it: --session-id creates a session, --resume continues one, and
@@ -155,6 +174,14 @@ func (s RunSpec) Args() ([]string, error) {
 		mount := filepath.Join("/mnt", filepath.Base(d))
 		args = append(args, "-v", d+":"+mount+":ro")
 		addDirs = append(addDirs, mount)
+	}
+
+	// Secret env vars, by name only. Sorted so the argv is deterministic — the
+	// fake-CLI test asserts argument order, and a stable order also makes a
+	// container's command reproducible. Placed after the credential's -e so a
+	// secret can never shadow it (the activity also filters that collision).
+	for _, name := range sortedKeys(s.Secrets) {
+		args = append(args, "-e", name)
 	}
 
 	// The prompt goes immediately after -p, before any flag.

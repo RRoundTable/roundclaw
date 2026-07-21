@@ -14,13 +14,24 @@ SQLite on its own.
 |--------|------|
 | `SubmitIn(ctx, agentID, conversationID, text, origin, idempotencyKey)` | check limits → insert the `turns` row → `SignalWithStartWorkflow(enqueue)` |
 | `SteerIn(...)` | same, with the `steer` signal — jumps the queue and interrupts the running turn |
-| `StopIn(ctx, agentID, conversationID, reason)` | `SignalWorkflow(stop)` |
+| `StopIn(ctx, agentID, conversationID, reason)` | `SignalWorkflow(stop)` for one conversation |
+| `StopAll(ctx, agentID, reason)` | `stop` to every conversation the agent has (below) |
 | `Status(ctx, agentID, tail)` | SQLite only: `agent_runtime` + last N `live_logs` |
 | `Workflow(ctx, agentID)` | `DescribeWorkflowExecution` — alive, waiting, retrying, or absent |
 | `Budget(ctx, agentID)` | turns this hour, cost today, against configured limits |
 
-`Submit`/`Steer`/`Stop` are thin wrappers that pass an empty conversation ID,
-i.e. the agent's default conversation.
+`Submit`/`Steer` are thin wrappers that pass an empty conversation ID, i.e. the
+agent's default conversation.
+
+**`StopAll` — used by disable and delete.** Stopping only the default
+conversation would leave every Discord thread's turn running; after a delete
+they would then fail one turn at a time once the definition is gone. `StopAll`
+enumerates the agent's conversations from its own `state.db`
+(`SELECT DISTINCT conversation FROM turns`, always including the default) and
+signals `stop` to each. It reads stored identity rather than matching workflow-ID
+prefixes on purpose: the agent/conversation separator `-` is also legal inside an
+agent ID, so a prefix of agent `foo` would also match agent `foo-bar`. A signal
+to an already-idle conversation is expected and logged, never fatal.
 
 The turn row is written **before** the signal, in the same transaction that
 claims the idempotency key. That ordering is what lets the HTTP API return a

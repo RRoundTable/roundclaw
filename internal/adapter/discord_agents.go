@@ -277,12 +277,13 @@ func (d *Discord) setAgentEnabled(i *discordgo.InteractionCreate, agentID string
 	}
 
 	if !enabled {
-		// Disabling only blocks new requests; without this the turn already
-		// running would carry on, which is not what "disable" looks like.
-		if err := d.disp.Stop(ctx, agentID, "agent disabled"); err != nil {
+		// Disabling only blocks new requests; without this the turns already
+		// running — the default conversation and every thread — would carry on,
+		// which is not what "disable" looks like.
+		if err := d.disp.StopAll(ctx, agentID, "agent disabled"); err != nil {
 			d.log.Info("could not stop a disabled agent", "agent", agentID, "error", err)
 		}
-		d.followUp(i, "⏸️ `"+agentID+"` disabled. New requests are refused and the current turn is stopped; its conversation is kept.")
+		d.followUp(i, "⏸️ `"+agentID+"` disabled. New requests are refused and every running turn is stopped; conversations are kept.")
 		return
 	}
 	d.followUp(i, "▶️ `"+agentID+"` enabled — it picks up its existing conversation.")
@@ -293,9 +294,10 @@ func (d *Discord) deleteAgent(i *discordgo.InteractionCreate, agentID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Stop first, or work already queued would run on and fail one turn at a
-	// time once its definition is gone.
-	if err := d.disp.Stop(ctx, agentID, "agent deleted"); err != nil {
+	// Stop every conversation first, or work already queued — in the default
+	// session or any thread — would run on and fail one turn at a time once the
+	// definition is gone.
+	if err := d.disp.StopAll(ctx, agentID, "agent deleted"); err != nil {
 		d.log.Info("could not stop agent before deleting it", "agent", agentID, "error", err)
 	}
 	if err := d.disp.Registry().Delete(ctx, agentID); err != nil {

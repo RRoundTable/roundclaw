@@ -4,9 +4,15 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"testing"
 
+	"github.com/roundtable/roundclaw/internal/config"
+	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/registry"
+	"github.com/roundtable/roundclaw/internal/store"
+	rcworkflow "github.com/roundtable/roundclaw/internal/temporal/workflow"
 )
 
 func testRegistry(t *testing.T) *registry.Store {
@@ -75,6 +81,81 @@ func TestResolveAgentRejectsUnknownAndUnbound(t *testing.T) {
 	}
 	if _, err := ResolveAgent(t.Context(), reg, "", "chan-unbound"); !errors.Is(err, ErrUnknownAgent) {
 		t.Errorf("unbound channel with no explicit target: err = %v, want ErrUnknownAgent", err)
+	}
+}
+
+func newStores(t *testing.T) *store.Registry {
+	t.Helper()
+	dir := t.TempDir()
+	stores := store.NewRegistry(store.ReadWrite, func(agentID string) string {
+		return filepath.Join(dir, agentID, "state.db")
+	})
+	t.Cleanup(func() { stores.Close() })
+	return stores
+}
+
+// Disable and delete must stop every conversation the agent runs, not just the
+// default one — otherwise a thread's turn keeps running after the agent is gone.
+// The set is read from the agent's own state.db, so a '-' in either the agent ID
+// or a thread ID can never make one agent's stop leak into another's.
+func TestStopAllStopsEveryConversation(t *testing.T) {
+	reg := testRegistry(t)
+	stores := newStores(t)
+
+	st, err := stores.Get("pr-reviewer")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, conv := range []string{"", "thread-a", "thread-b"} {
+		if _, _, err := st.CreateTurn(t.Context(), store.NewTurn{
+			Request: "hi", Origin: core.HTTPPollOrigin(), Conversation: conv,
+		}); err != nil {
+			t.Fatalf("create turn in %q: %v", conv, err)
+		}
+	}
+
+	tc := &fakeTemporal{}
+	disp := NewDispatcher(&config.Config{}, tc, stores, reg)
+
+	if err := disp.StopAll(t.Context(), "pr-reviewer", "test"); err != nil {
+		t.Fatalf("stop all: %v", err)
+	}
+
+	got := tc.signaledWorkflows()
+	want := []string{
+		"roundclaw-agent-pr-reviewer",
+		"roundclaw-conv-pr-reviewer-thread-a",
+		"roundclaw-conv-pr-reviewer-thread-b",
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("StopAll signalled %v, want %v", got, want)
+	}
+	for _, s := range tc.sent() {
+		if s != rcworkflow.SignalStop {
+			t.Errorf("StopAll sent %q, want only stop signals", s)
+		}
+	}
+}
+
+// An agent that has never taken a turn has no state.db rows, but the default
+// conversation must still be stopped — StopAll must never be weaker than the
+// single-conversation stop it replaced.
+func TestStopAllAlwaysStopsTheDefault(t *testing.T) {
+	reg := testRegistry(t)
+	stores := newStores(t)
+
+	tc := &fakeTemporal{}
+	disp := NewDispatcher(&config.Config{}, tc, stores, reg)
+
+	if err := disp.StopAll(t.Context(), "ops-helper", "test"); err != nil {
+		t.Fatalf("stop all: %v", err)
+	}
+
+	got := tc.signaledWorkflows()
+	if len(got) != 1 || got[0] != "roundclaw-agent-ops-helper" {
+		t.Errorf("StopAll on a never-run agent signalled %v, want just the default", got)
 	}
 }
 

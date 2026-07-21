@@ -90,12 +90,13 @@ func (h *HTTP) putAgentDefinition(w http.ResponseWriter, r *http.Request) {
 func (h *HTTP) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("agent")
 
-	// Stop before deleting, not after. The agent's workflow outlives its
-	// definition, so anything still queued would otherwise run on and fail one
-	// turn at a time with "unknown agent" — noisy, and it would deliver a
-	// string of errors to whoever asked. Best-effort: a never-started agent has
-	// no workflow to stop, and that must not block the delete.
-	if err := h.disp.Stop(r.Context(), id, "agent deleted"); err != nil {
+	// Stop every conversation before deleting, not after. The agent's workflows
+	// outlive its definition, so anything still queued — in the default session
+	// or any thread — would otherwise run on and fail one turn at a time with
+	// "unknown agent": noisy, and it would deliver a string of errors to whoever
+	// asked. Best-effort: a never-started agent has no workflow to stop, and that
+	// must not block the delete.
+	if err := h.disp.StopAll(r.Context(), id, "agent deleted"); err != nil {
 		h.log.Info("could not stop agent before deleting it", "agent", id, "error", err)
 	}
 

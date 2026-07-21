@@ -279,6 +279,33 @@ func (s *Store) RecentTurnsIn(ctx context.Context, conversation string, limit in
 	return scanTurns(rows)
 }
 
+// Conversations returns every conversation this agent has ever run a turn for,
+// including the default one (reported as the empty string). It is the source of
+// truth for "which conversations does this agent have", read straight from the
+// agent's own state.db just like /status — no Temporal round-trip and no
+// parsing of workflow IDs, both of which would be fragile.
+//
+// A brand-new agent that has never taken a turn returns nothing, which is
+// correct: there is nothing to stop.
+func (s *Store) Conversations(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT conversation FROM turns ORDER BY conversation`)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, fmt.Errorf("scan conversation: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // AppendLog writes one live-log line. This is on the hot path — the activity
 // calls it for every stream-json event — so it stays a single INSERT.
 func (s *Store) AppendLog(ctx context.Context, turnID int64, kind core.LogKind, content string) error {

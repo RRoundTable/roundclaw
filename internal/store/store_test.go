@@ -19,6 +19,41 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+// Conversations is the enumeration that disable/delete rely on to stop every
+// thread, so it must report each distinct conversation exactly once — including
+// the default one — and nothing for an agent that has never run.
+func TestConversationsAreDistinctIncludingDefault(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if got, err := s.Conversations(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("Conversations on a fresh store = %v, %v; want empty", got, err)
+	}
+
+	// Two turns in the default conversation, two threads with two turns each.
+	for _, conv := range []string{"", "", "thread-a", "thread-a", "thread-b"} {
+		if _, _, err := s.CreateTurn(ctx, NewTurn{
+			Request: "req", Origin: core.HTTPPollOrigin(), Conversation: conv,
+		}); err != nil {
+			t.Fatalf("create turn in %q: %v", conv, err)
+		}
+	}
+
+	got, err := s.Conversations(ctx)
+	if err != nil {
+		t.Fatalf("Conversations: %v", err)
+	}
+	want := map[string]bool{"": true, "thread-a": true, "thread-b": true}
+	if len(got) != len(want) {
+		t.Fatalf("Conversations = %v, want the three distinct values %v", got, want)
+	}
+	for _, c := range got {
+		if !want[c] {
+			t.Errorf("Conversations returned unexpected %q", c)
+		}
+	}
+}
+
 func TestCreateTurnIsIdempotent(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

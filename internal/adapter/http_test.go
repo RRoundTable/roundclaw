@@ -28,9 +28,10 @@ import (
 // fakeTemporal records signals instead of sending them, so the admission path
 // can be exercised without a Temporal server.
 type fakeTemporal struct {
-	mu      sync.Mutex
-	signals []string
-	starts  int
+	mu          sync.Mutex
+	signals     []string
+	signaledIDs []string
+	starts      int
 }
 
 func (f *fakeTemporal) SignalWithStartWorkflow(_ context.Context, _, signalName string, _ any,
@@ -42,10 +43,11 @@ func (f *fakeTemporal) SignalWithStartWorkflow(_ context.Context, _, signalName 
 	return nil, nil
 }
 
-func (f *fakeTemporal) SignalWorkflow(_ context.Context, _, _, signalName string, _ any) error {
+func (f *fakeTemporal) SignalWorkflow(_ context.Context, workflowID, _, signalName string, _ any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.signals = append(f.signals, signalName)
+	f.signaledIDs = append(f.signaledIDs, workflowID)
 	return nil
 }
 
@@ -65,6 +67,12 @@ func (f *fakeTemporal) sent() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.signals...)
+}
+
+func (f *fakeTemporal) signaledWorkflows() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.signaledIDs...)
 }
 
 const testToken = "test-token-value"

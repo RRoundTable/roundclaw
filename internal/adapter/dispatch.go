@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -195,11 +196,6 @@ func (d *Dispatcher) submit(ctx context.Context, agentID, conversationID, text s
 	return Submission{TurnID: turnID, QueuePosition: d.queueDepth(ctx, agentID, conversationID)}, nil
 }
 
-// Stop cancels the agent's default conversation.
-func (d *Dispatcher) Stop(ctx context.Context, agentID, reason string) error {
-	return d.StopIn(ctx, agentID, "", reason)
-}
-
 // StopIn cancels one conversation's current turn and drops its queue. Scoped to
 // the conversation: stopping a thread must not stop the others.
 func (d *Dispatcher) StopIn(ctx context.Context, agentID, conversationID, reason string) error {
@@ -216,6 +212,56 @@ func (d *Dispatcher) StopIn(ctx context.Context, agentID, conversationID, reason
 		return fmt.Errorf("signal stop to %s: %w", agentID, err)
 	}
 	return nil
+}
+
+// StopAll cancels every conversation the agent has — the default one and each
+// Discord thread — draining their queues. This is what disable and delete need:
+// stopping only the default conversation (as plain Stop does) would leave every
+// thread's turn running, and after a delete they would fail one turn at a time
+// once the definition is gone.
+//
+// Conversations are enumerated from the agent's own state.db, not by matching
+// workflow-ID prefixes. Prefix matching is unsafe: the agent/conversation
+// separator is '-', which is also legal inside an agent ID, so a prefix of
+// agent "foo" would also catch agent "foo-bar"'s workflows. Comparing stored
+// identity avoids the ambiguity entirely.
+//
+// A per-conversation failure is logged and does not stop the others: a signal
+// to an idle conversation whose workflow has already completed is expected, and
+// must not prevent stopping the ones that are still running.
+func (d *Dispatcher) StopAll(ctx context.Context, agentID, reason string) error {
+	if _, err := d.reg.Get(ctx, agentID); errors.Is(err, registry.ErrNotFound) {
+		return fmt.Errorf("%w: %s", ErrUnknownAgent, agentID)
+	} else if err != nil {
+		return err
+	}
+
+	// Always attempt the default conversation, even if no turn row exists for it
+	// yet, so StopAll is never weaker than Stop was.
+	targets := map[string]struct{}{"": {}}
+	if st, err := d.stores.Get(agentID); err != nil {
+		slog.Warn("stop-all: could not open store; stopping only the default conversation",
+			"agent", agentID, "error", err)
+	} else if convs, err := st.Conversations(ctx); err != nil {
+		slog.Warn("stop-all: could not list conversations; stopping only the default conversation",
+			"agent", agentID, "error", err)
+	} else {
+		for _, c := range convs {
+			targets[c] = struct{}{}
+		}
+	}
+
+	var firstErr error
+	for conv := range targets {
+		if err := d.StopIn(ctx, agentID, conv, reason); err != nil {
+			slog.Info("stop-all: could not stop a conversation",
+				"agent", agentID, "conversation", conv, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // StatusReport is what /status and GET /v1/agents/{id} return.

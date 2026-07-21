@@ -55,11 +55,15 @@ func (a *Activities) resolveWorkspace(ctx context.Context, agent registry.Agent,
 		return "", fmt.Errorf("create conversation dir: %w", err)
 	}
 
-	// A managed workspace starts empty, so a plain directory is the whole job.
+	// A managed workspace starts empty, so a plain directory is the whole job —
+	// except for CLAUDE.md, which carries the agent's persona and instructions.
+	// It is discovered from the cwd, and the cwd is the mount root, so a thread
+	// that started empty would lose it. Seed it from the base workspace.
 	if agent.WorkDir == "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return "", fmt.Errorf("create conversation workspace: %w", err)
 		}
+		seedClaudeMD(base, dir)
 		return dir, nil
 	}
 
@@ -79,6 +83,19 @@ func (a *Activities) resolveWorkspace(ctx context.Context, agent registry.Agent,
 		"agent %s works in %s, which is not a git repository, so a thread cannot be "+
 			"given an isolated workspace; set share_workspace on the agent to accept "+
 			"that threads share it", agent.ID, base))
+}
+
+// seedClaudeMD copies the base workspace's CLAUDE.md into a fresh managed
+// conversation directory, so a thread carries the same persona and instructions
+// as the default workspace. Best-effort: an agent without a CLAUDE.md simply has
+// none, and a copy failure must not fail the turn — the agent still runs, just
+// without its instructions.
+func seedClaudeMD(base, dir string) {
+	data, err := os.ReadFile(filepath.Join(base, "CLAUDE.md"))
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), data, 0o640)
 }
 
 func isGitRepo(ctx context.Context, dir string) bool {

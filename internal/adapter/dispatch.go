@@ -359,6 +359,14 @@ func (d *Dispatcher) Config() *config.Config { return d.cfg }
 // channel") free of ceremony.
 func ResolveAgent(ctx context.Context, reg *registry.Store, explicitID, channelID string) (registry.Agent, error) {
 	if explicitID != "" {
+		// Some Discord clients (notably mobile) submit an autocomplete choice's
+		// display name — the agent's label, "id — description" — instead of its
+		// value, the bare id. An agent id can never contain " — " (its charset is
+		// [A-Za-z0-9_-]), so a leaked label is unambiguous: take the id in front
+		// of it. The HTTP path never sees a label, so this is a no-op there.
+		if i := strings.Index(explicitID, " — "); i >= 0 {
+			explicitID = strings.TrimSpace(explicitID[:i])
+		}
 		agent, err := reg.Get(ctx, explicitID)
 		if errors.Is(err, registry.ErrNotFound) {
 			return registry.Agent{}, fmt.Errorf("%w: %s", ErrUnknownAgent, explicitID)

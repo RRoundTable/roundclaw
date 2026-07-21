@@ -210,3 +210,17 @@ func TestSplitListTolerates(t *testing.T) {
 		}
 	}
 }
+
+// Some Discord clients send an autocomplete choice's display label
+// ("id — description") instead of its value. Resolution must recover the id.
+func TestResolveAgentRecoversFromLeakedLabel(t *testing.T) {
+	reg := testRegistry(t)
+	label := "pr-reviewer — Reviews pull requests and more, at length…"
+	agent, err := ResolveAgent(t.Context(), reg, label, "chan-unbound")
+	if err != nil {
+		t.Fatalf("resolve from label: %v", err)
+	}
+	if agent.ID != "pr-reviewer" {
+		t.Errorf("resolved %q, want pr-reviewer from the leaked label", agent.ID)
+	}
+}

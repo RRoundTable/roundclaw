@@ -80,3 +80,22 @@ func TestRouterPromptListsAgentsAndForbidsInvention(t *testing.T) {
 		t.Error("prompt does not forbid inventing an agent id")
 	}
 }
+
+// A failed CLI run reports its reason as a JSON result on stdout, so the router
+// error must carry that rather than a bare "exit status 1".
+func TestFailureDetailExtractsAPIError(t *testing.T) {
+	stdout := []byte(`{"type":"result","is_error":true,"api_error_status":401,"result":"Invalid API key · Fix external API key"}`)
+	got := failureDetail(stdout)
+	if !strings.Contains(got, "Invalid API key") || !strings.Contains(got, "401") {
+		t.Errorf("failureDetail = %q, want it to surface the API error and status", got)
+	}
+
+	// Non-JSON stdout falls back to the raw text, trimmed.
+	if got := failureDetail([]byte("  boom  ")); got != "boom" {
+		t.Errorf("failureDetail on plain text = %q, want %q", got, "boom")
+	}
+	// Empty stdout yields empty, so the caller falls back to stderr.
+	if got := failureDetail(nil); got != "" {
+		t.Errorf("failureDetail(nil) = %q, want empty", got)
+	}
+}

@@ -107,9 +107,13 @@ func (r Router) Route(ctx context.Context, message string, agents []AgentSummary
 
 	out, err := cmd.Output()
 	if err != nil {
-		// Surface the CLI's stderr, or a bare "exit status 1" is undiagnosable —
-		// an unknown model, a missing image and a bad credential all look alike
-		// without it.
+		// A bare "exit status 1" is undiagnosable — an invalid key, an unknown
+		// model and a missing image all look alike. `claude --output-format json`
+		// reports failures as a JSON result on *stdout* (not stderr) and still
+		// exits non-zero, so check there first, then fall back to stderr.
+		if detail := failureDetail(out); detail != "" {
+			return RouteDecision{}, fmt.Errorf("run router: %w: %s", err, detail)
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
 			return RouteDecision{}, fmt.Errorf("run router: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
@@ -160,6 +164,24 @@ func ValidateDecision(d RouteDecision, agents []AgentSummary) RouteDecision {
 			Reason: fmt.Sprintf("the router returned an unknown action %q", d.Action),
 		}
 	}
+}
+
+// failureDetail pulls a human-readable reason out of a failed CLI run. On an
+// API error `claude --output-format json` still prints its result envelope to
+// stdout — `{"result":"Invalid API key ...","api_error_status":401}` — so that
+// carries the real cause when the process exits non-zero.
+func failureDetail(stdout []byte) string {
+	var r struct {
+		Result         string `json:"result"`
+		APIErrorStatus int    `json:"api_error_status"`
+	}
+	if json.Unmarshal(stdout, &r) == nil && r.Result != "" {
+		if r.APIErrorStatus != 0 {
+			return fmt.Sprintf("%s (HTTP %d)", r.Result, r.APIErrorStatus)
+		}
+		return r.Result
+	}
+	return strings.TrimSpace(string(stdout))
 }
 
 func routerPrompt(message string, agents []AgentSummary) string {

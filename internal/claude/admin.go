@@ -207,6 +207,7 @@ Rules:
 - clarify: the request is ambiguous or references an agent that does not exist.
   Put the question in reason. Prefer this over guessing.
 - Never invent an agent_id that is not in the list above.
+- Write "reason" in the same language as the request (Korean if it is Korean).
 
 Request:
 `)

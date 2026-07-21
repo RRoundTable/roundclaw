@@ -43,6 +43,13 @@ func (f *fakeTemporal) SignalWithStartWorkflow(_ context.Context, _, signalName 
 	return nil, nil
 }
 
+func (f *fakeTemporal) ExecuteWorkflow(_ context.Context, _ client.StartWorkflowOptions, _ any, _ ...any) (client.WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts++
+	return nil, nil
+}
+
 func (f *fakeTemporal) SignalWorkflow(_ context.Context, workflowID, _, signalName string, _ any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -497,3 +497,16 @@ func (c *Config) ClaudeHomeDir(agentID string) string {
 func (c *Config) DBPath(agentID string) string {
 	return filepath.Join(c.AgentDir(agentID), "state.db")
 }
+
+// Workflow paths live under a "workflows" subtree so they never collide with an
+// agent's directory. A workflow has one shared workspace its steps run in.
+func (c *Config) WorkflowDir(id string) string {
+	return filepath.Join(c.WorkspaceRoot, "workflows", id)
+}
+func (c *Config) WorkflowWorkDir(id string) string { return filepath.Join(c.WorkflowDir(id), "work") }
+func (c *Config) WorkflowClaudeHome(id string) string {
+	return filepath.Join(c.WorkflowDir(id), "claude-home")
+}
+func (c *Config) WorkflowDBPath(id string) string {
+	return filepath.Join(c.WorkflowDir(id), "state.db")
+}

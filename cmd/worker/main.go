@@ -115,6 +115,8 @@ func run(configPath string, log *slog.Logger) error {
 	w.RegisterWorkflow(rcworkflow.SubAgent)
 	// Started by a Temporal schedule; it only queues a request and finishes.
 	w.RegisterWorkflow(rcworkflow.ScheduledRequest)
+	// Agent-less, multi-step workflows: started manually or by a schedule.
+	w.RegisterWorkflow(rcworkflow.RunWorkflow)
 	// Registering the struct exposes every exported method as an activity,
 	// which is why Activities carries no exported non-activity methods.
 	w.RegisterActivity(activity.NewActivities(cfg, stores, reg, discord, tc))

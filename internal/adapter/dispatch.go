@@ -34,6 +34,7 @@ var ErrUnknownAgent = errors.New("unknown agent")
 type TemporalClient interface {
 	SignalWithStartWorkflow(ctx context.Context, workflowID, signalName string, signalArg any,
 		options client.StartWorkflowOptions, workflow any, workflowArgs ...any) (client.WorkflowRun, error)
+	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow any, args ...any) (client.WorkflowRun, error)
 	SignalWorkflow(ctx context.Context, workflowID, runID, signalName string, arg any) error
 	QueryWorkflow(ctx context.Context, workflowID, runID, queryType string, args ...any) (converter.EncodedValue, error)
 	DescribeWorkflowExecution(ctx context.Context, workflowID, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
@@ -262,6 +263,27 @@ func (d *Dispatcher) StopAll(ctx context.Context, agentID, reason string) error 
 		}
 	}
 	return firstErr
+}
+
+// RunWorkflow starts one run of a workflow — the agent-less, multi-step kind.
+// Each manual run is its own Temporal execution, so two runs of the same
+// workflow do not collide. Returns the started execution's ID.
+func (d *Dispatcher) RunWorkflow(ctx context.Context, id string) (string, error) {
+	if _, err := d.reg.GetWorkflow(ctx, id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			return "", fmt.Errorf("%w: %s", ErrUnknownAgent, id)
+		}
+		return "", err
+	}
+	execID := fmt.Sprintf("roundclaw-workflow-%s-%d", id, time.Now().UnixNano())
+	_, err := d.tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        execID,
+		TaskQueue: d.cfg.Temporal.TaskQueue,
+	}, rcworkflow.RunWorkflowType, rcworkflow.RunWorkflowInput{WorkflowID: id})
+	if err != nil {
+		return "", fmt.Errorf("start workflow %s: %w", id, err)
+	}
+	return execID, nil
 }
 
 // StatusReport is what /status and GET /v1/agents/{id} return.

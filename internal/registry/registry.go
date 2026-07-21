@@ -177,7 +177,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open registry %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := applySchema(db, schema+scheduleSchema+secretSchema); err != nil {
+	if err := applySchema(db, schema+scheduleSchema+secretSchema+workflowSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply registry schema: %w", err)
 	}

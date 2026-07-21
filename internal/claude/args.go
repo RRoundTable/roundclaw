@@ -84,6 +84,9 @@ type RunSpec struct {
 	AgentName      string
 	PermissionMode string
 	AllowedTools   []string
+	// Model overrides the CLI's default model for this run. Empty uses the
+	// default. Workflow steps set it to run a cheap or a strong model per step.
+	Model string
 
 	Prompt string
 }
@@ -210,6 +213,9 @@ func (s RunSpec) Args() ([]string, error) {
 	}
 	if s.PermissionMode != "" {
 		args = append(args, "--permission-mode", s.PermissionMode)
+	}
+	if s.Model != "" {
+		args = append(args, "--model", s.Model)
 	}
 	if len(s.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(s.AllowedTools, ","))

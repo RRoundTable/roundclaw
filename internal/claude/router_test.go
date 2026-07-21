@@ -99,3 +99,30 @@ func TestFailureDetailExtractsAPIError(t *testing.T) {
 		t.Errorf("failureDetail(nil) = %q, want empty", got)
 	}
 }
+
+// --bare is used only for an API key; with a setup-token it must be omitted, or
+// the CLI ignores the token and reports "Not logged in".
+func TestRouterBareToggle(t *testing.T) {
+	base := Router{Runtime: "docker", Image: "img", CredentialEnv: "CRED"}
+
+	withBare := Router{Runtime: base.Runtime, Image: base.Image, CredentialEnv: base.CredentialEnv, Bare: true}
+	if !containsArg(withBare.args("hi", testAgents), "--bare") {
+		t.Error("Bare=true must pass --bare")
+	}
+	if containsArg(base.args("hi", testAgents), "--bare") {
+		t.Error("Bare=false must not pass --bare, or an OAuth token is ignored")
+	}
+	// Structured output is requested either way.
+	if !containsArg(base.args("hi", testAgents), "--json-schema") {
+		t.Error("router must always request a JSON schema")
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}

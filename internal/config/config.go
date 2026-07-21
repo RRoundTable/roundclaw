@@ -439,21 +439,11 @@ func (c *ContainerConfig) ResolveCredential(lookup func(string) (string, bool)) 
 		c.OAuthTokenEnv, c.APIKeyEnv)
 }
 
-// ResolveRouterCredential resolves the credential the router needs, which is not
-// the same as an agent turn's. The router runs `claude --bare`, and --bare skips
-// OAuth and the keychain — it reads only an API key. So a setup-token in
-// OAuthTokenEnv, which is enough for agents, does not authenticate the router;
-// it must have APIKeyEnv set, or every routing call fails with "Not logged in".
-func (c *ContainerConfig) ResolveRouterCredential(lookup func(string) (string, bool)) (Credential, error) {
-	if c.APIKeyEnv != "" {
-		if v, ok := lookup(c.APIKeyEnv); ok && strings.TrimSpace(v) != "" {
-			return Credential{EnvName: c.APIKeyEnv, Value: v}, nil
-		}
-	}
-	return Credential{}, fmt.Errorf(
-		"the router runs `claude --bare`, which uses only an API key: set %s "+
-			"(a setup-token in %s is not read in --bare mode)",
-		c.APIKeyEnv, c.OAuthTokenEnv)
+// IsAPIKey reports whether a resolved credential is the API key rather than an
+// OAuth setup-token. The router uses this to decide whether it can run --bare,
+// which is faster but reads only an API key.
+func (c *ContainerConfig) IsAPIKey(cred Credential) bool {
+	return c.APIKeyEnv != "" && cred.EnvName == c.APIKeyEnv
 }
 
 // AgentByID returns the agent with the given ID, or nil.

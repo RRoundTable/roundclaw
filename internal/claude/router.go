@@ -67,12 +67,39 @@ type Router struct {
 	// chat window, so it must fail fast rather than hang.
 	Timeout time.Duration
 
-	// CredentialEnv / CredentialValue carry the API key. Unlike an agent turn,
-	// the router cannot use a setup-token: it runs --bare (below), which skips
-	// OAuth and the keychain and reads only an API key. Resolve it with
-	// config.ResolveRouterCredential, not ResolveCredential.
+	// CredentialEnv / CredentialValue carry either an API key or an OAuth
+	// setup-token, the same as an agent turn.
 	CredentialEnv   string
 	CredentialValue string
+
+	// Bare runs `claude --bare`, which is ~2s faster per call but reads only an
+	// API key — it skips OAuth and the keychain. Set it only when the credential
+	// is an API key; with a setup-token it must be false or every call fails with
+	// "Not logged in". The caller decides from the resolved credential's type.
+	Bare bool
+}
+
+// args builds the container argv. Split out from Route so the --bare toggle is
+// testable without starting a container.
+func (r Router) args(message string, agents []AgentSummary) []string {
+	args := []string{
+		"run", "--rm",
+		"-e", r.CredentialEnv,
+		r.Image,
+		"claude", "-p",
+	}
+	if r.Bare {
+		// --bare skips hooks, skills, plugins, MCP servers and CLAUDE.md
+		// discovery — worth ~2s a call. It also skips OAuth and the keychain, so
+		// it is used only with an API-key credential; a setup-token needs the
+		// full startup (see the Bare field).
+		args = append(args, "--bare")
+	}
+	args = append(args, "--output-format", "json", "--json-schema", routerSchema)
+	if r.Model != "" {
+		args = append(args, "--model", r.Model)
+	}
+	return append(args, routerPrompt(message, agents))
 }
 
 // Route asks the router which agent should handle message.
@@ -87,26 +114,7 @@ func (r Router) Route(ctx context.Context, message string, agents []AgentSummary
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
-	args := []string{
-		"run", "--rm",
-		"-e", r.CredentialEnv,
-		r.Image,
-		"claude", "-p",
-		// --bare skips hooks, skills, plugins, MCP servers and CLAUDE.md
-		// discovery. Routing needs none of that, and skipping it is most of
-		// why this call is cheap enough to run per message. It also skips OAuth
-		// and the keychain, which is why the router needs an API key, not a
-		// setup-token (see ResolveRouterCredential).
-		"--bare",
-		"--output-format", "json",
-		"--json-schema", routerSchema,
-	}
-	if r.Model != "" {
-		args = append(args, "--model", r.Model)
-	}
-	args = append(args, routerPrompt(message, agents))
-
-	cmd := exec.CommandContext(ctx, r.Runtime, args...)
+	cmd := exec.CommandContext(ctx, r.Runtime, r.args(message, agents)...)
 	cmd.Env = append(cmd.Environ(), r.CredentialEnv+"="+r.CredentialValue)
 
 	out, err := cmd.Output()

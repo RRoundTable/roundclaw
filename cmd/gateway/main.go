@@ -102,10 +102,7 @@ func run(configPath string, log *slog.Logger) error {
 			return err
 		}
 		if cfg.Router.Enabled {
-			// Not ResolveCredential: the router runs --bare, which uses only an
-			// API key, so it needs its own resolution rather than the OAuth-first
-			// one the agents use.
-			cred, err := cfg.Container.ResolveRouterCredential(os.LookupEnv)
+			cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
 			if err != nil {
 				return fmt.Errorf("router.enabled is set but %w", err)
 			}
@@ -116,6 +113,9 @@ func run(configPath string, log *slog.Logger) error {
 				Timeout:         cfg.Router.Timeout,
 				CredentialEnv:   cred.EnvName,
 				CredentialValue: cred.Value,
+				// --bare is faster but reads only an API key, so use it only when
+				// that is what was resolved. A setup-token runs the full CLI.
+				Bare: cfg.Container.IsAPIKey(cred),
 			})
 			log.Info("routing enabled for unbound channels",
 				"model", cfg.Router.Model, "channels", len(cfg.Router.Channels))

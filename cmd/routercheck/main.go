@@ -98,12 +98,11 @@ func run() int {
 		return 2
 	}
 
-	// The router runs `claude --bare`, which reads only an API key — a
-	// setup-token in OAuthTokenEnv does not authenticate it. Resolve the same
-	// credential the gateway gives the router, so this check matches production.
-	cred, err := cfg.Container.ResolveRouterCredential(os.LookupEnv)
+	// Same credential resolution the gateway gives the router: an API key or a
+	// setup-token, OAuth-first.
+	cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "no router credential:", err)
+		fmt.Fprintln(os.Stderr, "no credential:", err)
 		return 2
 	}
 
@@ -116,6 +115,7 @@ func run() int {
 		timeout = 30 * time.Second
 	}
 
+	bare := cfg.Container.IsAPIKey(cred)
 	router := claude.Router{
 		Runtime:         cfg.Container.Runtime,
 		Image:           cfg.Container.Image,
@@ -123,10 +123,15 @@ func run() int {
 		Timeout:         timeout,
 		CredentialEnv:   cred.EnvName,
 		CredentialValue: cred.Value,
+		Bare:            bare,
 	}
 
-	fmt.Printf("routing %d messages through %s (model: %s)\n\n",
-		len(cases), cfg.Container.Image, orDefault(chosenModel, "CLI default"))
+	mode := "full CLI (setup-token)"
+	if bare {
+		mode = "--bare (API key)"
+	}
+	fmt.Printf("routing %d messages through %s\n  credential: %s | mode: %s | model: %s\n\n",
+		len(cases), cfg.Container.Image, cred.EnvName, mode, orDefault(chosenModel, "CLI default"))
 
 	passed := 0
 	for i, tc := range cases {

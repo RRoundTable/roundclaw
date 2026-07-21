@@ -92,6 +92,14 @@ services:
     <<: *roundclaw-common
     command: ["-config", "${ROUNDCLAW_ROOT}/roundclaw.yaml"]
     entrypoint: ["/usr/local/bin/gateway"]
+    # The router and the natural-language admin run `claude` in a throwaway
+    # container from here (a short --json-schema call), so the gateway needs the
+    # host daemon too. The containers it starts are mount-less siblings.
+    volumes:
+      - ${ROUNDCLAW_ROOT}:${ROUNDCLAW_ROOT}
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-984}"
     ports:
       - "127.0.0.1:${ROUNDCLAW_HTTP_PORT:-8099}:${ROUNDCLAW_HTTP_PORT:-8099}"
 

@@ -98,11 +98,12 @@ func run() int {
 		return 2
 	}
 
-	cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
+	// The router runs `claude --bare`, which reads only an API key — a
+	// setup-token in OAuthTokenEnv does not authenticate it. Resolve the same
+	// credential the gateway gives the router, so this check matches production.
+	cred, err := cfg.Container.ResolveRouterCredential(os.LookupEnv)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "no credential:", err)
-		fmt.Fprintf(os.Stderr, "set %s or %s in the environment first\n",
-			cfg.Container.OAuthTokenEnv, cfg.Container.APIKeyEnv)
+		fmt.Fprintln(os.Stderr, "no router credential:", err)
 		return 2
 	}
 

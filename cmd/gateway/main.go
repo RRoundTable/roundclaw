@@ -102,7 +102,10 @@ func run(configPath string, log *slog.Logger) error {
 			return err
 		}
 		if cfg.Router.Enabled {
-			cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
+			// Not ResolveCredential: the router runs --bare, which uses only an
+			// API key, so it needs its own resolution rather than the OAuth-first
+			// one the agents use.
+			cred, err := cfg.Container.ResolveRouterCredential(os.LookupEnv)
 			if err != nil {
 				return fmt.Errorf("router.enabled is set but %w", err)
 			}

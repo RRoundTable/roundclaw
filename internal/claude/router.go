@@ -67,8 +67,10 @@ type Router struct {
 	// chat window, so it must fail fast rather than hang.
 	Timeout time.Duration
 
-	// CredentialEnv / CredentialValue mirror RunSpec: `claude` accepts either
-	// an API key or a setup-token, selected by variable name.
+	// CredentialEnv / CredentialValue carry the API key. Unlike an agent turn,
+	// the router cannot use a setup-token: it runs --bare (below), which skips
+	// OAuth and the keychain and reads only an API key. Resolve it with
+	// config.ResolveRouterCredential, not ResolveCredential.
 	CredentialEnv   string
 	CredentialValue string
 }
@@ -92,7 +94,9 @@ func (r Router) Route(ctx context.Context, message string, agents []AgentSummary
 		"claude", "-p",
 		// --bare skips hooks, skills, plugins, MCP servers and CLAUDE.md
 		// discovery. Routing needs none of that, and skipping it is most of
-		// why this call is cheap enough to run per message.
+		// why this call is cheap enough to run per message. It also skips OAuth
+		// and the keychain, which is why the router needs an API key, not a
+		// setup-token (see ResolveRouterCredential).
 		"--bare",
 		"--output-format", "json",
 		"--json-schema", routerSchema,

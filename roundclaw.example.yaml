@@ -118,6 +118,10 @@ retention:
 # Off by default and deliberately so: every such message costs an LLM call, and
 # `/ask agent:<name>` already covers the same ground for free. Turn it on when
 # you want plain conversation in a shared channel to reach the right agent.
+#
+# Needs an API key (api_key_env), not a setup-token: the router runs
+# `claude --bare`, which skips OAuth and reads only ANTHROPIC_API_KEY. Enabling
+# it with only oauth_token_env set fails every routing call with "Not logged in".
 router:
   enabled: false
   # A small fast model — this is a classification, not the work itself.

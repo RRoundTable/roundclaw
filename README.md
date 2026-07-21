@@ -468,7 +468,7 @@ the refresh token out from under whoever is still using that session.
   exits with "Input must be provided", having never seen the request. This is
   invisible until the first agent is configured with tools.
 - **One Temporal namespace per environment.** A workflow ID is
-  `roundclaw-agent-<id>` and encodes nothing about the deployment, so two
+  `roundclaw-<id>-<conversation>` and encodes nothing about the deployment, so two
   configs sharing a namespace collide on any agent ID they have in common.
   `SignalWithStart` then finds the *existing* workflow — pinned to whatever task
   queue created it — and signals that instead of starting a new one. Nothing

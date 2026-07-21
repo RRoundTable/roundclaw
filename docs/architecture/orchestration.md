@@ -20,13 +20,15 @@ Everything a user can *observe* is served from SQLite instead
 `contract.WorkflowID(agentID, conversationID)`:
 
 ```
-roundclaw-agent-<agentID>                  default conversation
-roundclaw-conv-<agentID>-<conversationID>  a Discord thread
+roundclaw-<agentID>-default          default conversation
+roundclaw-<agentID>-<conversationID> a Discord thread
 ```
 
 A conversation — not an agent — is the unit that owns a Claude session, a queue
-and a workspace. The default form is byte-identical to the pre-conversation ID,
-so introducing threads did not orphan any existing session.
+and a workspace. Every ID has the same three-part shape; the default
+conversation uses the `default` sentinel (`contract.DefaultConversation`) rather
+than a second format. The sentinel cannot collide with a thread, whose ID is an
+all-digit Discord snowflake.
 
 State held in the workflow:
 

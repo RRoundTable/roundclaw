@@ -135,7 +135,7 @@ func TestRunClaudeTurnCompletes(t *testing.T) {
 	}
 
 	result, err := runTurn(t, a, RunTurnInput{
-		AgentID: "tester", TurnID: turnID, WorkflowID: "roundclaw-agent-tester", Prompt: "hello",
+		AgentID: "tester", TurnID: turnID, WorkflowID: "roundclaw-tester-default", Prompt: "hello",
 	})
 	if err != nil {
 		t.Fatalf("activity: %v", err)
@@ -235,7 +235,7 @@ func TestRunClaudeTurnPassesSessionFlags(t *testing.T) {
 			t.Fatalf("create turn %d: %v", i, err)
 		}
 		if _, err := runTurn(t, a, RunTurnInput{
-			AgentID: "tester", TurnID: turnID, WorkflowID: "roundclaw-agent-tester",
+			AgentID: "tester", TurnID: turnID, WorkflowID: "roundclaw-tester-default",
 			Prompt: "hi", Resume: resume,
 		}); err != nil {
 			t.Fatalf("turn %d: %v", i, err)

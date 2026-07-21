@@ -123,9 +123,9 @@ func TestStopAllStopsEveryConversation(t *testing.T) {
 
 	got := tc.signaledWorkflows()
 	want := []string{
-		"roundclaw-agent-pr-reviewer",
-		"roundclaw-conv-pr-reviewer-thread-a",
-		"roundclaw-conv-pr-reviewer-thread-b",
+		"roundclaw-pr-reviewer-default",
+		"roundclaw-pr-reviewer-thread-a",
+		"roundclaw-pr-reviewer-thread-b",
 	}
 	sort.Strings(got)
 	sort.Strings(want)
@@ -154,7 +154,7 @@ func TestStopAllAlwaysStopsTheDefault(t *testing.T) {
 	}
 
 	got := tc.signaledWorkflows()
-	if len(got) != 1 || got[0] != "roundclaw-agent-ops-helper" {
+	if len(got) != 1 || got[0] != "roundclaw-ops-helper-default" {
 		t.Errorf("StopAll on a never-run agent signalled %v, want just the default", got)
 	}
 }

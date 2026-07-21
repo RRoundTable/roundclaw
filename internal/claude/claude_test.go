@@ -10,16 +10,16 @@ import (
 // changes, every existing agent silently loses its conversation history on the
 // next turn, so it is pinned to a literal.
 func TestSessionIDIsStableAndDistinct(t *testing.T) {
-	const wf = "roundclaw-agent-pr-reviewer"
+	const wf = "roundclaw-pr-reviewer-default"
 	got := SessionID(wf)
-	const want = "d2855af2-c3d0-51c4-8388-585ab61fc7dd"
+	const want = "b24676e4-80cb-5433-8736-6e252b2aa031"
 	if got != want {
 		t.Errorf("SessionID(%q) = %q, want %q (changing this orphans every live session)", wf, got, want)
 	}
 	if SessionID(wf) != got {
 		t.Error("SessionID is not deterministic")
 	}
-	if SessionID("roundclaw-agent-other") == got {
+	if SessionID("roundclaw-pr-reviewer-other") == got {
 		t.Error("different workflow IDs produced the same session ID")
 	}
 }

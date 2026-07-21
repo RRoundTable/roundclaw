@@ -19,8 +19,11 @@ window in which that write can be lost.
 
 Consequences:
 
-- `sessionNamespace` and `contract.WorkflowID`'s format can never change.
-  Either would orphan every existing session.
+- `sessionNamespace` and `contract.WorkflowID`'s format must not change.
+  Either orphans every existing session. The format was unified once, on
+  purpose, accepting that one-time loss — `roundclaw-<agentID>-<conv>` for every
+  conversation, with a `default` sentinel for the default one — and must not
+  drift again.
 - Whether to pass `--session-id` (create) or `--resume` (continue) is decided by
   `sessionReady` — *observed* session establishment, not turn count. An early
   failure once wedged an agent permanently because `turnCount > 0` claimed a

@@ -34,22 +34,31 @@ type ScheduledInput struct {
 	ScheduleID string `json:"schedule_id"`
 }
 
+// DefaultConversation is the sentinel that stands in for an empty conversation
+// ID — the agent's default conversation, the one /ask, schedules and webhooks
+// use, since none of them arrive with a thread. It gives every workflow ID the
+// same three-part shape rather than a special form for the default.
+//
+// It can never collide with a real conversation ID: a thread's ID is its
+// Discord channel snowflake, which is all digits, so no thread is ever named
+// "default".
+const DefaultConversation = "default"
+
 // WorkflowID builds the deterministic workflow ID for one conversation.
 //
 // A conversation, not an agent, is the unit that owns a Claude session, a queue
-// and a workspace. An empty conversationID means the agent's default
-// conversation — the one that /ask, schedules and webhooks use, since none of
-// them arrive with a thread.
+// and a workspace. Every ID has the one shape `roundclaw-<agentID>-<conv>`; the
+// default conversation uses the DefaultConversation sentinel rather than a
+// second format.
 //
-// The Claude session UUID is derived from this string, so its format must stay
-// stable: changing it orphans every existing session. The default form is
-// deliberately byte-identical to what it was before conversations existed, so
-// agents already running kept their sessions when this was introduced.
+// The Claude session UUID is derived from this string, so changing this format
+// orphans every existing session — an accepted, one-time cost of unifying the
+// scheme. It must not drift again afterwards.
 func WorkflowID(agentID, conversationID string) string {
 	if conversationID == "" {
-		return "roundclaw-agent-" + agentID
+		conversationID = DefaultConversation
 	}
-	return "roundclaw-conv-" + agentID + "-" + conversationID
+	return "roundclaw-" + agentID + "-" + conversationID
 }
 
 // AgentInput starts or continues an agent workflow.

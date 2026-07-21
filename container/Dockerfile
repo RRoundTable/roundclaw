@@ -6,8 +6,10 @@
 # stdout.
 FROM node:22-slim
 
+# python3 is here for agents that run Python tools — e.g. the migrated stock
+# bot, which is stdlib-only, so the interpreter alone is enough (no pip).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates ripgrep \
+        git ca-certificates ripgrep python3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code

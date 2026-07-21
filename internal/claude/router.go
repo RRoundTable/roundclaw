@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -106,6 +107,13 @@ func (r Router) Route(ctx context.Context, message string, agents []AgentSummary
 
 	out, err := cmd.Output()
 	if err != nil {
+		// Surface the CLI's stderr, or a bare "exit status 1" is undiagnosable —
+		// an unknown model, a missing image and a bad credential all look alike
+		// without it.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return RouteDecision{}, fmt.Errorf("run router: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return RouteDecision{}, fmt.Errorf("run router: %w", err)
 	}
 

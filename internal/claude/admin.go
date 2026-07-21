@@ -107,10 +107,15 @@ type Admin struct {
 }
 
 // AdminContext is what the planner needs to know about the world to produce a
-// valid action: which agents already exist, and where the request came from.
+// valid action: which agents already exist, where the request came from, and —
+// in an admin thread — what was said and done earlier so a follow-up like
+// "actually make it 10am" resolves against the right thing.
 type AdminContext struct {
 	Agents           []AgentSummary
 	CurrentChannelID string
+	// History is the prior admin exchange in this thread, oldest first, already
+	// formatted for the prompt. Empty for a one-shot request.
+	History string
 }
 
 // Plan asks the planner what to do with a management request.
@@ -182,6 +187,12 @@ func adminPrompt(request string, world AdminContext) string {
 	}
 	fmt.Fprintf(&b, "\nThe request was sent from Discord channel %s. When the operator says \"here\" or\n"+
 		"\"this channel\", use that ID.\n", world.CurrentChannelID)
+
+	if strings.TrimSpace(world.History) != "" {
+		b.WriteString("\nConversation so far (oldest first) — resolve follow-ups against it:\n")
+		b.WriteString(world.History)
+		b.WriteString("\n")
+	}
 
 	b.WriteString(`
 Rules:

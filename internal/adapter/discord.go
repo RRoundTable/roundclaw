@@ -322,9 +322,10 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// agent's default conversation.
 	agentChannel, conversationID := d.conversation(m.ChannelID)
 
-	// The admin channel is not a normal agent: a message here manages roundclaw
-	// itself, in natural language, rather than running a turn.
-	if d.admin != nil && agentChannel == d.adminChannel {
+	// Admin, not a normal agent: the configured admin channel, or an admin thread
+	// that /admin opened. Both manage roundclaw in natural language rather than
+	// running a turn; a thread keeps the exchange in context.
+	if d.admin != nil && (agentChannel == d.adminChannel || d.isAdminThread(m.ChannelID)) {
 		go d.handleAdmin(m, text)
 		return
 	}
@@ -458,6 +459,12 @@ func (d *Discord) conversationLive(ctx context.Context, agentID, conversationID 
 // touches the API or a token. Runs in its own goroutine: it makes an LLM call
 // and must not block Discord's event loop.
 func (d *Discord) handleAdmin(m *discordgo.MessageCreate, text string) {
+	// An admin thread is a public thread, and a message carries no slash-command
+	// permission gate, so enforce the same allow-list here: without it, anyone
+	// who can see the thread could create or reconfigure agents.
+	if !d.permittedAdminMessage(m) {
+		return
+	}
 	// A leading mention is stripped so "@bot create an agent…" and "create an
 	// agent…" read the same; a mention is not required in the admin channel.
 	if _, stripped := d.stripMention(m, text); stripped != "" {
@@ -470,12 +477,20 @@ func (d *Discord) handleAdmin(m *discordgo.MessageCreate, text string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	_ = d.session.ChannelTyping(m.ChannelID)
-	d.reply(m.ChannelID, d.runAdmin(ctx, text, m.ChannelID))
+
+	// In an admin thread, the earlier exchange is context so a follow-up like
+	// "make it 10am instead" resolves against what was just done.
+	history := ""
+	if d.isAdminThread(m.ChannelID) {
+		history = d.adminThreadHistory(m.ChannelID, m.ID)
+	}
+	d.reply(m.ChannelID, d.runAdmin(ctx, text, m.ChannelID, history))
 }
 
-// handleAdminCommand is the /admin slash command: the same natural-language
-// management as the admin channel, usable from anywhere without dedicating a
-// channel to it. Permission-gated like the other management commands.
+// handleAdminCommand is the /admin slash command. It opens an admin *thread* and
+// runs the first request there, so the operator can keep managing agents and
+// schedules in one contextual conversation. Permission-gated like the other
+// management commands.
 func (d *Discord) handleAdminCommand(i *discordgo.InteractionCreate, request string) {
 	if d.admin == nil {
 		d.respondNow(i, "⚠️ Natural-language admin is not configured (no credential).")
@@ -488,12 +503,21 @@ func (d *Discord) handleAdminCommand(i *discordgo.InteractionCreate, request str
 	d.defer_(i)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	d.followUp(i, d.runAdmin(ctx, request, i.ChannelID))
+
+	threadID, ok := d.startAdminThread(i.ChannelID, request)
+	if !ok {
+		// No thread (e.g. already inside one, or missing permission): answer once.
+		d.followUp(i, d.runAdmin(ctx, request, i.ChannelID, ""))
+		return
+	}
+	d.followUp(i, "🛠️ Opened an admin thread — continue there: <#"+threadID+">")
+	_ = d.session.ChannelTyping(threadID)
+	d.reply(threadID, "> "+request+"\n\n"+d.runAdmin(ctx, request, threadID, ""))
 }
 
 // runAdmin plans and executes one management request, returning the result text.
-// Shared by the admin channel and the /admin command.
-func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID string) string {
+// Shared by the admin channel, admin threads and the /admin command.
+func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID, history string) string {
 	agents, err := d.disp.Registry().List(ctx)
 	if err != nil {
 		return "⚠️ Could not read the registry: " + err.Error()
@@ -506,6 +530,7 @@ func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID string
 	action, err := d.admin.Plan(ctx, request, claude.AdminContext{
 		Agents:           summaries,
 		CurrentChannelID: currentChannelID,
+		History:          history,
 	})
 	if err != nil {
 		d.log.Warn("admin planning failed", "channel", currentChannelID, "error", err)
@@ -516,6 +541,87 @@ func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID string
 		return "⚠️ " + err.Error()
 	}
 	return result
+}
+
+// permittedAdminMessage applies the same allow-list the /admin slash command
+// gets, to a message in the admin channel or an admin thread. When commands are
+// unrestricted it lets everyone through, exactly as the slash gate does.
+func (d *Discord) permittedAdminMessage(m *discordgo.MessageCreate) bool {
+	cfg := d.disp.Config().Discord
+	if !cfg.CommandsRestricted() {
+		return true
+	}
+	var roles []string
+	var userID string
+	if m.Member != nil {
+		roles = m.Member.Roles
+	}
+	if m.Author != nil {
+		userID = m.Author.ID
+	}
+	return cfg.PermitsCommand("admin", userID, roles)
+}
+
+// adminThreadMarker prefixes an admin thread's name. It is how a later message
+// in the thread is recognised as admin without any in-memory state, so it
+// survives a gateway restart.
+const adminThreadMarker = "🛠️ admin"
+
+func (d *Discord) startAdminThread(channelID, request string) (string, bool) {
+	// A message already in a thread cannot spawn another; run one-shot instead.
+	if d.isAdminThread(channelID) {
+		return "", false
+	}
+	th, err := d.session.ThreadStartComplex(channelID, &discordgo.ThreadStart{
+		Name:                adminThreadName(request),
+		Type:                discordgo.ChannelTypeGuildPublicThread,
+		AutoArchiveDuration: 1440,
+	})
+	if err != nil {
+		d.log.Warn("could not open an admin thread; answering once", "channel", channelID, "error", err)
+		return "", false
+	}
+	return th.ID, true
+}
+
+func adminThreadName(request string) string {
+	name := adminThreadMarker + ": " + strings.TrimSpace(strings.SplitN(request, "\n", 2)[0])
+	if r := []rune(name); len(r) > 100 {
+		name = string(r[:100])
+	}
+	return name
+}
+
+// isAdminThread reports whether channelID is a thread opened by /admin.
+func (d *Discord) isAdminThread(channelID string) bool {
+	ch, err := d.session.State.Channel(channelID)
+	if err != nil {
+		ch, err = d.session.Channel(channelID)
+	}
+	return err == nil && ch != nil && ch.IsThread() && strings.HasPrefix(ch.Name, adminThreadMarker)
+}
+
+// adminThreadHistory formats the exchange before beforeID as planner context,
+// oldest first. Best-effort: no history simply means less context.
+func (d *Discord) adminThreadHistory(threadID, beforeID string) string {
+	msgs, err := d.session.ChannelMessages(threadID, 20, beforeID, "", "")
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for i := len(msgs) - 1; i >= 0; i-- { // ChannelMessages is newest-first
+		mm := msgs[i]
+		content := strings.TrimSpace(mm.Content)
+		if content == "" {
+			continue
+		}
+		who := "operator"
+		if mm.Author != nil && mm.Author.Bot {
+			who = "admin"
+		}
+		fmt.Fprintf(&b, "%s: %s\n", who, content)
+	}
+	return b.String()
 }
 
 // startThread spins a Discord thread off a message so a reply-in-thread agent's

@@ -351,11 +351,48 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	// Show a "typing…" indicator in the reply channel while the turn runs, so a
+	// slow agent looks busy rather than silent.
+	go d.showTyping(replyChannel, agent.ID, sub.TurnID)
+
 	// Only acknowledge when the request has to wait. Acknowledging every
 	// message would double the bot's chatter for the common case where it can
 	// start immediately.
 	if sub.QueuePosition > 0 {
 		d.reply(replyChannel, fmt.Sprintf("⏳ Queued (%d ahead) — turn #%d", sub.QueuePosition, sub.TurnID))
+	}
+}
+
+// showTyping keeps Discord's "typing…" indicator alive in a channel while a turn
+// runs. Discord clears the indicator after ~10s, so it is re-sent on a shorter
+// interval; the turn's status is polled more often so the indicator stops
+// promptly once the reply lands. A hard deadline guards against a stuck turn
+// leaking the goroutine.
+func (d *Discord) showTyping(channelID, agentID string, turnID int64) {
+	st, err := d.disp.Store(context.Background(), agentID)
+	if err != nil {
+		return
+	}
+	_ = d.session.ChannelTyping(channelID)
+	lastTyped := time.Now()
+
+	poll := time.NewTicker(2 * time.Second)
+	defer poll.Stop()
+	deadline := time.After(40 * time.Minute)
+	for {
+		select {
+		case <-deadline:
+			return
+		case <-poll.C:
+			turn, err := st.GetTurn(context.Background(), turnID)
+			if err != nil || turn.Status != core.TurnRunning {
+				return
+			}
+			if time.Since(lastTyped) >= 8*time.Second {
+				_ = d.session.ChannelTyping(channelID)
+				lastTyped = time.Now()
+			}
+		}
 	}
 }
 

@@ -327,13 +327,24 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	// Where the reply and the rest of this exchange go. Normally the channel
+	// the message arrived in; for a reply-in-thread agent, a fresh thread spun
+	// off that message, which then becomes this exchange's own conversation.
+	replyChannel := m.ChannelID
+	if agent.ReplyInThread && conversationID == "" {
+		if threadID, ok := d.startThread(m, text); ok {
+			conversationID = threadID
+			replyChannel = threadID
+		}
+	}
+
 	// The Discord message ID is a natural idempotency key: a gateway
 	// reconnection can redeliver the same message, and this makes that a no-op.
-	sub, submitErr := d.disp.SubmitIn(ctx, agent.ID, conversationID, prompt, core.DiscordOrigin(m.ChannelID, m.ID), "discord:"+m.ID)
+	sub, submitErr := d.disp.SubmitIn(ctx, agent.ID, conversationID, prompt, core.DiscordOrigin(replyChannel, m.ID), "discord:"+m.ID)
 	err = submitErr
 	if err != nil {
 		d.log.Error("failed to queue discord message", "channel", m.ChannelID, "error", err)
-		d.reply(m.ChannelID, "⚠️ Could not queue that request: "+err.Error())
+		d.reply(replyChannel, "⚠️ Could not queue that request: "+err.Error())
 		return
 	}
 	if sub.Duplicate {
@@ -344,8 +355,35 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// message would double the bot's chatter for the common case where it can
 	// start immediately.
 	if sub.QueuePosition > 0 {
-		d.reply(m.ChannelID, fmt.Sprintf("⏳ Queued (%d ahead) — turn #%d", sub.QueuePosition, sub.TurnID))
+		d.reply(replyChannel, fmt.Sprintf("⏳ Queued (%d ahead) — turn #%d", sub.QueuePosition, sub.TurnID))
 	}
+}
+
+// startThread spins a Discord thread off a message so a reply-in-thread agent's
+// answer, and the exchange that follows, live in it. The thread's ID doubles as
+// the conversation ID — each thread is its own session and workspace. On any
+// failure it returns false and the caller falls back to replying in the channel.
+func (d *Discord) startThread(m *discordgo.MessageCreate, request string) (string, bool) {
+	th, err := d.session.MessageThreadStart(m.ChannelID, m.ID, threadName(request), 1440)
+	if err != nil {
+		d.log.Warn("could not start a thread; replying in the channel",
+			"channel", m.ChannelID, "error", err)
+		return "", false
+	}
+	return th.ID, true
+}
+
+// threadName derives a thread title from the request: its first line, capped to
+// Discord's length limit by runes so a multi-byte character is never split.
+func threadName(request string) string {
+	name := strings.TrimSpace(strings.SplitN(request, "\n", 2)[0])
+	if name == "" {
+		name = "request"
+	}
+	if r := []rune(name); len(r) > 90 {
+		name = string(r[:90])
+	}
+	return name
 }
 
 // conversation resolves where a message or command landed into the channel that

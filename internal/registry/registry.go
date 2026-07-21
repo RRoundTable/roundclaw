@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS agents (
     deny_paths      TEXT NOT NULL DEFAULT '[]',
     require_mention INTEGER NOT NULL DEFAULT 0,
     share_workspace INTEGER NOT NULL DEFAULT 0,
+    reply_in_thread INTEGER NOT NULL DEFAULT 0,
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
@@ -78,6 +79,7 @@ var migrations = []string{
 	`ALTER TABLE agents ADD COLUMN deny_paths TEXT NOT NULL DEFAULT '[]'`,
 	`ALTER TABLE agents ADD COLUMN require_mention INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE agents ADD COLUMN share_workspace INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE agents ADD COLUMN reply_in_thread INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Agent is a runtime agent definition.
@@ -106,7 +108,12 @@ type Agent struct {
 	// cannot be isolated — a work_dir that is not a git repository. Off by
 	// default: silent conflicts surface as one conversation mysteriously
 	// undoing another's work, which is a miserable thing to debug.
-	ShareWorkspace  bool      `json:"share_workspace"`
+	ShareWorkspace bool `json:"share_workspace"`
+	// ReplyInThread makes a message in a plain channel spawn a Discord thread,
+	// with the agent's reply and the rest of that exchange living in the thread.
+	// Each thread is its own conversation (session + workspace), so distinct
+	// requests stay separated instead of interleaving in one channel.
+	ReplyInThread   bool      `json:"reply_in_thread"`
 	DiscordChannels []string  `json:"discord_channels"`
 	Enabled         bool      `json:"enabled"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -189,7 +196,7 @@ func (s *Store) List(ctx context.Context) ([]Agent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
 		       allowed_tools, additional_dirs, work_dir, deny_paths, require_mention,
-		       share_workspace, enabled, created_at, updated_at
+		       share_workspace, reply_in_thread, enabled, created_at, updated_at
 		FROM agents ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
@@ -220,7 +227,7 @@ func (s *Store) Get(ctx context.Context, id string) (Agent, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
 		       allowed_tools, additional_dirs, work_dir, deny_paths, require_mention,
-		       share_workspace, enabled, created_at, updated_at
+		       share_workspace, reply_in_thread, enabled, created_at, updated_at
 		FROM agents WHERE id = ?`, id)
 
 	a, err := scanAgent(row)
@@ -274,12 +281,12 @@ func (s *Store) Create(ctx context.Context, a Agent) (Agent, error) {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agents (id, description, agent_name, permission_mode,
 		                    allowed_tools, additional_dirs, work_dir, deny_paths,
-		                    require_mention, share_workspace, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                    require_mention, share_workspace, reply_in_thread, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
 		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.RequireMention),
-		boolToInt(a.ShareWorkspace), boolToInt(a.Enabled), now, now,
+		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), boolToInt(a.Enabled), now, now,
 	); err != nil {
 		return Agent{}, fmt.Errorf("insert agent %s: %w", a.ID, err)
 	}
@@ -311,12 +318,12 @@ func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE agents SET description = ?, agent_name = ?, permission_mode = ?,
 		       allowed_tools = ?, additional_dirs = ?, work_dir = ?, deny_paths = ?,
-		       require_mention = ?, share_workspace = ?, enabled = ?, updated_at = ?
+		       require_mention = ?, share_workspace = ?, reply_in_thread = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,
 		a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
 		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.RequireMention),
-		boolToInt(a.ShareWorkspace), boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
+		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
 	if err != nil {
 		return Agent{}, fmt.Errorf("update agent %s: %w", a.ID, err)
 	}
@@ -416,19 +423,20 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scanAgent(row scanner) (Agent, error) {
 	var (
-		a                    Agent
-		tools, dirs, deny    string
-		mention, share       int
-		enabled              int
-		createdAt, updatedAt int64
+		a                     Agent
+		tools, dirs, deny     string
+		mention, share, reply int
+		enabled               int
+		createdAt, updatedAt  int64
 	)
 	if err := row.Scan(&a.ID, &a.Description, &a.AgentName, &a.PermissionMode,
-		&tools, &dirs, &a.WorkDir, &deny, &mention, &share, &enabled,
+		&tools, &dirs, &a.WorkDir, &deny, &mention, &share, &reply, &enabled,
 		&createdAt, &updatedAt); err != nil {
 		return Agent{}, err
 	}
 	a.RequireMention = mention != 0
 	a.ShareWorkspace = share != 0
+	a.ReplyInThread = reply != 0
 	a.AllowedTools = decodeList(tools)
 	a.AdditionalDirs = decodeList(dirs)
 	a.DenyPaths = decodeList(deny)

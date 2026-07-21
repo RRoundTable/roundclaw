@@ -65,6 +65,37 @@ Details that are load-bearing rather than stylistic:
 - **Stopping is explicit**: `SIGINT`, wait `container.stop_grace`, then
   `SIGKILL`.
 
+## Native subagents
+
+`--agent NAME` runs the whole session under one of Claude's own subagent
+personas. roundclaw's involvement is a single argv flag:
+
+```go
+if s.AgentName != "" {
+    args = append(args, "--agent", s.AgentName)   // args.go
+}
+```
+
+The name comes from the agent's `agent_name` field in `registry.db`. That is the
+entire integration — and the boundary is deliberate:
+
+- **roundclaw does not define subagents.** It passes a *name*, never a
+  definition. The persona must already exist where the CLI looks for it (the
+  mounted `claude-home` or the workspace's `.claude/`). roundclaw never writes
+  those files, so `--agents` JSON is not passed either.
+- **roundclaw does not track their history.** A native subagent's transcript
+  lives inside the Claude session, which `--resume` already restores. There is
+  nothing for roundclaw to persist.
+- **Temporal never sees them.** The `SubAgent` *workflow* (whose name is an
+  unrelated coincidence — see [orchestration.md](orchestration.md)) drives the
+  container; what persona runs inside it is opaque to the workflow. Selecting a
+  different `agent_name` changes no orchestration behaviour, only the argv of the
+  next turn.
+
+The one-line integration is the point: native subagents already do definition,
+history and resumption correctly, so reimplementing any of it would only add a
+way to disagree with the CLI.
+
 ## Streaming
 
 `internal/claude/stream.go` decodes stream-json into `core.LogKind` values:

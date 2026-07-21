@@ -9,6 +9,13 @@ Everything a user can *observe* is served from SQLite instead
 
 ### `SubAgent` — one per conversation
 
+> **The name is about orchestration, not Claude.** A `SubAgent` workflow is
+> roundclaw's durable executor for one conversation. It is unrelated to Claude's
+> *native* subagents (`--agent NAME`), which are a CLI feature the workflow knows
+> nothing about — see [agent-runtime.md](agent-runtime.md#native-subagents). One
+> is a Temporal execution that owns a queue; the other is a persona the `claude`
+> process runs under. They can coexist without ever touching.
+
 `internal/temporal/workflow/subagent.go`. Long-lived, one execution per
 `contract.WorkflowID(agentID, conversationID)`:
 

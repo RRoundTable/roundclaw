@@ -10,7 +10,7 @@ import (
 
 func seedTurn(t *testing.T, st *store.Store, request string, result core.TurnResult) {
 	t.Helper()
-	id, _, err := st.CreateTurn(t.Context(), request, core.HTTPPollOrigin(), "")
+	id, _, err := st.CreateTurn(t.Context(), store.NewTurn{Request: request, Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
 	if err != nil {
 		t.Fatalf("create turn: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestBuildRecapReadsOldestFirstAndLabelsItself(t *testing.T) {
 	seedTurn(t, st, "run the tests", core.TurnResult{Status: core.TurnError, ErrorMessage: "no test files"})
 	seedTurn(t, st, "long job", core.TurnResult{Status: core.TurnStopped})
 
-	recap, err := buildRecap(t.Context(), st)
+	recap, err := buildRecap(t.Context(), st, "")
 	if err != nil {
 		t.Fatalf("build recap: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestBuildRecapSkipsTheRunningTurn(t *testing.T) {
 	seedTurn(t, st, "finished work", core.TurnResult{Status: core.TurnDone, Text: "done"})
 	seedTurn(t, st, "the request being asked right now", core.TurnResult{})
 
-	recap, err := buildRecap(t.Context(), st)
+	recap, err := buildRecap(t.Context(), st, "")
 	if err != nil {
 		t.Fatalf("build recap: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestBuildRecapIsEmptyWithNoHistory(t *testing.T) {
 	dir := t.TempDir()
 	_, st, _ := newActivities(t, fakeRuntime(t, dir, false))
 
-	recap, err := buildRecap(t.Context(), st)
+	recap, err := buildRecap(t.Context(), st, "")
 	if err != nil {
 		t.Fatalf("build recap: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestBuildRecapTruncatesLongFields(t *testing.T) {
 	seedTurn(t, st, strings.Repeat("q", 5000),
 		core.TurnResult{Status: core.TurnDone, Text: strings.Repeat("a", 5000)})
 
-	recap, err := buildRecap(t.Context(), st)
+	recap, err := buildRecap(t.Context(), st, "")
 	if err != nil {
 		t.Fatalf("build recap: %v", err)
 	}

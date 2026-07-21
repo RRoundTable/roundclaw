@@ -48,7 +48,7 @@ func (d *Dispatcher) Workflow(ctx context.Context, agentID string) (WorkflowInfo
 		return WorkflowInfo{}, fmt.Errorf("%w: %s", ErrUnknownAgent, agentID)
 	}
 
-	info := WorkflowInfo{AgentID: agentID, WorkflowID: rcworkflow.WorkflowID(agentID)}
+	info := WorkflowInfo{AgentID: agentID, WorkflowID: rcworkflow.WorkflowID(agentID, "")}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

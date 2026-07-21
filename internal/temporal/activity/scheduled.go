@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/roundtable/roundclaw/internal/core"
+	"github.com/roundtable/roundclaw/internal/store"
 	"github.com/roundtable/roundclaw/internal/temporal/contract"
 )
 
@@ -75,7 +76,9 @@ func (a *Activities) EnqueueScheduled(ctx context.Context, in EnqueueScheduledIn
 	fireKey := fmt.Sprintf("schedule:%s:%d", sched.ID,
 		activity.GetInfo(ctx).ScheduledTime.Truncate(time.Second).Unix())
 
-	turnID, existed, err := st.CreateTurn(ctx, sched.Prompt, origin, fireKey)
+	turnID, existed, err := st.CreateTurn(ctx, store.NewTurn{
+		Request: sched.Prompt, Origin: origin, IdempotencyKey: fireKey,
+	})
 	if err != nil {
 		return err
 	}
@@ -94,7 +97,10 @@ func (a *Activities) EnqueueScheduled(ctx context.Context, in EnqueueScheduledIn
 		ReceivedAt: time.Now().UTC(),
 	}
 
-	workflowID := contract.WorkflowID(sched.AgentID)
+	// Schedules run in the agent's default conversation: they arrive with no
+	// thread, and a daily report that started a new conversation each morning
+	// would never build on what it said yesterday.
+	workflowID := contract.WorkflowID(sched.AgentID, "")
 	_, err = a.signaller().SignalWithStartWorkflow(ctx, workflowID, contract.SignalEnqueue, req,
 		client.StartWorkflowOptions{ID: workflowID, TaskQueue: a.cfg.Temporal.TaskQueue},
 		// The workflow type by name, not by function reference: importing the

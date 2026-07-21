@@ -20,6 +20,11 @@ type Request struct {
 	// client retry from becoming a second agent run.
 	RequestID string `json:"request_id"`
 
+	// ConversationID is the thread this request belongs to, or empty for the
+	// agent's default conversation. Requests in different conversations run in
+	// parallel, against separate sessions and separate workspaces.
+	ConversationID string `json:"conversation_id,omitempty"`
+
 	// TurnID is the turns row the adapter already created. The adapter, not the
 	// workflow, owns this insert: HTTP has to return a turn_id in its 202
 	// before any workflow code runs, and a workflow cannot touch SQLite without

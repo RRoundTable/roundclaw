@@ -68,7 +68,10 @@ type RunTurnInput struct {
 	AgentID    string `json:"agent_id"`
 	TurnID     int64  `json:"turn_id"`
 	WorkflowID string `json:"workflow_id"`
-	Prompt     string `json:"prompt"`
+	// ConversationID selects the workspace. The session follows the workflow
+	// ID, which already encodes it.
+	ConversationID string `json:"conversation_id,omitempty"`
+	Prompt         string `json:"prompt"`
 	// Resume is false only for an agent's very first turn. It selects
 	// --resume over --session-id.
 	Resume bool `json:"resume"`
@@ -133,11 +136,18 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		return core.TurnResult{}, err
 	}
 
+	// Parallel conversations cannot share a working tree, so each gets its own
+	// — a directory, or a git worktree when there is a repository to branch.
+	workspace, err := a.resolveWorkspace(ctx, agentCfg, in.ConversationID)
+	if err != nil {
+		return core.TurnResult{}, err
+	}
+
 	spec := claude.RunSpec{
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           a.cfg.Container.Image,
 		ContainerName:   claude.ContainerName(in.AgentID, in.TurnID),
-		WorkDir:         workDirFor(a.cfg, agentCfg),
+		WorkDir:         workspace,
 		DenyPaths:       agentCfg.DenyPaths,
 		ClaudeHome:      a.cfg.ClaudeHomeDir(in.AgentID),
 		AdditionalDirs:  agentCfg.AdditionalDirs,
@@ -155,7 +165,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		// The conversation itself is gone; this is a reconstruction from the
 		// turn record, and it is labelled as one so the agent does not treat a
 		// summary as though it remembered the exchange.
-		recap, err := buildRecap(ctx, st)
+		recap, err := buildRecap(ctx, st, in.ConversationID)
 		if err != nil {
 			log.Warn("could not rebuild context after a lost session",
 				"agent", in.AgentID, "error", err)
@@ -546,8 +556,10 @@ func workDirFor(cfg *config.Config, agent registry.Agent) string {
 //
 // Only finished turns are included, and each field is truncated: the point is
 // to re-establish what the agent was working on, not to replay it.
-func buildRecap(ctx context.Context, st *store.Store) (string, error) {
-	turns, err := st.RecentTurns(ctx, recapTurns)
+func buildRecap(ctx context.Context, st *store.Store, conversationID string) (string, error) {
+	// Scoped to the conversation: recapping a thread with another thread's
+	// history would hand the agent a conversation it never had.
+	turns, err := st.RecentTurnsIn(ctx, conversationID, recapTurns)
 	if err != nil {
 		return "", err
 	}

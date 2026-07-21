@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/roundtable/roundclaw/internal/core"
+	"github.com/roundtable/roundclaw/internal/store"
 )
 
 // With no ceilings configured nothing is refused, so an operator who has not
@@ -43,7 +44,7 @@ func TestTurnsPerHourRefusesWith429(t *testing.T) {
 func TestDailyCostCeilingRefuses(t *testing.T) {
 	srv, _, st := newHarnessWithLimits(t, "cost_per_day_usd: 1.0")
 
-	turnID, _, err := st.CreateTurn(t.Context(), "expensive", core.HTTPPollOrigin(), "")
+	turnID, _, err := st.CreateTurn(t.Context(), store.NewTurn{Request: "expensive", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
 	if err != nil {
 		t.Fatalf("create turn: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestDailyCostCeilingRefuses(t *testing.T) {
 func TestUsageCountsQueuedNotFinished(t *testing.T) {
 	_, _, st := newHarness(t)
 
-	if _, _, err := st.CreateTurn(t.Context(), "still running", core.HTTPPollOrigin(), ""); err != nil {
+	if _, _, err := st.CreateTurn(t.Context(), store.NewTurn{Request: "still running", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""}); err != nil {
 		t.Fatalf("create turn: %v", err)
 	}
 	usage, err := st.UsageSince(t.Context(), time.Now().Add(-time.Hour))

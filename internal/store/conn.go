@@ -49,10 +49,12 @@ CREATE TABLE IF NOT EXISTS turns (
     cost_usd     REAL,
     origin       TEXT NOT NULL,
     error        TEXT,
+    conversation TEXT NOT NULL DEFAULT '',
     queued_at    INTEGER NOT NULL,
     finished_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_turns_status ON turns(status, id);
+CREATE INDEX IF NOT EXISTS idx_turns_conversation ON turns(conversation, id);
 
 CREATE TABLE IF NOT EXISTS idempotency (
     key        TEXT PRIMARY KEY,
@@ -60,6 +62,12 @@ CREATE TABLE IF NOT EXISTS idempotency (
     created_at INTEGER NOT NULL
 );
 `
+
+// migrations add columns to a database created by an older build. Only ever
+// append; see the registry package for why.
+var migrations = []string{
+	`ALTER TABLE turns ADD COLUMN conversation TEXT NOT NULL DEFAULT ''`,
+}
 
 // Store is one agent's database handle.
 type Store struct {
@@ -118,6 +126,10 @@ func Open(path, agentID string, mode Mode) (*Store, error) {
 		if err := applySchema(db, schema); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("apply schema to %s: %w", path, err)
+		}
+		if err := migrate(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate %s: %w", path, err)
 		}
 	}
 	return s, nil
@@ -195,4 +207,19 @@ func applySchema(db *sql.DB, ddl string) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return err
+}
+
+// migrate applies each migration, treating "already applied" as success.
+// SQLite has no ADD COLUMN IF NOT EXISTS, so the duplicate-column error is the
+// signal that a migration has already run.
+func migrate(db *sql.DB) error {
+	for _, stmt := range migrations {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return nil
 }

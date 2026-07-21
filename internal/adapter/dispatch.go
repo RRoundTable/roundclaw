@@ -100,17 +100,33 @@ type Submission struct {
 // a durable handle, even if the signal or the worker fails immediately
 // afterwards.
 func (d *Dispatcher) Submit(ctx context.Context, agentID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
-	return d.submit(ctx, agentID, text, origin, idempotencyKey, rcworkflow.SignalEnqueue)
+	return d.SubmitIn(ctx, agentID, "", text, origin, idempotencyKey)
+}
+
+// SubmitIn queues a request in a named conversation.
+//
+// A conversation owns a Claude session, a queue and a workspace, so two of them
+// run in parallel without sharing any of the three. Empty means the agent's
+// default conversation, which is what /ask, schedules and webhooks use — none
+// of them arrive with a thread.
+func (d *Dispatcher) SubmitIn(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
+	return d.submit(ctx, agentID, conversationID, text, origin, idempotencyKey, rcworkflow.SignalEnqueue)
 }
 
 // Steer cancels whatever the agent is doing and puts this request at the front
 // of its queue. The Claude session is preserved, so the new turn keeps the
 // conversation's context; only the interrupted turn's unfinished work is lost.
 func (d *Dispatcher) Steer(ctx context.Context, agentID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
-	return d.submit(ctx, agentID, text, origin, idempotencyKey, rcworkflow.SignalSteer)
+	return d.SteerIn(ctx, agentID, "", text, origin, idempotencyKey)
 }
 
-func (d *Dispatcher) submit(ctx context.Context, agentID, text string, origin core.Origin, idempotencyKey, signal string) (Submission, error) {
+// SteerIn interrupts one conversation. A steer is scoped to its conversation:
+// interrupting a thread must not disturb what another thread is doing.
+func (d *Dispatcher) SteerIn(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
+	return d.submit(ctx, agentID, conversationID, text, origin, idempotencyKey, rcworkflow.SignalSteer)
+}
+
+func (d *Dispatcher) submit(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey, signal string) (Submission, error) {
 	if _, err := d.requireAgent(ctx, agentID); err != nil {
 		return Submission{}, err
 	}
@@ -135,7 +151,10 @@ func (d *Dispatcher) submit(ctx context.Context, agentID, text string, origin co
 		return Submission{}, fmt.Errorf("open store: %w", err)
 	}
 
-	turnID, existed, err := st.CreateTurn(ctx, text, origin, idempotencyKey)
+	turnID, existed, err := st.CreateTurn(ctx, store.NewTurn{
+		Request: text, Origin: origin,
+		Conversation: conversationID, IdempotencyKey: idempotencyKey,
+	})
 	if err != nil {
 		return Submission{}, err
 	}
@@ -146,18 +165,19 @@ func (d *Dispatcher) submit(ctx context.Context, agentID, text string, origin co
 	}
 
 	req := core.Request{
-		AgentID:    agentID,
-		RequestID:  idempotencyKey,
-		TurnID:     turnID,
-		Text:       text,
-		Origin:     origin,
-		ReceivedAt: time.Now().UTC(),
+		AgentID:        agentID,
+		ConversationID: conversationID,
+		RequestID:      idempotencyKey,
+		TurnID:         turnID,
+		Text:           text,
+		Origin:         origin,
+		ReceivedAt:     time.Now().UTC(),
 	}
 	if req.RequestID == "" {
 		req.RequestID = fmt.Sprintf("turn-%d", turnID)
 	}
 
-	workflowID := rcworkflow.WorkflowID(agentID)
+	workflowID := rcworkflow.WorkflowID(agentID, conversationID)
 	// SignalWithStart is what makes an agent self-starting: the first request
 	// creates the workflow, every later one just signals the running instance.
 	_, err = d.tc.SignalWithStartWorkflow(ctx, workflowID, signal, req,
@@ -167,16 +187,22 @@ func (d *Dispatcher) submit(ctx context.Context, agentID, text string, origin co
 			// The agent is meant to outlive any single request.
 			WorkflowExecutionTimeout: 0,
 		},
-		rcworkflow.SubAgent, rcworkflow.Input{AgentID: agentID})
+		rcworkflow.SubAgent, rcworkflow.Input{AgentID: agentID, ConversationID: conversationID})
 	if err != nil {
 		return Submission{TurnID: turnID}, fmt.Errorf("signal agent %s: %w", agentID, err)
 	}
 
-	return Submission{TurnID: turnID, QueuePosition: d.queueDepth(ctx, agentID)}, nil
+	return Submission{TurnID: turnID, QueuePosition: d.queueDepth(ctx, agentID, conversationID)}, nil
 }
 
-// Stop cancels the agent's current turn and drops anything queued behind it.
+// Stop cancels the agent's default conversation.
 func (d *Dispatcher) Stop(ctx context.Context, agentID, reason string) error {
+	return d.StopIn(ctx, agentID, "", reason)
+}
+
+// StopIn cancels one conversation's current turn and drops its queue. Scoped to
+// the conversation: stopping a thread must not stop the others.
+func (d *Dispatcher) StopIn(ctx context.Context, agentID, conversationID, reason string) error {
 	// Stop deliberately does not require the agent to be enabled: taking an
 	// agent out of service must not also take away the ability to stop it.
 	if _, err := d.reg.Get(ctx, agentID); errors.Is(err, registry.ErrNotFound) {
@@ -184,7 +210,7 @@ func (d *Dispatcher) Stop(ctx context.Context, agentID, reason string) error {
 	} else if err != nil {
 		return err
 	}
-	err := d.tc.SignalWorkflow(ctx, rcworkflow.WorkflowID(agentID), "",
+	err := d.tc.SignalWorkflow(ctx, rcworkflow.WorkflowID(agentID, conversationID), "",
 		rcworkflow.SignalStop, rcworkflow.StopSignal{ClearQueue: true, Reason: reason})
 	if err != nil {
 		return fmt.Errorf("signal stop to %s: %w", agentID, err)
@@ -231,7 +257,7 @@ func (d *Dispatcher) Status(ctx context.Context, agentID string, tail int) (Stat
 		State:       rt.Status,
 		CurrentTurn: rt.CurrentTurn,
 		UpdatedAt:   rt.UpdatedAt,
-		QueueLength: d.queueDepth(ctx, agentID),
+		QueueLength: d.queueDepth(ctx, agentID, ""),
 	}
 	// Best-effort: a status report is more useful without spend figures than
 	// not at all.
@@ -250,11 +276,11 @@ func (d *Dispatcher) Status(ctx context.Context, agentID string, tail int) (Stat
 // queueDepth asks the workflow how much work is waiting. A failure here means
 // the agent has never started or Temporal is unreachable; neither should make
 // a status request fail, so it reports zero.
-func (d *Dispatcher) queueDepth(ctx context.Context, agentID string) int {
+func (d *Dispatcher) queueDepth(ctx context.Context, agentID, conversationID string) int {
 	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	val, err := d.tc.QueryWorkflow(qctx, rcworkflow.WorkflowID(agentID), "", rcworkflow.QueryStatus)
+	val, err := d.tc.QueryWorkflow(qctx, rcworkflow.WorkflowID(agentID, conversationID), "", rcworkflow.QueryStatus)
 	if err != nil {
 		return 0
 	}

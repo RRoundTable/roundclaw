@@ -61,12 +61,13 @@ func SubAgent(ctx workflow.Context, in Input) error {
 	log := workflow.GetLogger(ctx)
 
 	state := &agentState{
-		agentID:      in.AgentID,
-		queue:        append([]core.Request(nil), in.Queue...),
-		turnCount:    in.TurnCount,
-		sessionReady: in.SessionReady,
-		sessionLost:  in.SessionLost,
-		lifecycle:    core.AgentIdle,
+		agentID:        in.AgentID,
+		conversationID: in.ConversationID,
+		queue:          append([]core.Request(nil), in.Queue...),
+		turnCount:      in.TurnCount,
+		sessionReady:   in.SessionReady,
+		sessionLost:    in.SessionLost,
+		lifecycle:      core.AgentIdle,
 	}
 
 	if err := workflow.SetQueryHandler(ctx, QueryStatus, state.status); err != nil {
@@ -123,11 +124,12 @@ func SubAgent(ctx workflow.Context, in Input) error {
 }
 
 type agentState struct {
-	agentID       string
-	queue         []core.Request
-	turnCount     int
-	currentTurnID int64
-	lifecycle     core.AgentStatus
+	agentID        string
+	conversationID string
+	queue          []core.Request
+	turnCount      int
+	currentTurnID  int64
+	lifecycle      core.AgentStatus
 	// sessionReady is observed, not counted: it is set when a turn reports that
 	// the CLI opened the session, and cleared when a resume attempt fails to.
 	sessionReady bool
@@ -251,10 +253,11 @@ func (s *agentState) runTurn(
 	})
 
 	future := workflow.ExecuteActivity(actCtx, (*activity.Activities).RunClaudeTurn, activity.RunTurnInput{
-		AgentID:    s.agentID,
-		TurnID:     req.TurnID,
-		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-		Prompt:     req.Text,
+		AgentID:        s.agentID,
+		ConversationID: s.conversationID,
+		TurnID:         req.TurnID,
+		WorkflowID:     workflow.GetInfo(ctx).WorkflowExecution.ID,
+		Prompt:         req.Text,
 		// Resume only once a turn has actually opened the session. Deriving
 		// this from a turn counter instead meant a turn that failed before the
 		// CLI started still advanced the count, and every later turn tried to

@@ -16,7 +16,11 @@ FROM alpine:3.20
 # The worker shells out to the container runtime to start each agent turn, so
 # it needs the client. It talks to the host's daemon over the mounted socket —
 # agent containers are siblings of the worker, not children of it.
-RUN apk add --no-cache docker-cli ca-certificates tzdata
+#
+# git is here for the worker too: a conversation's workspace is a `git worktree`
+# of the agent's repository, and that is created by the worker on the host
+# filesystem, not inside the agent container.
+RUN apk add --no-cache docker-cli git ca-certificates tzdata
 
 COPY --from=build /out/worker  /usr/local/bin/worker
 COPY --from=build /out/gateway /usr/local/bin/gateway

@@ -129,7 +129,7 @@ func TestRunClaudeTurnCompletes(t *testing.T) {
 	dir := t.TempDir()
 	a, st, _ := newActivities(t, fakeRuntime(t, dir, false))
 
-	turnID, _, err := st.CreateTurn(t.Context(), "hello", core.HTTPPollOrigin(), "")
+	turnID, _, err := st.CreateTurn(t.Context(), store.NewTurn{Request: "hello", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
 	if err != nil {
 		t.Fatalf("create turn: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestRunClaudeTurnPassesSessionFlags(t *testing.T) {
 	a, st, _ := newActivities(t, fakeRuntime(t, dir, false))
 
 	for i, resume := range []bool{false, true} {
-		turnID, _, err := st.CreateTurn(t.Context(), "hi", core.HTTPPollOrigin(), "")
+		turnID, _, err := st.CreateTurn(t.Context(), store.NewTurn{Request: "hi", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
 		if err != nil {
 			t.Fatalf("create turn %d: %v", i, err)
 		}

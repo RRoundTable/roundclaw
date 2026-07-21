@@ -25,15 +25,18 @@ type Runtime struct {
 
 // Turn is one agent turn.
 type Turn struct {
-	ID         int64
-	Request    string
-	Result     string
-	Status     core.TurnStatus
-	CostUSD    float64
-	Origin     core.Origin
-	Error      string
-	QueuedAt   time.Time
-	FinishedAt time.Time
+	ID      int64
+	Request string
+	Result  string
+	Status  core.TurnStatus
+	CostUSD float64
+	Origin  core.Origin
+	Error   string
+	// Conversation is the thread this turn belongs to, or empty for the agent's
+	// default conversation.
+	Conversation string
+	QueuedAt     time.Time
+	FinishedAt   time.Time
 }
 
 // LogEntry is one live_logs row.
@@ -91,13 +94,24 @@ func (s *Store) GetRuntime(ctx context.Context) (Runtime, error) {
 	return rt, nil
 }
 
+// NewTurn describes a turn about to be queued.
+type NewTurn struct {
+	Request string
+	Origin  core.Origin
+	// Conversation is the thread this belongs to; empty is the agent's default
+	// conversation.
+	Conversation string
+	// IdempotencyKey may be empty for sources that dedupe by other means.
+	IdempotencyKey string
+}
+
 // CreateTurn records a queued turn and returns its ID.
 //
-// idempotencyKey may be empty for sources that dedupe by other means. When it
-// is set, this is atomic: a repeated key returns the original turn ID and
-// existed=true, and no second turn is created. Without that atomicity a client
-// retry racing the original would start two agent runs.
-func (s *Store) CreateTurn(ctx context.Context, request string, origin core.Origin, idempotencyKey string) (turnID int64, existed bool, err error) {
+// When an idempotency key is set this is atomic: a repeated key returns the
+// original turn ID and existed=true, and no second turn is created. Without
+// that atomicity a client retry racing the original would start two agent runs.
+func (s *Store) CreateTurn(ctx context.Context, t NewTurn) (turnID int64, existed bool, err error) {
+	request, origin, idempotencyKey := t.Request, t.Origin, t.IdempotencyKey
 	encodedOrigin, err := core.EncodeOrigin(origin)
 	if err != nil {
 		return 0, false, err
@@ -122,9 +136,9 @@ func (s *Store) CreateTurn(ctx context.Context, request string, origin core.Orig
 
 	now := time.Now().UnixMilli()
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO turns (request, status, origin, queued_at)
-		VALUES (?, ?, ?, ?)`,
-		request, string(core.TurnRunning), encodedOrigin, now)
+		INSERT INTO turns (request, status, origin, conversation, queued_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		request, string(core.TurnRunning), encodedOrigin, t.Conversation, now)
 	if err != nil {
 		return 0, false, fmt.Errorf("insert turn: %w", err)
 	}
@@ -176,9 +190,10 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 		finishedAt sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
 		FROM turns WHERE id = ?`, turnID).
-		Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg, &queuedAt, &finishedAt)
+		Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg,
+			&t.Conversation, &queuedAt, &finishedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}
@@ -200,19 +215,23 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 	return t, nil
 }
 
-// RecentTurns returns the most recent turns, newest first. This is the "window"
-// the plan reserves for display and for rebuilding context after a lost Claude
-// session — it is not fed back into the prompt on a normal turn, because the
-// live session already holds that history.
+// RecentTurns returns the most recent turns, newest first, across every
+// conversation. Used for display and for spend accounting.
 func (s *Store) RecentTurns(ctx context.Context, limit int) ([]Turn, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
 		FROM turns ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("recent turns: %w", err)
 	}
 	defer rows.Close()
+	return scanTurns(rows)
+}
 
+// scanTurns reads a turn result set. A row whose origin will not decode is
+// still returned with an empty origin rather than failing the query: it is
+// worth showing, and the origin only matters for delivery, which is long past.
+func scanTurns(rows *sql.Rows) ([]Turn, error) {
 	var out []Turn
 	for rows.Next() {
 		var (
@@ -225,7 +244,8 @@ func (s *Store) RecentTurns(ctx context.Context, limit int) ([]Turn, error) {
 			queuedAt   int64
 			finishedAt sql.NullInt64
 		)
-		if err := rows.Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg, &queuedAt, &finishedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg,
+			&t.Conversation, &queuedAt, &finishedAt); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
 		}
 		t.Result = result.String
@@ -236,12 +256,27 @@ func (s *Store) RecentTurns(ctx context.Context, limit int) ([]Turn, error) {
 		if finishedAt.Valid {
 			t.FinishedAt = time.UnixMilli(finishedAt.Int64)
 		}
-		// A row with an unreadable origin is still worth showing, so decode
-		// failures degrade to an empty origin rather than failing the query.
 		t.Origin, _ = core.DecodeOrigin(originJSON)
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// RecentTurnsIn returns the most recent turns of one conversation, newest
+// first.
+//
+// This is the window used to rebuild context after a lost session, and it has
+// to be conversation-scoped: recapping a thread with another thread's history
+// would hand the agent a conversation it never had.
+func (s *Store) RecentTurnsIn(ctx context.Context, conversation string, limit int) ([]Turn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+		FROM turns WHERE conversation = ? ORDER BY id DESC LIMIT ?`, conversation, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent turns in %q: %w", conversation, err)
+	}
+	defer rows.Close()
+	return scanTurns(rows)
 }
 
 // AppendLog writes one live-log line. This is on the hot path — the activity

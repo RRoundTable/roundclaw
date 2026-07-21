@@ -292,7 +292,12 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	agent, err := d.disp.Registry().ByChannel(ctx, m.ChannelID)
+	// A message in a thread binds through the thread's parent channel and runs
+	// as that thread's own conversation; a message in a plain channel is the
+	// agent's default conversation.
+	agentChannel, conversationID := d.conversation(m.ChannelID)
+
+	agent, err := d.disp.Registry().ByChannel(ctx, agentChannel)
 	if err != nil {
 		// No binding. Either the router picks an agent, or the message is not
 		// ours — an unbound channel stays silent rather than guessing.
@@ -324,7 +329,7 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	// The Discord message ID is a natural idempotency key: a gateway
 	// reconnection can redeliver the same message, and this makes that a no-op.
-	sub, submitErr := d.disp.Submit(ctx, agent.ID, prompt, core.DiscordOrigin(m.ChannelID, m.ID), "discord:"+m.ID)
+	sub, submitErr := d.disp.SubmitIn(ctx, agent.ID, conversationID, prompt, core.DiscordOrigin(m.ChannelID, m.ID), "discord:"+m.ID)
 	err = submitErr
 	if err != nil {
 		d.log.Error("failed to queue discord message", "channel", m.ChannelID, "error", err)
@@ -341,6 +346,31 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if sub.QueuePosition > 0 {
 		d.reply(m.ChannelID, fmt.Sprintf("⏳ Queued (%d ahead) — turn #%d", sub.QueuePosition, sub.TurnID))
 	}
+}
+
+// conversation resolves where a message or command landed into the channel that
+// carries the agent binding and the conversation it belongs to.
+//
+// A Discord thread is a Claude session of its own: messages in it run in an
+// isolated workspace and against a separate Claude conversation, so two threads
+// under the same channel never share context or step on each other's files. The
+// binding, though, lives on the parent channel — a thread is not bound to an
+// agent directly — so the two IDs have to be told apart.
+//
+// A plain channel is the agent's default conversation (empty ID): it is what
+// /ask, schedules and webhooks all use, and what existed before threads did.
+func (d *Discord) conversation(channelID string) (agentChannel, conversationID string) {
+	ch, err := d.session.State.Channel(channelID)
+	if err != nil {
+		// Not cached — fetch it. A thread the bot has not seen an event for yet
+		// still has to be recognised as a thread, or its first message would be
+		// mistaken for the parent channel's default conversation.
+		ch, err = d.session.Channel(channelID)
+	}
+	if err != nil || ch == nil || !ch.IsThread() {
+		return channelID, ""
+	}
+	return ch.ParentID, channelID
 }
 
 // stripMention reports whether the bot was addressed, and returns the message
@@ -462,7 +492,12 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	agent, err := ResolveAgent(ctx, d.disp.Registry(), optionString(data.Options, "agent"), i.ChannelID)
+	// In a thread the binding is on the parent channel, and control commands act
+	// on that thread's conversation. /ask, by contrast, always targets the
+	// agent's default session regardless of where it is typed.
+	agentChannel, conversationID := d.conversation(i.ChannelID)
+
+	agent, err := ResolveAgent(ctx, d.disp.Registry(), optionString(data.Options, "agent"), agentChannel)
 	if err != nil {
 		d.respondNow(i, "⚠️ "+err.Error()+"\nRun `/agents` to see what is available.")
 		return
@@ -476,9 +511,9 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	case "workflow":
 		d.handleWorkflow(i, agent.ID)
 	case "stop":
-		d.handleStop(i, agent.ID)
+		d.handleStop(i, agent.ID, conversationID)
 	case "steer":
-		d.handleSteer(i, agent.ID, optionString(data.Options, "instruction"))
+		d.handleSteer(i, agent.ID, conversationID, optionString(data.Options, "instruction"))
 	}
 }
 
@@ -687,19 +722,21 @@ func (d *Discord) handleStatus(i *discordgo.InteractionCreate, agentID string) {
 // handleStop and handleSteer defer first: signalling Temporal can exceed the
 // three-second interaction deadline, and a late response on an un-deferred
 // interaction is discarded by Discord.
-func (d *Discord) handleStop(i *discordgo.InteractionCreate, agentID string) {
+func (d *Discord) handleStop(i *discordgo.InteractionCreate, agentID, conversationID string) {
 	d.defer_(i)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := d.disp.Stop(ctx, agentID, "stopped from discord"); err != nil {
+	// Stops the conversation the command was typed in — the thread's turn, or
+	// the default one in a plain channel — not every conversation the agent has.
+	if err := d.disp.StopIn(ctx, agentID, conversationID, "stopped from discord"); err != nil {
 		d.followUp(i, "⚠️ Could not stop: "+err.Error())
 		return
 	}
 	d.followUp(i, "🛑 Stopping the current turn and clearing the queue.")
 }
 
-func (d *Discord) handleSteer(i *discordgo.InteractionCreate, agentID, instruction string) {
+func (d *Discord) handleSteer(i *discordgo.InteractionCreate, agentID, conversationID, instruction string) {
 	d.defer_(i)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -707,7 +744,7 @@ func (d *Discord) handleSteer(i *discordgo.InteractionCreate, agentID, instructi
 
 	// A steer is a distinct turn, keyed by interaction ID so a Discord retry
 	// cannot interrupt the agent twice.
-	sub, err := d.disp.Steer(ctx, agentID, instruction,
+	sub, err := d.disp.SteerIn(ctx, agentID, conversationID, instruction,
 		core.DiscordOrigin(i.ChannelID, i.ID), "discord-steer:"+i.ID)
 	if err != nil {
 		d.followUp(i, "⚠️ Could not steer: "+err.Error())

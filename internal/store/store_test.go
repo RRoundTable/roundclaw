@@ -24,7 +24,7 @@ func TestCreateTurnIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	origin := core.HTTPPollOrigin()
 
-	first, existed, err := s.CreateTurn(ctx, "do the thing", origin, "key-1")
+	first, existed, err := s.CreateTurn(ctx, NewTurn{Request: "do the thing", Origin: origin, IdempotencyKey: "key-1"})
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestCreateTurnIsIdempotent(t *testing.T) {
 	}
 
 	// A client retry must land on the same turn, not start a second agent run.
-	second, existed, err := s.CreateTurn(ctx, "do the thing", origin, "key-1")
+	second, existed, err := s.CreateTurn(ctx, NewTurn{Request: "do the thing", Origin: origin, IdempotencyKey: "key-1"})
 	if err != nil {
 		t.Fatalf("retry create: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestCreateTurnIdempotencyUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			id, _, err := s.CreateTurn(ctx, "concurrent", core.HTTPPollOrigin(), "same-key")
+			id, _, err := s.CreateTurn(ctx, NewTurn{Request: "concurrent", Origin: core.HTTPPollOrigin(), IdempotencyKey: "same-key"})
 			if err != nil {
 				t.Errorf("create: %v", err)
 				return
@@ -92,7 +92,7 @@ func TestFinishTurnKeepsFirstTerminalOutcome(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	id, _, err := s.CreateTurn(ctx, "req", core.DiscordOrigin("chan-1", "msg-1"), "")
+	id, _, err := s.CreateTurn(ctx, NewTurn{Request: "req", Origin: core.DiscordOrigin("chan-1", "msg-1"), IdempotencyKey: ""})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestOriginRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	want := core.HTTPCallbackOrigin("https://example.test/hook", "default")
-	id, _, err := s.CreateTurn(ctx, "req", want, "")
+	id, _, err := s.CreateTurn(ctx, NewTurn{Request: "req", Origin: want, IdempotencyKey: ""})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestConcurrentReaderSeesWrites(t *testing.T) {
 	}
 	defer writer.Close()
 
-	turnID, _, err := writer.CreateTurn(ctx, "req", core.HTTPPollOrigin(), "")
+	turnID, _, err := writer.CreateTurn(ctx, NewTurn{Request: "req", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
 	if err != nil {
 		t.Fatalf("create turn: %v", err)
 	}

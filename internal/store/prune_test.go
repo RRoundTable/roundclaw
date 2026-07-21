@@ -25,8 +25,8 @@ func TestPruneRemovesOldTranscriptsButKeepsTurns(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now()
 
-	old, _, _ := s.CreateTurn(t.Context(), "old", core.HTTPPollOrigin(), "")
-	recent, _, _ := s.CreateTurn(t.Context(), "recent", core.HTTPPollOrigin(), "")
+	old, _, _ := s.CreateTurn(t.Context(), NewTurn{Request: "old", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
+	recent, _, _ := s.CreateTurn(t.Context(), NewTurn{Request: "recent", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
 	for _, id := range []int64{old, recent} {
 		for range 3 {
 			if err := s.AppendLog(t.Context(), id, core.LogText, "chunk"); err != nil {
@@ -66,7 +66,7 @@ func TestPruneRemovesOldTranscriptsButKeepsTurns(t *testing.T) {
 func TestPruneNeverTouchesRunningTurns(t *testing.T) {
 	s := newTestStore(t)
 
-	running, _, _ := s.CreateTurn(t.Context(), "still going", core.HTTPPollOrigin(), "")
+	running, _, _ := s.CreateTurn(t.Context(), NewTurn{Request: "still going", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
 	if err := s.AppendLog(t.Context(), running, core.LogText, "working"); err != nil {
 		t.Fatalf("append log: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestPruneRemovesOldTurnsAndKeys(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now()
 
-	old, _, _ := s.CreateTurn(t.Context(), "ancient", core.HTTPPollOrigin(), "key-old")
+	old, _, _ := s.CreateTurn(t.Context(), NewTurn{Request: "ancient", Origin: core.HTTPPollOrigin(), IdempotencyKey: "key-old"})
 	finishAt(t, s, old, now.AddDate(0, 0, -120))
 	if _, err := s.db.ExecContext(t.Context(),
 		`UPDATE idempotency SET created_at = ?`, now.AddDate(0, 0, -120).UnixMilli()); err != nil {

@@ -247,6 +247,75 @@ POST /v1/webhooks/{agent}
 
 ---
 
+## Command line (`roundclaw`)
+
+`roundclaw` is a terminal client for a running gateway. It is a thin wrapper over
+the same HTTP API, so it needs the gateway's URL and a bearer token:
+
+```bash
+export ROUNDCLAW_URL=https://host          # default http://127.0.0.1:8099
+export ROUNDCLAW_API_TOKEN=your-token      # one of http.tokens_env
+```
+
+```bash
+roundclaw agents                       # list agents
+roundclaw agent show pr-reviewer       # print a definition
+roundclaw status pr-reviewer           # what it's doing now
+roundclaw send pr-reviewer "review PR #482"
+roundclaw send pr-reviewer "..." --wait          # block for the result
+roundclaw send pr-reviewer "..." --steer         # interrupt and redirect
+roundclaw send pr-reviewer "..." --key deploy-42 # idempotent retry
+roundclaw turn pr-reviewer 123         # a turn's state and result
+```
+
+`--url` and `--token` override the environment on any command.
+
+## Secrets
+
+An agent's container often needs a credential of its own — a `GITHUB_TOKEN` for a
+pull-request reviewer, an API key for a tool it calls. Register it once and
+roundclaw injects it as an environment variable on every turn.
+
+```bash
+# Per-agent — only pr-reviewer's containers get it. Value read from stdin so it
+# never lands in your shell history or the process table:
+printf %s "$GH_PAT" | roundclaw secret set GITHUB_TOKEN --agent pr-reviewer
+
+# Global — every agent sees it. A per-agent secret of the same name overrides it:
+roundclaw secret set SENTRY_DSN            # prompts on stdin
+
+roundclaw secret ls --agent pr-reviewer    # names only, never values
+roundclaw secret rm GITHUB_TOKEN --agent pr-reviewer
+```
+
+The same over HTTP:
+
+```
+PUT    /v1/agents/{agent}/secrets/{name}   {"value": "..."}   per-agent
+PUT    /v1/secrets/{name}                  {"value": "..."}   global
+GET    /v1/agents/{agent}/secrets                             list names
+DELETE /v1/agents/{agent}/secrets/{name}
+```
+
+How it works, and its limits:
+
+- **Encrypted at rest.** Values are stored encrypted in the registry with a
+  master key the server holds only in its environment
+  (`container.secrets_key_env`, default `ROUNDCLAW_SECRET_KEY`). Set it to a
+  strong random value — `openssl rand -base64 32`.
+- **No master key, no secrets.** If the key is unset the store is off: registering
+  a secret returns `503` rather than storing plaintext, and agents that use none
+  run exactly as before.
+- **Never read back.** No command or endpoint returns a stored value — only names.
+  The value travels one way: in when you set it, into a container at turn time.
+- **The Claude credential wins.** A secret named the same as the agent's login
+  token (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`) is ignored, so you
+  cannot accidentally break authentication.
+- Rotating the master key makes existing secrets unreadable — by design. Re-set
+  them after a rotation.
+
+---
+
 ## Quick reference
 
 | I want to… | Discord | HTTP |
@@ -259,3 +328,7 @@ POST /v1/webhooks/{agent}
 | A separate, parallel session | reply in a **thread** | — |
 | Schedule recurring work | `/schedule create` | `PUT /v1/schedules/{id}` |
 | Trigger from an external system | — | `POST /v1/webhooks/{a}` (signed) |
+| Give an agent a secret | — | `roundclaw secret set` · `PUT /v1/agents/{a}/secrets/{name}` |
+
+The `roundclaw` CLI covers the HTTP column from a terminal — see
+[Command line](#command-line-roundclaw).

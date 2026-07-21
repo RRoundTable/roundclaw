@@ -53,7 +53,7 @@ workspace stays writable by the containers and by whoever is debugging them.
 
 | Image | Contents | Built from |
 |-------|----------|-----------|
-| roundclaw | `worker` + `gateway` on `alpine:3.20`, plus `docker-cli` | `Dockerfile` |
+| roundclaw | `worker` + `gateway` + `roundclaw` CLI on `alpine:3.20`, plus `docker-cli` | `Dockerfile` |
 | agent | `@anthropic-ai/claude-code` on `node:22-slim` + git, ripgrep | `container/Dockerfile` |
 | fake agent | a scripted `claude` stand-in for tests | `container/fake/Dockerfile` |
 
@@ -69,7 +69,7 @@ because the worker shells out to start each turn.
 |---------|------|
 | `workspace_root` | one directory per agent; relative paths resolve against the config file, not the process CWD, so worker and gateway agree wherever they start from |
 | `temporal` | `host_port`, `namespace`, `task_queue` |
-| `container` | `runtime`, `image`, `api_key_env`, `oauth_token_env`, `turn_timeout`, `stop_grace` |
+| `container` | `runtime`, `image`, `api_key_env`, `oauth_token_env`, `secrets_key_env`, `turn_timeout`, `stop_grace` |
 | `discord` | `token_env`, `guild_id`, `command_permission`, `allowed_roles`, `allowed_users` |
 | `http` | `addr`, `tokens_env`, `wait_timeout`, `max_sse_per_agent`, `callback_secret_env`, `webhook_secret_env` |
 | `limits` | `turns_per_hour`, `cost_per_day_usd`, `global_cost_per_day_usd`, `max_concurrent_turns` |

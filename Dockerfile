@@ -8,8 +8,9 @@ RUN go mod download
 COPY . .
 # CGO_ENABLED=0 because the SQLite driver is pure Go; the result runs on a
 # minimal base with no libc to match.
-RUN CGO_ENABLED=0 go build -trimpath -o /out/worker  ./cmd/worker && \
-    CGO_ENABLED=0 go build -trimpath -o /out/gateway ./cmd/gateway
+RUN CGO_ENABLED=0 go build -trimpath -o /out/worker    ./cmd/worker && \
+    CGO_ENABLED=0 go build -trimpath -o /out/gateway   ./cmd/gateway && \
+    CGO_ENABLED=0 go build -trimpath -o /out/roundclaw ./cmd/roundclaw
 
 FROM alpine:3.20
 
@@ -22,8 +23,10 @@ FROM alpine:3.20
 # filesystem, not inside the agent container.
 RUN apk add --no-cache docker-cli git ca-certificates tzdata
 
-COPY --from=build /out/worker  /usr/local/bin/worker
-COPY --from=build /out/gateway /usr/local/bin/gateway
+COPY --from=build /out/worker    /usr/local/bin/worker
+COPY --from=build /out/gateway   /usr/local/bin/gateway
+# The terminal client, so an operator can `docker exec` it against the gateway.
+COPY --from=build /out/roundclaw /usr/local/bin/roundclaw
 
 # Compose overrides this with the host uid so the workspace stays writable by
 # both the containers and the person debugging them.

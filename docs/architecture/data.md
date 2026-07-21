@@ -67,11 +67,24 @@ agents(id PK, description, agent_name, permission_mode, allowed_tools,
 agent_channels(channel_id PK, agent_id → agents.id ON DELETE CASCADE)
 
 schedules(...)   -- see internal/registry/schedules.go
+
+secrets(scope, name, ciphertext, created_at, updated_at, PK(scope, name))
 ```
 
 `channel_id` is the primary key of the binding table, so one Discord channel can
 never map to two agents. Enforcing it in the schema rather than in a config
 check means it holds even when two processes write concurrently.
+
+**`secrets` holds values, encrypted.** `scope` is an agent ID, or `''` for a
+global secret every agent sees; a per-agent row of the same name overrides the
+global one. `ciphertext` is `base64(nonce ‖ AES-256-GCM)`, sealed with a key
+derived from `container.secrets_key_env` — a value that never touches the
+database. No FK on `scope`: a global secret has no agent to reference, and the
+row deliberately outlives an agent delete just as the workspace does. `List`
+returns names only; the sole path that decrypts is `SecretsForAgent`, called by
+the activity to build a container's environment
+([agent-runtime.md](agent-runtime.md#registered-secrets)). Without a configured
+key the store is off and every write fails closed rather than storing plaintext.
 
 List columns (`allowed_tools`, `additional_dirs`, `deny_paths`) are JSON arrays
 in a TEXT column. They are read as a unit and never queried into, so a join

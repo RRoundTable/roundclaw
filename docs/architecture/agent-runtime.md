@@ -36,6 +36,7 @@ docker run --rm --name roundclaw-<agent>-<turn>
   -v <agent>/work:/workspace
   -v <agent>/claude-home:/home/node/.claude
   -e CLAUDE_CODE_OAUTH_TOKEN            # by name, never by value
+  [-e SECRET_NAME] ...                  # registered secrets, also by name
   [-v /dev/null:<denied path>:ro] ...
   [-v <dir>:/mnt/<base>:ro] ...
   <image> claude -p "<prompt>"
@@ -149,6 +150,24 @@ conversations did.
 mistake: those credentials belong to an interactive session, and a container
 refreshing them can rotate the refresh token out from under the human still
 using it.
+
+## Registered secrets
+
+An agent can carry extra secrets — a `GITHUB_TOKEN`, a tool's API key — stored
+encrypted in the registry ([data.md](data.md#registrydb)) and injected as
+container environment variables. The activity calls `SecretsForAgent`, which
+merges global and per-agent secrets, and puts them on the `RunSpec`.
+
+They are injected the **same way as the credential**: `Args` emits `-e NAME`
+(name only), and the activity sets the value on the runtime subprocess's
+environment. So a registered secret never appears in argv, the host process
+table, or a Temporal history event — only inside the container, where it is
+meant to be. Values are sorted by name for a deterministic argv.
+
+Two guards: the credential's `-e` precedes the secrets', and the activity drops
+any secret whose name collides with the credential env — authentication cannot
+be broken by a stray secret. When no master key is configured, `SecretsForAgent`
+returns nothing and the turn runs exactly as it did before secrets existed.
 
 ## The image
 

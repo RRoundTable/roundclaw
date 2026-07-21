@@ -66,6 +66,7 @@ constraints that are easy to break — is in [docs/architecture/](docs/architect
 | --- | --- |
 | `cmd/worker` | Temporal worker: runs turns, delivers responses |
 | `cmd/gateway` | Discord listener + HTTP API + status reads |
+| `cmd/roundclaw` | Terminal client for the HTTP API (agents, requests, secrets) |
 | `internal/core` | Types shared by every adapter; imports no adapter |
 | `internal/claude` | CLI argv, stream-json decoder, session derivation |
 | `internal/store` | Per-agent SQLite (WAL) |

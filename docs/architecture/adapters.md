@@ -107,6 +107,8 @@ POST   /v1/agents                         create
 GET    /v1/agents/{agent}/definition      read definition
 PUT    /v1/agents/{agent}/definition      replace definition
 DELETE /v1/agents/{agent}                 delete definition
+GET|PUT|DELETE /v1/secrets[/{name}]                 global secrets
+GET|PUT|DELETE /v1/agents/{agent}/secrets[/{name}]  per-agent secrets
 GET    /v1/schedules  ·  GET|PUT|DELETE /v1/schedules/{schedule}
 POST   /v1/schedules/{schedule}/pause  ·  /resume
 POST   /v1/webhooks/{agent}               signature-authenticated
@@ -124,6 +126,16 @@ Three ways to get a result, with different durability:
 `http.wait_timeout`, so a caller behind a long queue is never hung indefinitely.
 SSE connections are capped per agent (`http.max_sse_per_agent`) so a client
 cannot exhaust the gateway's file descriptors.
+
+## Secrets
+
+`http_secrets.go` exposes the encrypted secret store ([data.md](data.md#registrydb))
+over the API. The shape of every handler follows one rule: a value goes **in** on
+a `PUT` and never comes back out. `GET` lists names and timestamps; there is no
+route that returns a value, and the handlers log the name and scope but never the
+value. A write with no master key configured returns `503` rather than storing
+plaintext (`ErrSecretsDisabled`), and a per-agent write for an unknown agent is a
+`404`. The `roundclaw` CLI is just another client of these routes.
 
 ## Webhooks
 

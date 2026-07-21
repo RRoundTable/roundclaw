@@ -113,6 +113,10 @@ type Admin struct {
 type AdminContext struct {
 	Agents           []AgentSummary
 	CurrentChannelID string
+	// Schedules is the pre-formatted list of existing schedules, one per line.
+	// Without it the model has no idea what schedules exist and hallucinates
+	// "there are none" when asked to list or modify one.
+	Schedules string
 	// History is the prior admin exchange in this thread, oldest first, already
 	// formatted for the prompt. Empty for a one-shot request.
 	History string
@@ -185,6 +189,13 @@ func adminPrompt(request string, world AdminContext) string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("\nExisting schedules:\n")
+	if strings.TrimSpace(world.Schedules) == "" {
+		b.WriteString("- (none yet)\n")
+	} else {
+		b.WriteString(world.Schedules)
+	}
+
 	fmt.Fprintf(&b, "\nThe request was sent from Discord channel %s. When the operator says \"here\" or\n"+
 		"\"this channel\", use that ID.\n", world.CurrentChannelID)
 

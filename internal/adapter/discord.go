@@ -527,9 +527,19 @@ func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID, histo
 		summaries = append(summaries, claude.AgentSummary{ID: a.ID, Description: a.Description})
 	}
 
+	// Give the planner the current schedules too, or it invents an answer when
+	// asked to list or change one.
+	var scheduleLines strings.Builder
+	if schedules, err := d.disp.ListSchedules(ctx); err == nil {
+		for _, s := range schedules {
+			fmt.Fprintf(&scheduleLines, "- %s: agent %s, cron %q (%s)\n", s.ID, s.AgentID, s.Cron, s.Timezone)
+		}
+	}
+
 	action, err := d.admin.Plan(ctx, request, claude.AdminContext{
 		Agents:           summaries,
 		CurrentChannelID: currentChannelID,
+		Schedules:        scheduleLines.String(),
 		History:          history,
 	})
 	if err != nil {

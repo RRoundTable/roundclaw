@@ -80,6 +80,13 @@ discord:
 http:
   addr: ":8080"
   tokens_env: ROUNDCLAW_API_TOKENS
+  # Names an env var of comma-separated tokens with a RESTRICTED scope: they may
+  # send requests to agents and read agent status, but not manage agents,
+  # secrets, tools, workflows or schedules. This is the token an agent's own
+  # container carries (via a "team" tool + a ROUNDCLAW_API_TOKEN secret) so it can
+  # delegate work to another agent — while a prompt injection reaching one agent
+  # still cannot reconfigure or delete the others. Empty disables delegation.
+  delegate_tokens_env: ROUNDCLAW_DELEGATE_TOKENS
   # ?wait=true is a convenience only; past this the request demotes to 202 and
   # the caller polls the turn instead.
   wait_timeout: 60s

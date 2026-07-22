@@ -424,6 +424,56 @@ Notes and limits:
   `http://outline:3000`) also needs `container.network` set — see the
   infrastructure guide.
 
+## Agents working together — delegation
+
+An agent can delegate work to another agent and use the answer, because roundclaw
+is itself reachable over its own HTTP API. It is a special case of a tool: the
+`team` tool mounts the `roundclaw` CLI into the container, and the agent runs
+`roundclaw send <other> "..." --wait` to hand a task to a teammate.
+
+The token an agent carries for this is deliberately **weaker** than the operator
+token. `http.delegate_tokens_env` names a set of tokens restricted to exactly two
+things — sending a request to an agent and reading agent status. Managing agents,
+secrets, tools, workflows or schedules is `403`. So even if one agent is talked
+into misbehaving by a message in its channel, it cannot delete or reconfigure the
+others; the blast radius is "it can send another agent a request".
+
+Setting it up (operator, once):
+
+```bash
+# 1. A restricted token the gateway recognises (add to the env it names):
+#    ROUNDCLAW_DELEGATE_TOKENS=<openssl rand -hex 24>
+# 2. Build the CLI for the container's platform into a directory, then register
+#    it as a tool. The gateway must be reachable from the agents' network
+#    (container.network) by the alias in ROUNDCLAW_URL.
+roundclaw tool set team \
+  --path /path/to/team-cli \
+  --env ROUNDCLAW_URL=http://roundclaw-gateway:8099 \
+  --desc "delegate work to another agent" \
+  --instructions - <<'EOF'
+Use `/mnt/team-cli/roundclaw send <agent> "..." --wait` to delegate and get the
+answer, or `... status <agent>` to see what a teammate is doing. Delegate only
+when needed; never call an agent that is calling you (no loops).
+EOF
+# 3. Give each collaborating agent the restricted token (encrypted) and the tool:
+printf %s "$DELEGATE_TOKEN" | roundclaw secret set ROUNDCLAW_API_TOKEN --agent pm
+#    then from /admin: "pm에 team 도구 붙여줘"  (or set the agent's tools list)
+```
+
+After that, from Discord: ask `pm` to *"dev에게 X를 위임해서 결과를 알려줘"* and pm
+runs a turn that calls dev, waits for dev's own turn, and relays the answer.
+
+Guard rails and limits:
+
+- **Loops burn budget.** Nothing structurally prevents A→B→A; the backstop is the
+  spend ceiling (`limits.global_cost_per_day_usd`), which halts the fleet once
+  hit. The tool instructions tell agents not to form loops — keep that line.
+- **`--wait` blocks.** The delegating agent's container is held while the teammate
+  runs, so a deep chain can occupy several `max_concurrent_turns` slots at once.
+  Delegation is best kept shallow.
+- **Same queue.** A delegated request waits behind whatever that agent is already
+  doing (Discord included), exactly like any other request.
+
 ---
 
 ## Quick reference
@@ -440,6 +490,7 @@ Notes and limits:
 | Trigger from an external system | — | `POST /v1/webhooks/{a}` (signed) |
 | Give an agent a secret | — | `roundclaw secret set` · `PUT /v1/agents/{a}/secrets/{name}` |
 | Give an agent a local tool | register: `roundclaw tool set` · grant: `/admin` "붙여줘" | `PUT /v1/tools/{id}` · agent `tools` list |
+| Let agents delegate to each other | ask pm to "dev에게 위임해줘" | the `team` tool + a delegate-scoped token |
 
 The `roundclaw` CLI covers the HTTP column from a terminal — see
 [Command line](#command-line-roundclaw).

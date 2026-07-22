@@ -178,6 +178,13 @@ type HTTPConfig struct {
 	Addr string `yaml:"addr"`
 	// TokensEnv names an env var holding comma-separated bearer tokens.
 	TokensEnv string `yaml:"tokens_env"`
+	// DelegateTokensEnv names an env var holding comma-separated bearer tokens
+	// with a restricted scope: they may send requests to agents and read agent
+	// status, but not manage agents, secrets, tools, workflows or schedules. This
+	// is the token an agent's own container carries so it can delegate work to
+	// another agent without being able to reconfigure the fleet — a prompt
+	// injection reaching one agent then cannot delete another.
+	DelegateTokensEnv string `yaml:"delegate_tokens_env"`
 	// WaitTimeout bounds ?wait=true before the request is demoted to 202.
 	WaitTimeout time.Duration `yaml:"wait_timeout"`
 	// MaxSSEPerAgent caps concurrent SSE streams so the gateway cannot run out
@@ -350,6 +357,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.HTTP.TokensEnv == "" {
 		c.HTTP.TokensEnv = "ROUNDCLAW_API_TOKENS"
+	}
+	if c.HTTP.DelegateTokensEnv == "" {
+		c.HTTP.DelegateTokensEnv = "ROUNDCLAW_DELEGATE_TOKENS"
 	}
 	if c.HTTP.WaitTimeout == 0 {
 		c.HTTP.WaitTimeout = 60 * time.Second

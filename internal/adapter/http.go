@@ -32,15 +32,18 @@ type HTTP struct {
 	disp *Dispatcher
 	log  *slog.Logger
 
-	tokens      [][32]byte
-	waitTimeout time.Duration
+	tokens         [][32]byte
+	delegateTokens [][32]byte
+	waitTimeout    time.Duration
 
 	sse sseLimiter
 }
 
-// NewHTTP builds the API adapter. tokens are accepted bearer credentials;
-// an empty list rejects every request rather than running open.
-func NewHTTP(disp *Dispatcher, log *slog.Logger, tokens []string, waitTimeout time.Duration, maxSSEPerAgent int) *HTTP {
+// NewHTTP builds the API adapter. tokens are full-access bearer credentials;
+// delegateTokens are restricted to sending requests and reading agent status
+// (see delegateAllowed). An empty tokens list rejects every request rather than
+// running open.
+func NewHTTP(disp *Dispatcher, log *slog.Logger, tokens, delegateTokens []string, waitTimeout time.Duration, maxSSEPerAgent int) *HTTP {
 	h := &HTTP{
 		disp:        disp,
 		log:         log,
@@ -50,6 +53,11 @@ func NewHTTP(disp *Dispatcher, log *slog.Logger, tokens []string, waitTimeout ti
 	for _, t := range tokens {
 		if t = strings.TrimSpace(t); t != "" {
 			h.tokens = append(h.tokens, sha256.Sum256([]byte(t)))
+		}
+	}
+	for _, t := range delegateTokens {
+		if t = strings.TrimSpace(t); t != "" {
+			h.delegateTokens = append(h.delegateTokens, sha256.Sum256([]byte(t)))
 		}
 	}
 	return h
@@ -403,8 +411,55 @@ func (h *HTTP) authenticate(next http.Handler) http.Handler {
 				return
 			}
 		}
+		// A delegate token is accepted only on the restricted surface — sending a
+		// request to an agent and reading status. Everything else (managing agents,
+		// secrets, tools, workflows, schedules) is 403, so a token that leaks into
+		// an agent container cannot reconfigure the fleet.
+		for _, known := range h.delegateTokens {
+			if subtle.ConstantTimeCompare(sum[:], known[:]) == 1 {
+				if !delegateAllowed(r.Method, r.URL.Path) {
+					writeError(w, http.StatusForbidden,
+						"this token may only send requests to agents and read their status")
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
 		writeError(w, http.StatusUnauthorized, "invalid bearer token")
 	})
+}
+
+// delegateAllowed is the whitelist a restricted (delegate-scoped) token may
+// reach: list agents, read one agent's status/turns/workflow, and send it a
+// request. It is a prefix/shape check on the raw path because it runs in the
+// auth middleware, before the router has matched a pattern. Deny by default —
+// any route not named here (agent CRUD, secrets, tools, workflows, schedules,
+// even an agent's definition, which exposes host paths) is refused.
+func delegateAllowed(method, path string) bool {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) < 2 || segs[0] != "v1" || segs[1] != "agents" {
+		return false
+	}
+	switch method {
+	case http.MethodGet:
+		switch len(segs) {
+		case 2: // /v1/agents                          list
+			return true
+		case 3: // /v1/agents/{id}                     status
+			return true
+		case 4: // /v1/agents/{id}/workflow            execution state
+			return segs[3] == "workflow"
+		case 5: // /v1/agents/{id}/turns/{turn}        turn result
+			return segs[3] == "turns"
+		case 6: // /v1/agents/{id}/turns/{turn}/stream live transcript
+			return segs[3] == "turns" && segs[5] == "stream"
+		}
+	case http.MethodPost:
+		// /v1/agents/{id}/requests                    delegate a task
+		return len(segs) == 4 && segs[3] == "requests"
+	}
+	return false
 }
 
 func (h *HTTP) writeLookupError(w http.ResponseWriter, err error) {

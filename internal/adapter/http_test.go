@@ -144,7 +144,7 @@ agents:
 	tc := &fakeTemporal{}
 	disp := NewDispatcher(cfg, tc, stores, reg)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	api := NewHTTP(disp, log, []string{testToken}, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
+	api := NewHTTP(disp, log, []string{testToken}, nil, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
 
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
@@ -478,3 +478,32 @@ func openStream(t *testing.T, srv *httptest.Server, url string) *http.Response {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+func TestDelegateAllowed(t *testing.T) {
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		// Allowed: the delegation surface.
+		{http.MethodGet, "/v1/agents", true},
+		{http.MethodGet, "/v1/agents/dev", true},
+		{http.MethodGet, "/v1/agents/dev/workflow", true},
+		{http.MethodGet, "/v1/agents/dev/turns/12", true},
+		{http.MethodGet, "/v1/agents/dev/turns/12/stream", true},
+		{http.MethodPost, "/v1/agents/dev/requests", true},
+		// Denied: everything privileged.
+		{http.MethodPost, "/v1/agents", false},               // create agent
+		{http.MethodDelete, "/v1/agents/dev", false},         // delete agent
+		{http.MethodPut, "/v1/agents/dev/definition", false}, // reconfigure
+		{http.MethodGet, "/v1/agents/dev/definition", false}, // exposes host paths
+		{http.MethodGet, "/v1/secrets", false},
+		{http.MethodPut, "/v1/tools/outline", false},
+		{http.MethodPost, "/v1/workflows", false},
+		{http.MethodPut, "/v1/schedules/x", false},
+	}
+	for _, c := range cases {
+		if got := delegateAllowed(c.method, c.path); got != c.want {
+			t.Errorf("delegateAllowed(%s %s) = %v, want %v", c.method, c.path, got, c.want)
+		}
+	}
+}

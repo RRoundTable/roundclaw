@@ -99,6 +99,17 @@ Notable behaviour:
 `net/http` `ServeMux` with Go 1.22 method+pattern routing. Bearer auth from
 `http.tokens_env`, except webhooks which authenticate by signature.
 
+There are **two token scopes**. Full tokens (`http.tokens_env`) reach every
+route. Delegate tokens (`http.delegate_tokens_env`) are restricted by
+`delegateAllowed` to sending a request and reading agent status — list, status,
+turns, stream, workflow, and `POST …/requests`; everything else is `403`,
+including an agent's `definition` (it exposes host paths). This is what lets an
+agent's own container carry a token to delegate to another agent (the `team`
+tool, [agent-runtime.md](agent-runtime.md#registered-tools)) without being able
+to reconfigure or delete the fleet — the check runs in the auth middleware,
+before routing, and denies by default. Tokens are held only as SHA-256 hashes and
+compared in constant time.
+
 ```
 POST   /v1/agents/{agent}/requests        202 {turn_id, queue_position, duplicate}
 GET    /v1/agents/{agent}/turns/{turn}    turn state and result

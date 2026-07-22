@@ -61,7 +61,7 @@ agents:
 
 	disp := NewDispatcher(cfg, &fakeTemporal{}, stores, reg)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	api := NewHTTP(disp, log, []string{testToken}, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
+	api := NewHTTP(disp, log, []string{testToken}, nil, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 	return srv, reg

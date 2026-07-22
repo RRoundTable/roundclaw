@@ -61,6 +61,16 @@ The roundclaw image builds with `CGO_ENABLED=0` — the SQLite driver is pure Go
 so the binaries run on a base with no libc to match. It carries `docker-cli`
 because the worker shells out to start each turn.
 
+**Networks.** The compose services share the project's default bridge. Agent
+containers, though, are siblings the worker starts through the host daemon and
+attaches to `container.network` (an extra user-defined bridge, e.g. `ingress`),
+so by default they cannot see the gateway. Two features need them to: reaching a
+local service like Outline (`http://outline:3000`), and agent-to-agent delegation
+(an agent calling the gateway's own API). The gateway therefore also joins that
+network, with a stable alias (`roundclaw-gateway`) an agent's `team` tool points
+`ROUNDCLAW_URL` at. It keeps `default` too, or it would lose Temporal and
+Postgres.
+
 ## Configuration
 
 `roundclaw.yaml` (see `roundclaw.example.yaml`), plus `.env` read by compose.
@@ -71,7 +81,7 @@ because the worker shells out to start each turn.
 | `temporal` | `host_port`, `namespace`, `task_queue` |
 | `container` | `runtime`, `image`, `api_key_env`, `oauth_token_env`, `secrets_key_env`, `turn_timeout`, `stop_grace` |
 | `discord` | `token_env`, `guild_id`, `command_permission`, `allowed_roles`, `allowed_users` |
-| `http` | `addr`, `tokens_env`, `wait_timeout`, `max_sse_per_agent`, `callback_secret_env`, `webhook_secret_env` |
+| `http` | `addr`, `tokens_env`, `delegate_tokens_env`, `wait_timeout`, `max_sse_per_agent`, `callback_secret_env`, `webhook_secret_env` |
 | `limits` | `turns_per_hour`, `cost_per_day_usd`, `global_cost_per_day_usd`, `max_concurrent_turns` |
 | `retention` | `transcript_days`, `turn_days`, `interval` |
 | `router` | `enabled`, `model`, `timeout`, `channels` (v2 routing; not on by default) |

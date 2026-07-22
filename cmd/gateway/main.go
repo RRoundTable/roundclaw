@@ -154,8 +154,13 @@ func run(configPath string, log *slog.Logger) error {
 		log.Warn("no API tokens configured; the HTTP API will reject every request",
 			"env", cfg.HTTP.TokensEnv)
 	}
+	delegateTokens := adapter.TokensFromEnv(os.Getenv(cfg.HTTP.DelegateTokensEnv))
+	if len(delegateTokens) > 0 {
+		log.Info("delegate-scoped API tokens configured; agents can delegate to each other",
+			"count", len(delegateTokens))
+	}
 
-	api := adapter.NewHTTP(disp, log, tokens, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
+	api := adapter.NewHTTP(disp, log, tokens, delegateTokens, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
 		Handler:           api.Handler(),

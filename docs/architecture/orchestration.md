@@ -11,6 +11,34 @@ Three kinds of work live in the runtime registry ([registry.db](data.md#registry
 and can be created, changed, and removed *while roundclaw runs* — no restart, no
 YAML edit. Each maps to a different Temporal execution described below.
 
+```mermaid
+flowchart TB
+    API[HTTP API]
+    CLI[roundclaw CLI]
+    ADM[admin agent]
+    API --> REG
+    CLI --> REG
+    ADM --> REG
+    REG[(registry.db)]
+
+    REG --> AGENT[Agent<br/>persistent · conversational]
+    REG --> SCHED[Schedule<br/>cron trigger]
+    REG --> WF[Workflow<br/>agent-less pipeline]
+    REG -.-> MOD[Tool / Secret<br/>modifiers]
+
+    SCHED -->|runs on| AGENT
+    MOD -. granted to .-> AGENT
+
+    subgraph temporal["Temporal executions (durable)"]
+        SA[[SubAgent<br/>one per conversation]]
+        SR[[ScheduledRequest<br/>→ default conversation]]
+        RW[[RunWorkflow<br/>ordered steps]]
+    end
+    AGENT ==> SA
+    SCHED ==> SR
+    WF ==> RW
+```
+
 | | **Agent** | **Schedule** | **Workflow** |
 |---|---|---|---|
 | What it is | a persistent, conversational bot | a cron trigger on an agent | an agent-less pipeline of prompts |

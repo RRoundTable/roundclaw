@@ -5,6 +5,49 @@ two things and only two: the request queue, and the durability of the work.
 Everything a user can *observe* is served from SQLite instead
 ([data.md](data.md)).
 
+## What you register: agents, schedules, workflows
+
+Three kinds of work live in the runtime registry ([registry.db](data.md#registrydb))
+and can be created, changed, and removed *while roundclaw runs* — no restart, no
+YAML edit. Each maps to a different Temporal execution described below.
+
+| | **Agent** | **Schedule** | **Workflow** |
+|---|---|---|---|
+| What it is | a persistent, conversational bot | a cron trigger on an agent | an agent-less pipeline of prompts |
+| Runs as | `SubAgent`, one per conversation | `ScheduledRequest` → the agent's default conversation | `RunWorkflow`, ordered steps |
+| Session / memory | yes — resumes its Claude session | uses its agent's session | none — each step is one-shot, chained by passing outputs forward |
+| Triggered by | a Discord message or an API request | a cron on a Temporal Schedule | started by hand (or, later, a schedule) |
+| Channel | bound to one (one channel → one agent) | reports into a channel | reports the final result into a channel |
+| Registry table | `agents` (+ `agent_channels`) | `schedules` | `workflows` |
+
+How they relate:
+
+- **A schedule always runs on an agent** — it is a recurring prompt fired into
+  that agent's *default* conversation, not a standalone thing. There is no
+  agent-less schedule; a standalone or multi-step recurring job is a **workflow**
+  instead (and a workflow can, in turn, be put on a schedule).
+- **A workflow is deliberately agent-less** — no session, queue, or channel
+  binding, because a scheduled or one-off pipeline needs none of what an agent
+  carries. Its steps each run as their own activity, so a crash resumes at the
+  step it was on rather than from the top.
+- **Tools and secrets are modifiers, not work.** A registered tool
+  ([agent-runtime.md](agent-runtime.md#registered-tools)) or secret is *granted*
+  to an agent to widen what a turn can do; neither runs on its own.
+
+All three are registered the same three ways, because they are all just registry
+rows — nothing needs a redeploy to appear:
+
+- **HTTP API** — `POST/PUT /v1/agents`, `/v1/schedules/{id}`, `/v1/workflows`
+  ([adapters.md](adapters.md#http-httpgo)).
+- **CLI** — `roundclaw`, a thin client over those routes
+  ([usage.md](../usage.md#command-line-roundclaw)).
+- **The admin agent** — describe the change in plain language and it drives the
+  same API itself ([adapters.md](adapters.md#admin-is-an-agent)).
+
+The YAML `agents:` list is a one-time bootstrap only: it seeds an empty registry
+at first start and is ignored afterwards ([data.md](data.md#registrydb)). The
+three Temporal executions these map to are next.
+
 ## Workflows
 
 ### `SubAgent` — one per conversation

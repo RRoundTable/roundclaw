@@ -149,20 +149,6 @@ func (d *Discord) registerCommands() error {
 			Description: "List the agents you can call and what each one is for",
 		},
 		{
-			// Natural-language management: "create an agent called pr-bot",
-			// "schedule dev to report at 9am". roundclaw validates and applies it.
-			Name:        "admin",
-			Description: "Manage roundclaw in natural language (agents, schedules, workflows)",
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "request",
-					Description: "What to do — e.g. create an agent called pr-bot for reviews",
-					Required:    true,
-				},
-			},
-		},
-		{
 			// Management. Creating and editing open a form rather than taking
 			// flat options: an agent has more fields than a slash command reads
 			// comfortably, and tools and channels are free text.
@@ -820,11 +806,6 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	// is exactly where someone is trying to find out what to call.
 	if data.Name == "agents" {
 		d.handleAgents(i)
-		return
-	}
-
-	if data.Name == "admin" {
-		d.handleAdminCommand(i, optionString(data.Options, "request"))
 		return
 	}
 

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/roundtable/roundclaw/internal/registry"
 )
@@ -26,7 +28,66 @@ func (h *HTTP) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/agents", h.createAgent)
 	mux.HandleFunc("GET /v1/agents/{agent}/definition", h.getAgentDefinition)
 	mux.HandleFunc("PUT /v1/agents/{agent}/definition", h.putAgentDefinition)
+	mux.HandleFunc("GET /v1/agents/{agent}/persona", h.getAgentPersona)
+	mux.HandleFunc("PUT /v1/agents/{agent}/persona", h.putAgentPersona)
 	mux.HandleFunc("DELETE /v1/agents/{agent}", h.deleteAgent)
+}
+
+// The persona is an agent's CLAUDE.md — its instructions — which is a file in the
+// workspace, not a registry column. It lives here (not in the definition) so it
+// can be long-form and edited on its own. The gateway shares the workspace mount,
+// so this reads and writes the same file the agent's next turn will load.
+type personaBody struct {
+	Persona string `json:"persona"`
+}
+
+func (h *HTTP) getAgentPersona(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("agent")
+	if _, err := h.disp.Registry().Get(r.Context(), id); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	data, err := os.ReadFile(h.personaPath(id))
+	if errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusOK, map[string]string{"agent_id": id, "persona": ""})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"agent_id": id, "persona": string(data)})
+}
+
+func (h *HTTP) putAgentPersona(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("agent")
+	if _, err := h.disp.Registry().Get(r.Context(), id); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	var body personaBody
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed JSON body: "+err.Error())
+		return
+	}
+	if err := h.writePersona(id, body.Persona); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.log.Info("agent persona updated via API", "agent", id, "bytes", len(body.Persona))
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": id, "bytes": len(body.Persona), "status": "set"})
+}
+
+func (h *HTTP) personaPath(agentID string) string {
+	return filepath.Join(h.disp.Config().WorkDir(agentID), "CLAUDE.md")
+}
+
+func (h *HTTP) writePersona(agentID, content string) error {
+	dir := h.disp.Config().WorkDir(agentID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(content), 0o640)
 }
 
 func (h *HTTP) listAgents(w http.ResponseWriter, r *http.Request) {

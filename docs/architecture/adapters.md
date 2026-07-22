@@ -120,6 +120,8 @@ GET    /v1/agents                         list
 POST   /v1/agents                         create
 GET    /v1/agents/{agent}/definition      read definition
 PUT    /v1/agents/{agent}/definition      replace definition
+GET    /v1/agents/{agent}/persona         read CLAUDE.md (instructions)
+PUT    /v1/agents/{agent}/persona         replace CLAUDE.md
 DELETE /v1/agents/{agent}                 delete definition
 GET|PUT|DELETE /v1/secrets[/{name}]                 global secrets
 GET|PUT|DELETE /v1/agents/{agent}/secrets[/{name}]  per-agent secrets
@@ -151,41 +153,33 @@ value. A write with no master key configured returns `503` rather than storing
 plaintext (`ErrSecretsDisabled`), and a per-agent write for an unknown agent is a
 `404`. The `roundclaw` CLI is just another client of these routes.
 
-## Natural-language admin
+## Admin is an agent
 
-`admin.go` (executor) + `internal/claude/admin.go` (planner). The `/admin`
-command and an optional admin channel let an operator manage roundclaw in plain
-language — "create an agent called pr-bot", "disable dev", "show dev's persona",
-"build a 3-step workflow". It works like the router, and for the same reason:
+Managing roundclaw in plain language is done by an **agent**, not a stateless
+planner. `admin` is an ordinary agent given (a) a full-scope `ROUNDCLAW_API_TOKEN`
+as a per-agent secret and (b) the roundclaw CLI as an `admin-cli` tool
+(`ROUNDCLAW_URL` in its env). It manages the fleet by *driving the API itself* —
+so it has a real session, tools, and multi-step reasoning, and is not confined to
+a fixed action set. There is no bespoke subsystem: it is the agent runtime plus
+the tool and secret machinery, pointed at roundclaw's own API.
 
-1. **The planner proposes.** A stateless `claude --json-schema` call turns the
-   request into a structured `AdminAction`, given the current state (agents with
-   their settings, schedules, workflows) and, in a thread, the prior exchange.
-   The LLM only ever emits one of a fixed set of actions — it never holds a
-   token, reaches the API, or runs a command.
-2. **roundclaw executes.** `ExecuteAdmin` switches on the action and calls the
-   *same* `Create` / `Update` / `PutWorkflow` / `PutSchedule` paths the slash
-   commands use, so every existing guard — id validation, duplicate detection,
-   unknown-agent rejection — applies, and a hallucinated proposal fails safely
-   with a message rather than a bad write.
+This trades one safety model for another, deliberately. The earlier stateless
+planner was safe *by construction* — the LLM could only emit one of a fixed set
+of actions and held no token. An agent that drives the API holds a powerful token,
+so its safety rests on **channel access control**: bind it to a private channel,
+keep `require_mention`, apply the allow-list, and give it neither web access nor
+delegated requests from other agents (either is a prompt-injection path to a
+full-access token). The blast radius is bounded only by who can talk to it.
 
-Adding an action is four edits: the `AdminActionKind`, the JSON schema's enum,
-a prompt rule, and an `ExecuteAdmin` case. Actions cover the agent lifecycle
-(create/update/delete/enable/disable, show settings and persona, set persona),
-schedules, workflows (create/run/list/delete), and tools
-(attach/detach/list). Tool *registration* is pointedly **not** an admin action:
-it names a host path, so it stays an operator act over the CLI/HTTP, and admin
-can only grant IDs that already exist — a hallucinated tool name resolves to
-nothing rather than mounting an arbitrary path.
+The persona routes (`GET|PUT /v1/agents/{id}/persona`) exist for this: an agent
+in an isolated container cannot reach another agent's workspace file, so editing a
+persona — which the old planner did on the gateway's filesystem — is exposed as an
+API the admin agent calls like anything else.
 
-`/admin` opens a **thread** named `🛠️ admin: …` and runs the request there;
-further messages in that thread keep managing in context (the thread's history
-is fed back to the planner), recognised by the name prefix so it survives a
-restart with no in-memory state. Admin messages carry no slash-command
-permission gate, so the same allow-list is enforced on them explicitly — a
-public admin thread must not let anyone reconfigure agents. The planner runs
-`claude` in a container from the gateway, so the gateway holds the docker socket
-too, not only the worker.
+> The previous planner (`internal/claude/admin.go` + `adapter/admin.go`, the
+> `/admin` command) is retired. Its code may still be present but is unwired —
+> `SetAdmin` is no longer called, so `d.admin` is nil and the admin-channel branch
+> is inert.
 
 ## Webhooks
 

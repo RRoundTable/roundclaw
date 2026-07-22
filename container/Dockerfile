@@ -8,8 +8,11 @@ FROM node:22-slim
 
 # python3 is here for agents that run Python tools — e.g. the migrated stock
 # bot, which is stdlib-only, so the interpreter alone is enough (no pip).
+# curl lets an agent granted an API tool (the admin agent, or a team member
+# delegating) call the roundclaw HTTP API directly, rather than improvising with
+# python's urllib.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates ripgrep python3 \
+        git ca-certificates ripgrep python3 curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code

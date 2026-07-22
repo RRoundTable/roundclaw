@@ -120,24 +120,12 @@ func run(configPath string, log *slog.Logger) error {
 			log.Info("routing enabled for unbound channels",
 				"model", cfg.Router.Model, "channels", len(cfg.Router.Channels))
 		}
-		// Natural-language admin powers both the /admin command and the optional
-		// admin channel. It runs the same kind of credentialed --json-schema call
-		// as the router, so it needs a credential — the one the agents use.
-		if cred, err := cfg.Container.ResolveCredential(os.LookupEnv); err != nil {
-			log.Warn("natural-language admin disabled: no credential", "error", err)
-		} else {
-			dc.SetAdmin(&claude.Admin{
-				Runtime:         cfg.Container.Runtime,
-				Image:           cfg.Container.Image,
-				Model:           cfg.Router.Model,
-				Timeout:         cfg.Router.Timeout,
-				CredentialEnv:   cred.EnvName,
-				CredentialValue: cred.Value,
-				Bare:            cfg.Container.IsAPIKey(cred),
-			}, cfg.Discord.AdminChannel)
-			log.Info("natural-language admin enabled",
-				"slash_command", true, "admin_channel", cfg.Discord.AdminChannel)
-		}
+		// Natural-language admin is no longer the stateless /admin planner. It is an
+		// ordinary agent (id "admin") given a full-scope API token and the roundclaw
+		// CLI as a tool, so it manages the fleet by driving the API itself — with a
+		// real session, tools, and multi-step reasoning the fixed action set could
+		// not do. Nothing to wire here; it is just an agent bound to a private
+		// channel. See docs/usage.md ("Agent-based admin").
 		if err := dc.Start(ctx); err != nil {
 			return err
 		}

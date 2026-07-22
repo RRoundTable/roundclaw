@@ -100,27 +100,42 @@ Run an agent automatically on a cron schedule (a daily report, an hourly check):
 Scheduled runs use the agent's **default** session, so a daily job builds on what
 it did yesterday. Editing a schedule takes effect on its next run.
 
-### Managing in plain language — `/admin`
+### Managing in plain language — the `admin` agent
 
-Instead of the forms above, `/admin` lets you manage roundclaw by describing what
-you want. It opens a **thread** and does it there, so you can keep going in
-context:
+Management by conversation is done by an **agent**, not a slash command. `admin`
+is an ordinary agent given a full-scope API token and the roundclaw CLI as a
+tool, so it manages the fleet by driving the API itself — with a real session,
+tools, and multi-step reasoning a fixed action set could not do. Bind it to a
+**private** channel and talk to it:
 
 ```
-/admin request: create an agent called pr-bot for reviews, bound to this channel
-   → 🛠️ opens an admin thread, "✅ created pr-bot"
-
-(in the thread, no /admin needed)
-"show me dev's settings"        → dev's permission, channels, flags, tools
-"show dev's persona"            → dev's CLAUDE.md
-"disable pm for now"            → pm stopped and paused
-"change dev's persona to: …"    → rewrites dev's instructions
+(in the admin channel, @-mention the bot)
+"create an agent called pr-bot for reviews, bound to #pull-requests"
+"show me dev's settings and its persona"
+"disable pm for now"
+"change dev's persona so it always replies in Korean"
 "build a 2-step workflow: collect the news, then summarise it, post here"
+"왜 director가 어제 실패했는지 로그 보고 원인 알려줘"     ← open-ended, multi-step
 ```
 
-You describe it; roundclaw validates and applies it through the same paths the
-forms use — a bad request gets a question back, not a broken agent. `/admin` is
-gated to the people on the allow-list (see [permissions](#a-note-on-permissions)).
+Because it is an agent, it can chain steps, investigate, and remember the
+conversation — not just emit one predefined action. It manages agents, tools,
+secrets, workflows and schedules, and reads/writes any agent's persona through
+`GET|PUT /v1/agents/{id}/persona`.
+
+**This is a powerful role — lock it down.** The admin agent holds a token that
+can create and delete agents, so its safety rests entirely on who can reach its
+channel:
+
+- Bind it to a **private** channel only trusted operators can post in, and keep
+  `require_mention` on.
+- Apply the command/message allow-list (see [permissions](#a-note-on-permissions)).
+- Do **not** give it web access or accept delegated requests from other agents —
+  either becomes a prompt-injection path to a full-access token.
+
+The token it carries is a normal per-agent secret (`ROUNDCLAW_API_TOKEN` = a
+full token), and the CLI + `ROUNDCLAW_URL` come from an `admin-cli` tool — so the
+whole thing is built out of the tool and secret machinery above, nothing bespoke.
 
 ### Workflows — agent-less pipelines
 

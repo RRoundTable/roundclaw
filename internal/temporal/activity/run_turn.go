@@ -167,6 +167,14 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 	}
 	delete(secrets, cred.EnvName)
 
+	// Granted Claude Code skills: each mounts into ~/.claude/skills/<id>, where the
+	// CLI discovers it. Resolved here, like tools, so a skill's path can change
+	// without editing every agent that has it.
+	skills, err := a.resolveSkills(ctx, agentCfg.Skills)
+	if err != nil {
+		return core.TurnResult{}, err
+	}
+
 	spec := claude.RunSpec{
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           a.cfg.Container.Image,
@@ -184,6 +192,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		AllowedTools:    agentCfg.AllowedTools,
 		Network:         a.cfg.Container.Network,
 		Secrets:         secrets,
+		Skills:          skills,
 		Prompt:          toolNote + in.Prompt,
 	}
 
@@ -618,6 +627,29 @@ func (a *Activities) resolveTools(ctx context.Context, ids []string, env map[str
 		note.WriteString("---\n\n")
 	}
 	return dirs, note.String(), nil
+}
+
+// resolveSkills turns an agent's granted skill IDs into a map of id to host
+// directory, which the RunSpec mounts into ~/.claude/skills/<id>. A skill that
+// no longer exists is skipped with a warning rather than failing the turn.
+func (a *Activities) resolveSkills(ctx context.Context, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	log := activity.GetLogger(ctx)
+	out := make(map[string]string, len(ids))
+	for _, id := range ids {
+		sk, err := a.reg.GetSkill(ctx, id)
+		if errors.Is(err, registry.ErrNotFound) {
+			log.Warn("agent grants a skill that no longer exists", "skill", id)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("load skill %s: %w", id, err)
+		}
+		out[sk.ID] = sk.HostPath
+	}
+	return out, nil
 }
 
 // buildRecap summarises recent turns for an agent whose session was lost.

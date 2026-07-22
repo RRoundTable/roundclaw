@@ -62,7 +62,7 @@ idempotency(key PK, turn_id, created_at)
 ```sql
 agents(id PK, description, agent_name, permission_mode, allowed_tools,
        additional_dirs, work_dir, deny_paths, require_mention,
-       share_workspace, reply_in_thread, tools, enabled, created_at, updated_at)
+       share_workspace, reply_in_thread, tools, skills, enabled, created_at, updated_at)
 
 agent_channels(channel_id PK, agent_id → agents.id ON DELETE CASCADE)
 
@@ -73,6 +73,8 @@ secrets(scope, name, ciphertext, created_at, updated_at, PK(scope, name))
 workflows(id PK, description, channel_id, steps, enabled, created_at, updated_at)
 
 tools(id PK, description, host_path, env, instructions, created_at, updated_at)
+
+skills(id PK, description, host_path, created_at, updated_at)
 ```
 
 `channel_id` is the primary key of the binding table, so one Discord channel can
@@ -105,6 +107,14 @@ row names a host path and is operator-only; granting an ID to an agent is safe i
 plain language, since only registered IDs resolve. No FK from `agents.tools` to
 `tools`: it is a JSON list like the other list columns, and a grant referencing a
 since-deleted tool is skipped at turn time rather than blocked at write.
+
+**`skills` are grantable Claude Code skills.** Simpler than a tool — just an id,
+`description`, and a `host_path` to a `SKILL.md` directory — because a skill
+carries no env and no injected prompt. An agent's `skills` column lists the IDs it
+is granted; the activity mounts each read-only at `~/.claude/skills/<id>`, a
+nested mount over ClaudeHome where the CLI discovers it
+([agent-runtime.md](agent-runtime.md#registered-skills)). Same operator/grant
+boundary and same skip-if-deleted behaviour as tools.
 
 List columns (`allowed_tools`, `additional_dirs`, `deny_paths`) are JSON arrays
 in a TEXT column. They are read as a unit and never queried into, so a join

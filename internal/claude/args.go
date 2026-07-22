@@ -75,6 +75,12 @@ type RunSpec struct {
 	// the process table, or a Temporal history event.
 	Secrets map[string]string
 
+	// Skills maps a granted skill's id to its host directory (a SKILL.md and its
+	// files). Each is mounted read-only at ~/.claude/skills/<id> — a nested mount
+	// over ClaudeHome, which Docker orders by depth so it lands on top — where the
+	// CLI discovers it. No env, no prompt injection: a SKILL.md is self-describing.
+	Skills map[string]string
+
 	// SessionID is derived from the workflow ID. Resume selects which flag
 	// carries it: --session-id creates a session, --resume continues one, and
 	// passing --session-id for an existing session is an error.
@@ -180,6 +186,15 @@ func (s RunSpec) Args() ([]string, error) {
 	for _, d := range s.DenyPaths {
 		target := filepath.Join(ContainerWorkspace, filepath.Clean(d))
 		args = append(args, "-v", "/dev/null:"+target+":ro")
+	}
+
+	// Granted skills, mounted read-only into ~/.claude/skills/<id> where the CLI
+	// discovers them. Nested under the ClaudeHome mount, so — like the deny paths
+	// above — Docker's depth ordering puts them on top. Sorted for a deterministic
+	// argv. No --add-dir and no flag: skill discovery is automatic from that path.
+	for _, id := range sortedKeys(s.Skills) {
+		target := ContainerClaudeHome + "/skills/" + id
+		args = append(args, "-v", s.Skills[id]+":"+target+":ro")
 	}
 
 	var addDirs []string

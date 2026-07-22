@@ -439,6 +439,50 @@ Notes and limits:
   `http://outline:3000`) also needs `container.network` set — see the
   infrastructure guide.
 
+## Skills — granting a Claude Code skill
+
+A **skill** is a [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills)
+— a `SKILL.md` and whatever it references — that an agent can be granted. Where a
+tool adds a mounted CLI and env, a skill adds a capability the model invokes
+natively: roundclaw just mounts the skill's directory into the agent's
+`~/.claude/skills/<id>`, and the CLI discovers it. No env, no prompt wiring — a
+`SKILL.md` is self-describing.
+
+Registering and granting split the same way tools do — registering names a host
+path (operator, over CLI/HTTP); granting only references a registered id, so it
+is per-agent and safe:
+
+```bash
+# Operator registers the skill once — --path is a directory containing SKILL.md:
+roundclaw skill set pptx --path /path/to/skills/pptx --desc "build .pptx decks"
+roundclaw skill ls
+
+# Grant it by adding the id to an agent's skills list (via the definition, the
+# admin agent, or PUT /v1/agents/{id}/definition):
+#   {"skills": ["pptx"]}
+```
+
+The same over HTTP:
+
+```
+PUT    /v1/skills/{id}     {"host_path": "...", "description": "..."}
+GET    /v1/skills                                          list
+DELETE /v1/skills/{id}
+```
+
+Notes:
+
+- **Per-agent by construction.** Each agent's `~/.claude` is its own mount, so a
+  granted skill is visible only to that agent — across all its conversations
+  (threads included), because that directory is per-agent, not per-conversation.
+- **The id is the skill's directory name.** It becomes `~/.claude/skills/<id>`, so
+  keep the `SKILL.md` frontmatter `name:` in step with the id.
+- **Read-only, and skipped-if-deleted.** The directory mounts `:ro`; a grant to a
+  since-deleted skill is dropped with a warning, not a turn failure.
+- **Tools vs skills.** A tool is a mounted CLI plus env at `/mnt/<name>`; a skill
+  is a `SKILL.md` the model invokes. A skill cannot be delivered through the tool
+  mount (wrong path), which is why it is its own registry.
+
 ## Agents working together — delegation
 
 An agent can delegate work to another agent and use the answer, because roundclaw
@@ -505,6 +549,7 @@ Guard rails and limits:
 | Trigger from an external system | — | `POST /v1/webhooks/{a}` (signed) |
 | Give an agent a secret | — | `roundclaw secret set` · `PUT /v1/agents/{a}/secrets/{name}` |
 | Give an agent a local tool | register: `roundclaw tool set` · grant: `/admin` "붙여줘" | `PUT /v1/tools/{id}` · agent `tools` list |
+| Give an agent a skill | register: `roundclaw skill set` · grant: agent `skills` list | `PUT /v1/skills/{id}` · agent `skills` list |
 | Let agents delegate to each other | ask pm to "dev에게 위임해줘" | the `team` tool + a delegate-scoped token |
 
 The `roundclaw` CLI covers the HTTP column from a terminal — see

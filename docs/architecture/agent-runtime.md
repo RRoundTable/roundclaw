@@ -200,6 +200,32 @@ still answer when a capability is pulled out from under it.
 Reaching a service on a local docker network (an Outline at `http://outline:3000`)
 also needs `container.network` — see [infrastructure.md](infrastructure.md).
 
+## Registered skills
+
+A **skill** is a Claude Code skill an agent can be granted: a `SKILL.md`
+directory on the host, listed by id in the agent's `skills`
+([data.md](data.md#registrydb)). `RunClaudeTurn` resolves the grants through
+`resolveSkills` into a map of id → host path, which `Args` mounts read-only at
+`~/.claude/skills/<id>` — one `-v` per skill.
+
+The mount is what makes this work with no other wiring. It is *nested* under the
+ClaudeHome mount (`/home/node/.claude`), and Docker orders overlapping mounts by
+path depth, so the skill lands on top of the volume exactly like the deny-path
+`/dev/null` shadows land on top of the workspace. The CLI then discovers the
+skill from its normal `~/.claude/skills` location — no `--add-dir`, no flag, no
+prompt injection, because a `SKILL.md` is self-describing.
+
+A skill is therefore **per-agent by construction**: `~/.claude` is a per-agent
+mount, so a granted skill reaches every one of that agent's conversations
+(threads included) and no other agent. Unlike a tool it carries no env; unlike
+the persona it is not copied into thread workspaces, because it rides the
+per-agent ClaudeHome rather than the per-conversation workspace. A grant to a
+since-deleted skill is skipped with a warning, not a turn failure.
+
+> Note the `--bare` exception: the router skips skill discovery
+> ([adapters.md](adapters.md#discord-discordgo)), but an ordinary agent turn does
+> a full startup, so granted skills are always seen.
+
 ## The image
 
 `container/Dockerfile`: `node:22-slim` + `git`, `ca-certificates`, `ripgrep`,

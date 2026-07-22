@@ -47,6 +47,8 @@ func run(args []string) int {
 		return cmdSecret(rest)
 	case "tool":
 		return cmdTool(rest)
+	case "skill":
+		return cmdSkill(rest)
 	case "help", "-h", "--help":
 		usage()
 		return 0
@@ -83,6 +85,12 @@ Commands:
   tool show <id>               print a tool's definition
   tool rm <id>                 delete a tool
       grant a tool to an agent from Discord admin: "dev에 outline 붙여줘"
+
+  skill set <id> --path P      register a Claude Code skill (a SKILL.md directory)
+  skill ls                     list registered skills
+  skill show <id>              print a skill's definition
+  skill rm <id>                delete a skill
+      grant a skill by adding its id to an agent's "skills" list
 
 Environment:
   ROUNDCLAW_URL        gateway base URL (default http://127.0.0.1:8099)
@@ -544,6 +552,82 @@ func cmdTool(args []string) int {
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown tool subcommand %q\n", sub)
+		return 2
+	}
+}
+
+func cmdSkill(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: roundclaw skill <set|ls|show|rm> ...")
+		return 2
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("skill", flag.ContinueOnError)
+	base, token := commonFlags(fs)
+	path := fs.String("path", "", "host directory containing SKILL.md (set only)")
+	desc := fs.String("desc", "", "one-line description (set only)")
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	c := newClient(*base, *token)
+
+	switch sub {
+	case "ls":
+		var out struct {
+			Skills []struct {
+				ID          string `json:"id"`
+				Description string `json:"description"`
+				HostPath    string `json:"host_path"`
+			} `json:"skills"`
+		}
+		if err := c.do(http.MethodGet, "/v1/skills", nil, &out); err != nil {
+			return fail(err)
+		}
+		if len(out.Skills) == 0 {
+			fmt.Println("no skills")
+			return 0
+		}
+		for _, s := range out.Skills {
+			fmt.Printf("%-20s %-40s %s\n", s.ID, s.HostPath, s.Description)
+		}
+		return 0
+	case "show":
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "usage: roundclaw skill show <id>")
+			return 2
+		}
+		var out map[string]any
+		if err := c.do(http.MethodGet, "/v1/skills/"+fs.Arg(0), nil, &out); err != nil {
+			return fail(err)
+		}
+		printJSON(out)
+		return 0
+	case "set":
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "usage: roundclaw skill set <id> --path P [--desc T]")
+			return 2
+		}
+		if *path == "" {
+			return fail(errors.New("--path is required"))
+		}
+		body := map[string]any{"host_path": *path, "description": *desc}
+		if err := c.do(http.MethodPut, "/v1/skills/"+fs.Arg(0), body, nil); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("registered skill %s -> %s\n", fs.Arg(0), *path)
+		return 0
+	case "rm":
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "usage: roundclaw skill rm <id>")
+			return 2
+		}
+		if err := c.do(http.MethodDelete, "/v1/skills/"+fs.Arg(0), nil, nil); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("deleted skill %s\n", fs.Arg(0))
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown skill subcommand %q\n", sub)
 		return 2
 	}
 }

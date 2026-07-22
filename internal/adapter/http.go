@@ -67,6 +67,7 @@ func (h *HTTP) Handler() http.Handler {
 	h.registerScheduleRoutes(mux)
 	h.registerSecretRoutes(mux)
 	h.registerWorkflowRoutes(mux)
+	h.registerToolRoutes(mux)
 
 	// Webhooks sit outside the bearer middleware: their callers cannot hold a
 	// token and would not be updated when one rotates, so a per-payload

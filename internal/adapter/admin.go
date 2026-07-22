@@ -72,6 +72,15 @@ func (d *Dispatcher) ExecuteAdmin(ctx context.Context, action claude.AdminAction
 	case claude.AdminDeleteWorkflow:
 		return d.adminDeleteWorkflow(ctx, action.Target)
 
+	case claude.AdminListTools:
+		return d.adminListTools(ctx)
+
+	case claude.AdminAttachTool:
+		return d.adminAttachTool(ctx, action.Target, action.Tool)
+
+	case claude.AdminDetachTool:
+		return d.adminDetachTool(ctx, action.Target, action.Tool)
+
 	default:
 		return "", fmt.Errorf("unknown admin action %q", action.Action)
 	}
@@ -97,6 +106,9 @@ func formatAgent(a registry.Agent) string {
 	fmt.Fprintf(&b, "- channels: %s\n", noneIfEmpty(strings.Join(a.DiscordChannels, ", ")))
 	if len(a.AllowedTools) > 0 {
 		fmt.Fprintf(&b, "- allowed_tools: %s\n", strings.Join(a.AllowedTools, ", "))
+	}
+	if len(a.Tools) > 0 {
+		fmt.Fprintf(&b, "- tools: %s\n", strings.Join(a.Tools, ", "))
 	}
 	return b.String()
 }
@@ -286,6 +298,74 @@ func (d *Dispatcher) adminDeleteWorkflow(ctx context.Context, id string) (string
 		return fmt.Sprintf("⚠️ `%s` 삭제 실패: %s", id, err.Error()), nil
 	}
 	return fmt.Sprintf("🗑️ 워크플로 `%s` 삭제됨.", id), nil
+}
+
+func (d *Dispatcher) adminListTools(ctx context.Context) (string, error) {
+	tools, err := d.reg.ListTools(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(tools) == 0 {
+		return "등록된 도구가 없어요. 도구는 운영자가 CLI/HTTP로 등록합니다.", nil
+	}
+	var b strings.Builder
+	b.WriteString("**Tools** (에이전트에 붙일 수 있는 로컬 도구)\n")
+	for _, t := range tools {
+		fmt.Fprintf(&b, "- `%s` — %s\n", t.ID, noneIfEmpty(t.Description))
+	}
+	return b.String(), nil
+}
+
+func (d *Dispatcher) adminAttachTool(ctx context.Context, agentID, toolID string) (string, error) {
+	if agentID == "" || toolID == "" {
+		return "🤔 어느 에이전트에 어떤 도구를 붙일지 알려주세요.", nil
+	}
+	a, err := d.reg.Get(ctx, agentID)
+	if err != nil {
+		return fmt.Sprintf("⚠️ 에이전트 `%s`가 없어요.", agentID), nil
+	}
+	// The tool must be one the operator registered; refuse to grant a name that
+	// resolves to no mount, which would silently do nothing at turn time.
+	if _, err := d.reg.GetTool(ctx, toolID); err != nil {
+		return fmt.Sprintf("⚠️ 등록된 도구 `%s`가 없어요. `list_tools`로 확인해 보세요.", toolID), nil
+	}
+	for _, t := range a.Tools {
+		if t == toolID {
+			return fmt.Sprintf("ℹ️ `%s`에는 이미 `%s` 도구가 붙어 있어요.", agentID, toolID), nil
+		}
+	}
+	a.Tools = append(a.Tools, toolID)
+	if _, err := d.reg.Update(ctx, a); err != nil {
+		return "⚠️ 실패: " + err.Error(), nil
+	}
+	return fmt.Sprintf("🔧 `%s`에 도구 `%s` 붙임 (다음 턴부터 사용 가능).", agentID, toolID), nil
+}
+
+func (d *Dispatcher) adminDetachTool(ctx context.Context, agentID, toolID string) (string, error) {
+	if agentID == "" || toolID == "" {
+		return "🤔 어느 에이전트에서 어떤 도구를 뗄지 알려주세요.", nil
+	}
+	a, err := d.reg.Get(ctx, agentID)
+	if err != nil {
+		return fmt.Sprintf("⚠️ 에이전트 `%s`가 없어요.", agentID), nil
+	}
+	kept := a.Tools[:0:0]
+	found := false
+	for _, t := range a.Tools {
+		if t == toolID {
+			found = true
+			continue
+		}
+		kept = append(kept, t)
+	}
+	if !found {
+		return fmt.Sprintf("ℹ️ `%s`에는 `%s` 도구가 붙어 있지 않아요.", agentID, toolID), nil
+	}
+	a.Tools = kept
+	if _, err := d.reg.Update(ctx, a); err != nil {
+		return "⚠️ 실패: " + err.Error(), nil
+	}
+	return fmt.Sprintf("🔧 `%s`에서 도구 `%s` 뗌.", agentID, toolID), nil
 }
 
 func (d *Dispatcher) adminCreateAgent(ctx context.Context, spec *claude.AdminAgentSpec) (string, error) {

@@ -153,6 +153,20 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 	}
 	delete(secrets, cred.EnvName)
 
+	// Registered tools the agent is granted: each adds a read-only mount and the
+	// env it needs, and a note prepended to the prompt so the agent knows the
+	// capability is there. Resolved here rather than baked into the definition so a
+	// tool's path or env can be corrected without touching every agent that uses
+	// it. The credential still wins over any same-named tool env.
+	if secrets == nil {
+		secrets = map[string]string{}
+	}
+	toolDirs, toolNote, err := a.resolveTools(ctx, agentCfg.Tools, secrets)
+	if err != nil {
+		return core.TurnResult{}, err
+	}
+	delete(secrets, cred.EnvName)
+
 	spec := claude.RunSpec{
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           a.cfg.Container.Image,
@@ -160,7 +174,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		WorkDir:         workspace,
 		DenyPaths:       agentCfg.DenyPaths,
 		ClaudeHome:      a.cfg.ClaudeHomeDir(in.AgentID),
-		AdditionalDirs:  agentCfg.AdditionalDirs,
+		AdditionalDirs:  append(append([]string{}, agentCfg.AdditionalDirs...), toolDirs...),
 		CredentialEnv:   cred.EnvName,
 		CredentialValue: cred.Value,
 		SessionID:       claude.SessionID(in.WorkflowID),
@@ -170,7 +184,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		AllowedTools:    agentCfg.AllowedTools,
 		Network:         a.cfg.Container.Network,
 		Secrets:         secrets,
-		Prompt:          in.Prompt,
+		Prompt:          toolNote + in.Prompt,
 	}
 
 	if in.RebuildContext {
@@ -563,6 +577,47 @@ func workDirFor(cfg *config.Config, agent registry.Agent) string {
 		return agent.WorkDir
 	}
 	return cfg.WorkDir(agent.ID)
+}
+
+// resolveTools turns an agent's granted tool IDs into what a container needs:
+// the host directories to mount read-only, the env vars each tool uses (merged
+// into env, the same map that carries secrets), and a note prepended to the
+// prompt so the agent knows the capability exists and how to drive it.
+//
+// A tool that no longer exists is skipped with a warning rather than failing the
+// turn: an agent should still answer even if one of its tools was deleted out
+// from under it.
+func (a *Activities) resolveTools(ctx context.Context, ids []string, env map[string]string) ([]string, string, error) {
+	if len(ids) == 0 {
+		return nil, "", nil
+	}
+	log := activity.GetLogger(ctx)
+	var dirs []string
+	var note strings.Builder
+	for _, id := range ids {
+		t, err := a.reg.GetTool(ctx, id)
+		if errors.Is(err, registry.ErrNotFound) {
+			log.Warn("agent grants a tool that no longer exists", "tool", id)
+			continue
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("load tool %s: %w", id, err)
+		}
+		dirs = append(dirs, t.HostPath)
+		for k, v := range t.Env {
+			env[k] = v
+		}
+		if strings.TrimSpace(t.Instructions) != "" {
+			if note.Len() == 0 {
+				note.WriteString("You have these local tools available:\n\n")
+			}
+			fmt.Fprintf(&note, "## %s\n%s\n\n", t.ID, strings.TrimSpace(t.Instructions))
+		}
+	}
+	if note.Len() > 0 {
+		note.WriteString("---\n\n")
+	}
+	return dirs, note.String(), nil
 }
 
 // buildRecap summarises recent turns for an agent whose session was lost.

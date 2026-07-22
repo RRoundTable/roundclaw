@@ -310,6 +310,11 @@ roundclaw send pr-reviewer "..." --wait          # block for the result
 roundclaw send pr-reviewer "..." --steer         # interrupt and redirect
 roundclaw send pr-reviewer "..." --key deploy-42 # idempotent retry
 roundclaw turn pr-reviewer 123         # a turn's state and result
+
+roundclaw tool set outline --path /path/to/outline-cli \
+  --env OUTLINE_CONFIG=/mnt/outline-cli/config.json --desc "local Outline wiki"
+roundclaw tool ls                      # registered tools
+roundclaw tool rm outline
 ```
 
 `--url` and `--token` override the environment on any command.
@@ -358,6 +363,67 @@ How it works, and its limits:
 - Rotating the master key makes existing secrets unreadable — by design. Re-set
   them after a rotation.
 
+## Tools — granting a local capability
+
+A **tool** gives an agent a local capability: a CLI and its config that live on
+the host, exposed to the agent's container as a read-only mount plus the
+environment it needs. The worked example is Outline — a `tool` that lets `dev`
+and `pm` read and write the local Outline wiki.
+
+Registering and granting are deliberately separated:
+
+- **Registering** a tool names a **host path**, which is sensitive, so it is an
+  operator act — done over the CLI/HTTP with a bearer token.
+- **Granting** a registered tool to an agent is then safe to do in plain
+  language from Discord `/admin`, because admin can only pick from tools that
+  already exist; it can never mount an arbitrary path.
+
+```bash
+# Operator registers the tool once (the host dir mounts read-only at
+# /mnt/<basename>, and each --env is injected into the granted agents' turns):
+roundclaw tool set outline \
+  --path /home/you/.config/roundclaw/outline-cli \
+  --env OUTLINE_CONFIG=/mnt/outline-cli/config.json \
+  --desc "local Outline wiki (CLI)" \
+  --instructions - <<'EOF'
+Use `/mnt/outline-cli/outline collections list`, `... docs create ...`, etc.
+Config (URL + token) is pointed to by $OUTLINE_CONFIG. No setup needed.
+EOF
+```
+
+Then, from the Discord admin (`/admin` or the admin channel):
+
+```
+dev에 outline 도구 붙여줘          → grants the tool to dev
+pm에서 outline 떼줘                → revokes it
+등록된 도구 목록 보여줘            → lists registered tools
+```
+
+On the agent's next turn, its container gets the mount and env, and a short note
+is prepended to the prompt so the agent knows the capability is there. The same
+over HTTP:
+
+```
+PUT    /v1/tools/{id}     {"host_path":"...","env":{...},"instructions":"..."}
+GET    /v1/tools                                          list
+DELETE /v1/tools/{id}
+```
+
+Granting is part of the agent definition — a `tools` array of registered IDs —
+so it can also be set directly with `PUT /v1/agents/{id}/definition`.
+
+Notes and limits:
+
+- **Registered tools only.** `attach_tool` refuses an ID that is not registered,
+  so a hallucinated name does nothing rather than mounting a wrong path.
+- **Read-only mount.** The host directory is mounted `:ro`; a tool cannot be a
+  way for an agent to write outside its workspace.
+- **A deleted tool is skipped, not fatal.** If a granted tool is removed, the
+  agent still runs — it just no longer has that capability, logged as a warning.
+- Reaching a service that lives on a local docker network (Outline at
+  `http://outline:3000`) also needs `container.network` set — see the
+  infrastructure guide.
+
 ---
 
 ## Quick reference
@@ -373,6 +439,7 @@ How it works, and its limits:
 | Schedule recurring work | `/schedule create` | `PUT /v1/schedules/{id}` |
 | Trigger from an external system | — | `POST /v1/webhooks/{a}` (signed) |
 | Give an agent a secret | — | `roundclaw secret set` · `PUT /v1/agents/{a}/secrets/{name}` |
+| Give an agent a local tool | register: `roundclaw tool set` · grant: `/admin` "붙여줘" | `PUT /v1/tools/{id}` · agent `tools` list |
 
 The `roundclaw` CLI covers the HTTP column from a terminal — see
 [Command line](#command-line-roundclaw).

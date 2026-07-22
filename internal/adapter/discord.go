@@ -528,9 +528,16 @@ func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID, histo
 	var agentLines strings.Builder
 	for _, a := range agents {
 		fmt.Fprintf(&agentLines,
-			"- %s: %s | permission=%s require_mention=%v reply_in_thread=%v channels=[%s] enabled=%v\n",
+			"- %s: %s | permission=%s require_mention=%v reply_in_thread=%v channels=[%s] tools=[%s] enabled=%v\n",
 			a.ID, a.Description, noneIfEmpty(a.PermissionMode), a.RequireMention, a.ReplyInThread,
-			strings.Join(a.DiscordChannels, ","), a.Enabled)
+			strings.Join(a.DiscordChannels, ","), strings.Join(a.Tools, ","), a.Enabled)
+	}
+
+	var toolLines strings.Builder
+	if tools, err := d.disp.Registry().ListTools(ctx); err == nil {
+		for _, t := range tools {
+			fmt.Fprintf(&toolLines, "- %s: %s\n", t.ID, t.Description)
+		}
 	}
 
 	var scheduleLines strings.Builder
@@ -553,6 +560,7 @@ func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID, histo
 		Agents:           agentLines.String(),
 		Schedules:        scheduleLines.String(),
 		Workflows:        workflowLines.String(),
+		Tools:            toolLines.String(),
 		History:          history,
 	})
 	if err != nil {

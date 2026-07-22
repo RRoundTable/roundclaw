@@ -40,6 +40,12 @@ const (
 	AdminListWorkflows  AdminActionKind = "list_workflows"
 	AdminDeleteWorkflow AdminActionKind = "delete_workflow"
 
+	// Tools are registered by the operator (they name a host path); admin can only
+	// grant an already-registered tool to an agent, take it away, or list them.
+	AdminAttachTool AdminActionKind = "attach_tool"
+	AdminDetachTool AdminActionKind = "detach_tool"
+	AdminListTools  AdminActionKind = "list_tools"
+
 	// AdminClarify asks the user for more detail. It is the safe default when the
 	// request is ambiguous — a wrong create is easy to delete, but confirming
 	// first is friendlier than guessing.
@@ -101,6 +107,9 @@ type AdminAction struct {
 	Agent    *AdminAgentSpec    `json:"agent,omitempty"`
 	Schedule *AdminScheduleSpec `json:"schedule,omitempty"`
 	Workflow *AdminWorkflowSpec `json:"workflow,omitempty"`
+	// Tool is the registered tool id for attach_tool / detach_tool; Target holds
+	// the agent id those act on.
+	Tool string `json:"tool,omitempty"`
 }
 
 const adminSchema = `{
@@ -111,9 +120,11 @@ const adminSchema = `{
       "enable_agent", "disable_agent", "show_persona", "set_persona",
       "create_schedule", "list_schedules",
       "create_workflow", "run_workflow", "list_workflows", "delete_workflow",
+      "attach_tool", "detach_tool", "list_tools",
       "clarify"]},
     "reason": {"type": "string"},
     "target": {"type": "string"},
+    "tool": {"type": "string"},
     "agent": {
       "type": "object",
       "properties": {
@@ -176,6 +187,9 @@ type AdminContext struct {
 	Agents    string
 	Schedules string
 	Workflows string
+	// Tools is the registered tool catalogue, one per line, so the planner can
+	// attach one by id and refuse to invent one that does not exist.
+	Tools string
 	// History is the prior admin exchange in this thread, oldest first, already
 	// formatted for the prompt. Empty for a one-shot request.
 	History string
@@ -249,6 +263,7 @@ func adminPrompt(request string, world AdminContext) string {
 	section("Existing agents", world.Agents)
 	section("Existing schedules", world.Schedules)
 	section("Existing workflows", world.Workflows)
+	section("Registered tools (grantable to agents)", world.Tools)
 
 	fmt.Fprintf(&b, "The request was sent from Discord channel %s. When the operator says \"here\" or\n"+
 		"\"this channel\", use that ID.\n", world.CurrentChannelID)
@@ -294,6 +309,16 @@ Actions:
   multi-step automation with no agent.
 - run_workflow: run one now. Put its id in "target".
 - delete_workflow / list_workflows: remove a workflow (id in "target"), or list.
+- A TOOL is a local capability (a CLI and its config) an agent can be granted —
+  e.g. an "outline" tool that lets an agent read and write the local Outline. The
+  operator registers tools; you can only grant, revoke, or list them.
+- attach_tool: grant a registered tool to an agent. Put the agent id in "target"
+  and the tool id (must be listed under "Registered tools") in "tool". Takes
+  effect on the agent's next turn.
+- detach_tool: revoke a tool from an agent. agent id in "target", tool id in "tool".
+- list_tools: report the registered tools. If the operator asks to register a NEW
+  tool, or names a tool not listed, clarify — registering a tool names a host path
+  and is done by the operator, not here.
 - clarify: ambiguous, or references something not listed. Explain in reason.
   Do not loop on clarify — if you have enough to act, act.
 - Never invent an id that is not listed above.

@@ -45,6 +45,8 @@ func run(args []string) int {
 		return cmdTurn(rest)
 	case "secret":
 		return cmdSecret(rest)
+	case "tool":
+		return cmdTool(rest)
 	case "help", "-h", "--help":
 		usage()
 		return 0
@@ -74,6 +76,13 @@ Commands:
   secret rm <name>             delete a secret
       add --agent <id> to any secret command to scope it to one agent;
       without it the secret is global (every agent sees it)
+
+  tool set <id> --path P       register a local tool (a dir + the env it needs)
+      --env NAME=VALUE (repeatable), --desc TEXT, --instructions TEXT (or - for stdin)
+  tool ls                      list registered tools
+  tool show <id>               print a tool's definition
+  tool rm <id>                 delete a tool
+      grant a tool to an agent from Discord admin: "dev에 outline 붙여줘"
 
 Environment:
   ROUNDCLAW_URL        gateway base URL (default http://127.0.0.1:8099)
@@ -429,6 +438,112 @@ func cmdSecret(args []string) int {
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown secret subcommand %q\n", sub)
+		return 2
+	}
+}
+
+// envFlags collects repeated --env NAME=VALUE flags into a map.
+type envFlags map[string]string
+
+func (e envFlags) String() string { return fmt.Sprintf("%v", map[string]string(e)) }
+
+func (e envFlags) Set(v string) error {
+	name, value, ok := strings.Cut(v, "=")
+	if !ok || name == "" {
+		return fmt.Errorf("expected NAME=VALUE, got %q", v)
+	}
+	e[name] = value
+	return nil
+}
+
+func cmdTool(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: roundclaw tool <set|ls|show|rm> ...")
+		return 2
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("tool", flag.ContinueOnError)
+	base, token := commonFlags(fs)
+	path := fs.String("path", "", "host directory to mount read-only at /mnt/<base> (set only)")
+	desc := fs.String("desc", "", "one-line description (set only)")
+	instr := fs.String("instructions", "", "how the agent should use the tool; - reads stdin (set only)")
+	env := envFlags{}
+	fs.Var(env, "env", "NAME=VALUE env var the tool needs; repeatable (set only)")
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	c := newClient(*base, *token)
+
+	switch sub {
+	case "ls":
+		var out struct {
+			Tools []struct {
+				ID          string `json:"id"`
+				Description string `json:"description"`
+				HostPath    string `json:"host_path"`
+			} `json:"tools"`
+		}
+		if err := c.do(http.MethodGet, "/v1/tools", nil, &out); err != nil {
+			return fail(err)
+		}
+		if len(out.Tools) == 0 {
+			fmt.Println("no tools")
+			return 0
+		}
+		for _, t := range out.Tools {
+			fmt.Printf("%-20s %-40s %s\n", t.ID, t.HostPath, t.Description)
+		}
+		return 0
+	case "show":
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "usage: roundclaw tool show <id>")
+			return 2
+		}
+		var out map[string]any
+		if err := c.do(http.MethodGet, "/v1/tools/"+fs.Arg(0), nil, &out); err != nil {
+			return fail(err)
+		}
+		printJSON(out)
+		return 0
+	case "set":
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "usage: roundclaw tool set <id> --path P [--env NAME=VALUE] [--desc T] [--instructions T]")
+			return 2
+		}
+		if *path == "" {
+			return fail(errors.New("--path is required"))
+		}
+		instructions := *instr
+		if instructions == "-" {
+			raw, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fail(err)
+			}
+			instructions = strings.TrimRight(string(raw), "\r\n")
+		}
+		body := map[string]any{
+			"host_path":    *path,
+			"description":  *desc,
+			"env":          map[string]string(env),
+			"instructions": instructions,
+		}
+		if err := c.do(http.MethodPut, "/v1/tools/"+fs.Arg(0), body, nil); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("registered tool %s -> %s\n", fs.Arg(0), *path)
+		return 0
+	case "rm":
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "usage: roundclaw tool rm <id>")
+			return 2
+		}
+		if err := c.do(http.MethodDelete, "/v1/tools/"+fs.Arg(0), nil, nil); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("deleted tool %s\n", fs.Arg(0))
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown tool subcommand %q\n", sub)
 		return 2
 	}
 }

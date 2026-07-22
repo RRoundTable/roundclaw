@@ -161,7 +161,11 @@ language — "create an agent called pr-bot", "disable dev", "show dev's persona
 Adding an action is four edits: the `AdminActionKind`, the JSON schema's enum,
 a prompt rule, and an `ExecuteAdmin` case. Actions cover the agent lifecycle
 (create/update/delete/enable/disable, show settings and persona, set persona),
-schedules, and workflows (create/run/list/delete).
+schedules, workflows (create/run/list/delete), and tools
+(attach/detach/list). Tool *registration* is pointedly **not** an admin action:
+it names a host path, so it stays an operator act over the CLI/HTTP, and admin
+can only grant IDs that already exist — a hallucinated tool name resolves to
+nothing rather than mounting an arbitrary path.
 
 `/admin` opens a **thread** named `🛠️ admin: …` and runs the request there;
 further messages in that thread keep managing in context (the thread's history

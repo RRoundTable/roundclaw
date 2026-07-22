@@ -172,6 +172,34 @@ any secret whose name collides with the credential env — authentication cannot
 be broken by a stray secret. When no master key is configured, `SecretsForAgent`
 returns nothing and the turn runs exactly as it did before secrets existed.
 
+## Registered tools
+
+A **tool** is a named local capability — a CLI and its config on the host — that
+an agent can be granted. It bundles three things: a host directory (mounted
+read-only at `/mnt/<basename>`), the environment it needs, and a note on how to
+use it. Tools live in the registry ([data.md](data.md#registrydb)); an agent's
+grants are the `tools` array on its definition.
+
+`RunClaudeTurn` resolves the grants each turn through `resolveTools`, which for
+each granted ID:
+
+- appends the tool's host path to `RunSpec.AdditionalDirs` (so `Args` emits the
+  `:ro` mount and `--add-dir`),
+- merges the tool's env into the same map that carries secrets (injected `-e
+  NAME`, value on the subprocess env — never in argv), and
+- prepends a short note to the prompt so the agent knows the capability is there.
+
+The split between **registering** and **granting** is a security boundary:
+registering names a host path and is an operator act (CLI/HTTP with a bearer
+token); granting only references a registered ID, so it is safe to do in natural
+language from `/admin` (`attach_tool` / `detach_tool`) — a hallucinated name
+resolves to no tool rather than mounting an arbitrary path. A granted tool that
+was since deleted is skipped with a warning, not a turn failure: an agent should
+still answer when a capability is pulled out from under it.
+
+Reaching a service on a local docker network (an Outline at `http://outline:3000`)
+also needs `container.network` — see [infrastructure.md](infrastructure.md).
+
 ## The image
 
 `container/Dockerfile`: `node:22-slim` + `git`, `ca-certificates`, `ripgrep`,

@@ -62,7 +62,7 @@ idempotency(key PK, turn_id, created_at)
 ```sql
 agents(id PK, description, agent_name, permission_mode, allowed_tools,
        additional_dirs, work_dir, deny_paths, require_mention,
-       share_workspace, enabled, created_at, updated_at)
+       share_workspace, reply_in_thread, tools, enabled, created_at, updated_at)
 
 agent_channels(channel_id PK, agent_id → agents.id ON DELETE CASCADE)
 
@@ -71,6 +71,8 @@ schedules(...)   -- see internal/registry/schedules.go
 secrets(scope, name, ciphertext, created_at, updated_at, PK(scope, name))
 
 workflows(id PK, description, channel_id, steps, enabled, created_at, updated_at)
+
+tools(id PK, description, host_path, env, instructions, created_at, updated_at)
 ```
 
 `channel_id` is the primary key of the binding table, so one Discord channel can
@@ -94,6 +96,15 @@ other list columns. `channel_id` is where the final result is posted, empty to
 record the run and deliver nowhere. A workflow keeps its own `state.db` under
 `workspace/workflows/<id>/`, separate from any agent, where each run's steps are
 recorded as turns ([orchestration.md](orchestration.md#runworkflow--the-agent-less-pipeline)).
+
+**`tools` are grantable local capabilities.** A row bundles a `host_path`
+(mounted read-only at `/mnt/<basename>`), an `env` JSON map, and `instructions`.
+An agent's `tools` column lists the IDs it is granted; the activity resolves them
+each turn ([agent-runtime.md](agent-runtime.md#registered-tools)). Registering a
+row names a host path and is operator-only; granting an ID to an agent is safe in
+plain language, since only registered IDs resolve. No FK from `agents.tools` to
+`tools`: it is a JSON list like the other list columns, and a grant referencing a
+since-deleted tool is skipped at turn time rather than blocked at write.
 
 List columns (`allowed_tools`, `additional_dirs`, `deny_paths`) are JSON arrays
 in a TEXT column. They are read as a unit and never queried into, so a join

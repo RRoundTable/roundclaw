@@ -176,10 +176,9 @@ in an isolated container cannot reach another agent's workspace file, so editing
 persona — which the old planner did on the gateway's filesystem — is exposed as an
 API the admin agent calls like anything else.
 
-> The previous planner (`internal/claude/admin.go` + `adapter/admin.go`, the
-> `/admin` command) is retired. Its code may still be present but is unwired —
-> `SetAdmin` is no longer called, so `d.admin` is nil and the admin-channel branch
-> is inert.
+> The previous stateless planner (`internal/claude/admin.go`, `adapter/admin.go`,
+> the `/admin` slash command, and the `discord.admin_channel` config) has been
+> removed. Management now flows entirely through the ordinary agent path.
 
 ## Webhooks
 

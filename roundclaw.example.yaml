@@ -51,12 +51,11 @@ container:
 
 discord:
   token_env: DISCORD_TOKEN
-  # Deprecated and unused. Natural-language management is now done by an ordinary
-  # agent (id "admin") given a full-scope API token and the roundclaw CLI as a
-  # tool — bind that agent to a PRIVATE channel like any other. See docs/usage.md
-  # ("Managing in plain language — the admin agent"). This field no longer wires
-  # anything.
-  admin_channel: ""
+  # Natural-language management is done by an ordinary agent (id "admin") given a
+  # full-scope API token and the roundclaw CLI as a tool — bind that agent to a
+  # PRIVATE channel like any other. See docs/usage.md ("Managing in plain
+  # language — the admin agent"). There is no admin_channel setting.
+  #
   # Scopes slash-command registration. Empty registers globally, which Discord
   # propagates slowly — set it during development.
   guild_id: ""

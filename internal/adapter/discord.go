@@ -1118,9 +1118,34 @@ func formatStatus(r StatusReport) string {
 }
 
 func (d *Discord) reply(channelID, content string) {
-	if _, err := d.session.ChannelMessageSend(channelID, content); err != nil {
-		d.log.Warn("failed to send discord message", "channel", channelID, "error", err)
+	// Discord rejects a message over 2000 characters outright, so a long reply —
+	// an agent's persona, a big list — is split into parts rather than lost.
+	for _, part := range chunk(content, 1990) {
+		if _, err := d.session.ChannelMessageSend(channelID, part); err != nil {
+			d.log.Warn("failed to send discord message", "channel", channelID, "error", err)
+		}
 	}
+}
+
+// chunk splits s into pieces of at most n bytes, preferring to break on a
+// newline so a code block or list is not cut mid-line where avoidable.
+func chunk(s string, n int) []string {
+	if len(s) <= n {
+		return []string{s}
+	}
+	var out []string
+	for len(s) > n {
+		cut := strings.LastIndexByte(s[:n], '\n')
+		if cut <= 0 {
+			cut = n
+		}
+		out = append(out, s[:cut])
+		s = strings.TrimPrefix(s[cut:], "\n")
+	}
+	if s != "" {
+		out = append(out, s)
+	}
+	return out
 }
 
 func (d *Discord) respondNow(i *discordgo.InteractionCreate, content string) {

@@ -22,11 +22,15 @@ import (
 type AdminActionKind string
 
 const (
-	AdminCreateAgent AdminActionKind = "create_agent"
-	AdminUpdateAgent AdminActionKind = "update_agent"
-	AdminDeleteAgent AdminActionKind = "delete_agent"
-	AdminShowAgent   AdminActionKind = "show_agent"
-	AdminListAgents  AdminActionKind = "list_agents"
+	AdminCreateAgent  AdminActionKind = "create_agent"
+	AdminUpdateAgent  AdminActionKind = "update_agent"
+	AdminDeleteAgent  AdminActionKind = "delete_agent"
+	AdminShowAgent    AdminActionKind = "show_agent"
+	AdminListAgents   AdminActionKind = "list_agents"
+	AdminEnableAgent  AdminActionKind = "enable_agent"
+	AdminDisableAgent AdminActionKind = "disable_agent"
+	AdminShowPersona  AdminActionKind = "show_persona"
+	AdminSetPersona   AdminActionKind = "set_persona"
 
 	AdminCreateSchedule AdminActionKind = "create_schedule"
 	AdminListSchedules  AdminActionKind = "list_schedules"
@@ -48,11 +52,16 @@ const (
 type AdminAgentSpec struct {
 	ID             string   `json:"id"`
 	Description    string   `json:"description,omitempty"`
+	AgentName      string   `json:"agent_name,omitempty"`
+	WorkDir        string   `json:"work_dir,omitempty"`
 	PermissionMode string   `json:"permission_mode,omitempty"`
 	RequireMention *bool    `json:"require_mention,omitempty"`
 	ReplyInThread  *bool    `json:"reply_in_thread,omitempty"`
 	Channels       []string `json:"channels,omitempty"`
 	AllowedTools   []string `json:"allowed_tools,omitempty"`
+	// Persona is the CLAUDE.md content — the agent's instructions. Set on
+	// create_agent or set_persona; it is a file, not a registry field.
+	Persona string `json:"persona,omitempty"`
 }
 
 // AdminScheduleSpec is the subset of a schedule an admin request can set.
@@ -99,6 +108,7 @@ const adminSchema = `{
   "properties": {
     "action": {"type": "string", "enum": [
       "create_agent", "update_agent", "delete_agent", "show_agent", "list_agents",
+      "enable_agent", "disable_agent", "show_persona", "set_persona",
       "create_schedule", "list_schedules",
       "create_workflow", "run_workflow", "list_workflows", "delete_workflow",
       "clarify"]},
@@ -109,11 +119,14 @@ const adminSchema = `{
       "properties": {
         "id": {"type": "string"},
         "description": {"type": "string"},
+        "agent_name": {"type": "string"},
+        "work_dir": {"type": "string"},
         "permission_mode": {"type": "string", "enum": ["default", "acceptEdits", "bypassPermissions", "plan"]},
         "require_mention": {"type": "boolean"},
         "reply_in_thread": {"type": "boolean"},
         "channels": {"type": "array", "items": {"type": "string"}},
-        "allowed_tools": {"type": "array", "items": {"type": "string"}}
+        "allowed_tools": {"type": "array", "items": {"type": "string"}},
+        "persona": {"type": "string"}
       }
     },
     "schedule": {
@@ -257,11 +270,19 @@ Actions:
   description, permission_mode (default acceptEdits). Default require_mention and
   reply_in_thread to true unless told otherwise. Only set channels to IDs given.
 - update_agent: change an EXISTING agent (agent.id must be listed above). Set
-  ONLY the fields to change; the rest are kept. The current settings are shown
-  above — use them to answer "what is X set to" via show_agent, or to change one.
+  ONLY the fields to change; the rest are kept. Settable: description, agent_name
+  (a native subagent persona), work_dir (an absolute host path, or empty for the
+  managed workspace), permission_mode, require_mention, reply_in_thread, channels,
+  allowed_tools.
 - delete_agent: remove an agent. Put its id in "target".
+- enable_agent / disable_agent: turn an agent on or off. Put its id in "target".
 - show_agent / list_agents: report an agent's full settings, or all agents. For
   show_agent put the id in "target".
+- show_persona: show an agent's CLAUDE.md — its instructions/persona (a file,
+  separate from settings). Put the id in "target".
+- set_persona: replace an agent's CLAUDE.md. Set agent.id and agent.persona (the
+  full new instructions text). Use this for "change dev's persona to ...".
+- create_agent may also set agent.persona to give the new agent its CLAUDE.md.
 - create_schedule: recurring work on an EXISTING agent (agent_id must be listed).
   cron, timezone (default Asia/Seoul), prompt, channel_id. A schedule always runs
   on an agent — there is no agent-less schedule. If asked for one without an

@@ -3,6 +3,8 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/roundtable/roundclaw/internal/claude"
@@ -39,6 +41,18 @@ func (d *Dispatcher) ExecuteAdmin(ctx context.Context, action claude.AdminAction
 
 	case claude.AdminDeleteAgent:
 		return d.adminDeleteAgent(ctx, action.Target)
+
+	case claude.AdminEnableAgent:
+		return d.adminSetEnabled(ctx, action.Target, true)
+
+	case claude.AdminDisableAgent:
+		return d.adminSetEnabled(ctx, action.Target, false)
+
+	case claude.AdminShowPersona:
+		return d.adminShowPersona(ctx, action.Target)
+
+	case claude.AdminSetPersona:
+		return d.adminSetPersona(ctx, action.Agent)
 
 	case claude.AdminListSchedules:
 		return d.adminListSchedules(ctx)
@@ -106,6 +120,12 @@ func (d *Dispatcher) adminUpdateAgent(ctx context.Context, spec *claude.AdminAge
 	if spec.Description != "" {
 		a.Description = spec.Description
 	}
+	if spec.AgentName != "" {
+		a.AgentName = spec.AgentName
+	}
+	if spec.WorkDir != "" {
+		a.WorkDir = spec.WorkDir
+	}
 	if spec.PermissionMode != "" {
 		a.PermissionMode = spec.PermissionMode
 	}
@@ -139,6 +159,70 @@ func (d *Dispatcher) adminDeleteAgent(ctx context.Context, id string) (string, e
 		return fmt.Sprintf("⚠️ `%s` 삭제 실패: %s", id, err.Error()), nil
 	}
 	return fmt.Sprintf("🗑️ 에이전트 `%s` 삭제됨 (워크스페이스·세션은 유지).", id), nil
+}
+
+func (d *Dispatcher) adminSetEnabled(ctx context.Context, id string, enabled bool) (string, error) {
+	if id == "" {
+		return "🤔 어느 에이전트를요?", nil
+	}
+	a, err := d.reg.Get(ctx, id)
+	if err != nil {
+		return fmt.Sprintf("⚠️ 에이전트 `%s`가 없어요.", id), nil
+	}
+	a.Enabled = enabled
+	if _, err := d.reg.Update(ctx, a); err != nil {
+		return "⚠️ 실패: " + err.Error(), nil
+	}
+	if !enabled {
+		// Disabling should stop work already running, like the slash command.
+		_ = d.StopAll(ctx, id, "disabled via admin")
+		return fmt.Sprintf("⏸️ `%s` 비활성화됨 (진행 중 턴 정지, 대화는 유지).", id), nil
+	}
+	return fmt.Sprintf("▶️ `%s` 활성화됨.", id), nil
+}
+
+// adminShowPersona returns the agent's CLAUDE.md — its instructions. The reply
+// path chunks it if it is longer than one Discord message.
+func (d *Dispatcher) adminShowPersona(ctx context.Context, id string) (string, error) {
+	if id == "" {
+		return "🤔 어느 에이전트의 페르소나를요?", nil
+	}
+	if _, err := d.reg.Get(ctx, id); err != nil {
+		return fmt.Sprintf("⚠️ 에이전트 `%s`가 없어요.", id), nil
+	}
+	data, err := os.ReadFile(d.personaPath(id))
+	if os.IsNotExist(err) {
+		return fmt.Sprintf("ℹ️ `%s`는 아직 페르소나(CLAUDE.md)가 없어요. `set_persona`로 만들 수 있어요.", id), nil
+	}
+	if err != nil {
+		return "⚠️ 페르소나 읽기 실패: " + err.Error(), nil
+	}
+	return fmt.Sprintf("**`%s` 페르소나 (CLAUDE.md):**\n```md\n%s\n```", id, string(data)), nil
+}
+
+func (d *Dispatcher) adminSetPersona(ctx context.Context, spec *claude.AdminAgentSpec) (string, error) {
+	if spec == nil || spec.ID == "" || spec.Persona == "" {
+		return "🤔 어느 에이전트에 어떤 페르소나를 넣을지 알려주세요.", nil
+	}
+	if _, err := d.reg.Get(ctx, spec.ID); err != nil {
+		return fmt.Sprintf("⚠️ 에이전트 `%s`가 없어요.", spec.ID), nil
+	}
+	if err := d.writePersona(spec.ID, spec.Persona); err != nil {
+		return "⚠️ 페르소나 저장 실패: " + err.Error(), nil
+	}
+	return fmt.Sprintf("✅ `%s` 페르소나 저장됨 (다음 턴부터 적용). %d자.", spec.ID, len(spec.Persona)), nil
+}
+
+func (d *Dispatcher) personaPath(agentID string) string {
+	return filepath.Join(d.cfg.WorkDir(agentID), "CLAUDE.md")
+}
+
+func (d *Dispatcher) writePersona(agentID, content string) error {
+	dir := d.cfg.WorkDir(agentID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(content), 0o640)
 }
 
 func (d *Dispatcher) adminListWorkflows(ctx context.Context) (string, error) {
@@ -221,19 +305,31 @@ func (d *Dispatcher) adminCreateAgent(ctx context.Context, spec *claude.AdminAge
 	agent := registry.Agent{
 		ID:              spec.ID,
 		Description:     spec.Description,
+		AgentName:       spec.AgentName,
+		WorkDir:         spec.WorkDir,
 		PermissionMode:  permission,
 		RequireMention:  requireMention,
 		ReplyInThread:   replyInThread,
+		AllowedTools:    spec.AllowedTools,
 		DiscordChannels: spec.Channels,
 		Enabled:         true,
 	}
 	created, err := d.reg.Create(ctx, agent)
 	if err != nil {
-		return "⚠️ Could not create that agent: " + err.Error(), nil
+		return "⚠️ 에이전트를 만들지 못했어요: " + err.Error(), nil
 	}
-	msg := fmt.Sprintf("✅ Created agent `%s`", created.ID)
+	msg := fmt.Sprintf("✅ 에이전트 `%s` 생성됨", created.ID)
 	if len(created.DiscordChannels) > 0 {
-		msg += fmt.Sprintf(", bound to %d channel(s)", len(created.DiscordChannels))
+		msg += fmt.Sprintf(" (채널 %d개 연결)", len(created.DiscordChannels))
+	}
+	// A persona given at creation is written as the agent's CLAUDE.md, so the
+	// new agent has instructions from its first turn rather than none.
+	if spec.Persona != "" {
+		if err := d.writePersona(created.ID, spec.Persona); err != nil {
+			msg += " — 단, 페르소나 저장 실패: " + err.Error()
+		} else {
+			msg += fmt.Sprintf(", 페르소나 설정됨(%d자)", len(spec.Persona))
+		}
 	}
 	return msg + ".", nil
 }

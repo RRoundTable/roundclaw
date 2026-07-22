@@ -87,6 +87,9 @@ type RunSpec struct {
 	// Model overrides the CLI's default model for this run. Empty uses the
 	// default. Workflow steps set it to run a cheap or a strong model per step.
 	Model string
+	// Network is an extra docker network to attach the container to, so it can
+	// reach services on it (e.g. a local Outline). Empty keeps the default.
+	Network string
 
 	Prompt string
 }
@@ -162,6 +165,13 @@ func (s RunSpec) Args() ([]string, error) {
 		"-v", s.WorkDir + ":" + ContainerWorkspace,
 		"-v", s.ClaudeHome + ":" + ContainerClaudeHome,
 		"-e", s.CredentialEnv,
+	}
+
+	// An extra docker network lets the agent reach services that live on it — a
+	// local Outline, a database — by service name, while a bridge network still
+	// carries the internet the CLI itself needs. Empty keeps the default bridge.
+	if s.Network != "" {
+		args = append(args, "--network", s.Network)
 	}
 
 	// Shadowing has to come after the workspace mount so it lands on top of it.

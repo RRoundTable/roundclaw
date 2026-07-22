@@ -38,6 +38,10 @@ container:
   # variable unset to keep the secret store off; agents that use no secrets are
   # unaffected. Use a strong random value: `openssl rand -base64 32`.
   secrets_key_env: ROUNDCLAW_SECRET_KEY
+  # Extra docker network for agent/workflow containers, so they can reach
+  # services on it by name (e.g. a local Outline at http://outline:3000). The
+  # network must also carry the internet the CLI needs. Empty = default bridge.
+  network: ""
   # Bounds a single agent turn end to end.
   turn_timeout: 30m
   # How long SIGINT gets before SIGKILL when a turn is cancelled. `claude`

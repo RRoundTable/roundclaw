@@ -168,6 +168,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		AgentName:       agentCfg.AgentName,
 		PermissionMode:  agentCfg.PermissionMode,
 		AllowedTools:    agentCfg.AllowedTools,
+		Network:         a.cfg.Container.Network,
 		Secrets:         secrets,
 		Prompt:          in.Prompt,
 	}

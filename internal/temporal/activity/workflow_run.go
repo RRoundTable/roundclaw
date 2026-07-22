@@ -107,6 +107,7 @@ func (a *Activities) RunWorkflowStep(ctx context.Context, in RunStepInput) (Step
 		PermissionMode: permission,
 		AllowedTools:   in.Step.AllowedTools,
 		Model:          in.Step.Model,
+		Network:        a.cfg.Container.Network,
 		Secrets:        secrets,
 		Prompt:         prompt,
 	}

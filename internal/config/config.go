@@ -65,6 +65,11 @@ type ContainerConfig struct {
 	// disables the secret store: agents that use no secrets are unaffected, and
 	// any attempt to register one fails closed rather than storing plaintext.
 	SecretsKeyEnv string `yaml:"secrets_key_env"`
+	// Network is an extra docker network to attach every agent (and workflow)
+	// container to, so they can reach services on it by name — a local Outline,
+	// an internal API. The network must still carry the internet the CLI needs.
+	// Empty keeps the default bridge.
+	Network string `yaml:"network"`
 	// TurnTimeout bounds a single agent turn end to end.
 	TurnTimeout time.Duration `yaml:"turn_timeout"`
 	// StopGrace is how long SIGINT gets before SIGKILL when a turn is cancelled.

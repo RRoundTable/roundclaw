@@ -70,6 +70,15 @@ func (a *Activities) RunWorkflowStep(ctx context.Context, in RunStepInput) (Step
 	}
 	defer st.Close()
 
+	// A workflow is agent-less, so it gets the global secrets — the ones every
+	// executor may need — injected as env vars, the same as an agent turn. The
+	// credential is injected separately and must win over a same-named secret.
+	secrets, err := a.reg.SecretsForAgent(ctx, "")
+	if err != nil {
+		return StepResult{}, fmt.Errorf("load workflow secrets: %w", err)
+	}
+	delete(secrets, cred.EnvName)
+
 	prompt := in.Step.Prompt
 	if strings.TrimSpace(in.Context) != "" {
 		prompt = "You are one step in a multi-step workflow. The steps before you produced:\n\n" +
@@ -98,6 +107,7 @@ func (a *Activities) RunWorkflowStep(ctx context.Context, in RunStepInput) (Step
 		PermissionMode: permission,
 		AllowedTools:   in.Step.AllowedTools,
 		Model:          in.Step.Model,
+		Secrets:        secrets,
 		Prompt:         prompt,
 	}
 

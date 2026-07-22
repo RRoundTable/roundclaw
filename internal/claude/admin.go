@@ -22,17 +22,29 @@ import (
 type AdminActionKind string
 
 const (
-	AdminCreateAgent    AdminActionKind = "create_agent"
+	AdminCreateAgent AdminActionKind = "create_agent"
+	AdminUpdateAgent AdminActionKind = "update_agent"
+	AdminDeleteAgent AdminActionKind = "delete_agent"
+	AdminShowAgent   AdminActionKind = "show_agent"
+	AdminListAgents  AdminActionKind = "list_agents"
+
 	AdminCreateSchedule AdminActionKind = "create_schedule"
-	AdminListAgents     AdminActionKind = "list_agents"
 	AdminListSchedules  AdminActionKind = "list_schedules"
+
+	AdminCreateWorkflow AdminActionKind = "create_workflow"
+	AdminRunWorkflow    AdminActionKind = "run_workflow"
+	AdminListWorkflows  AdminActionKind = "list_workflows"
+	AdminDeleteWorkflow AdminActionKind = "delete_workflow"
+
 	// AdminClarify asks the user for more detail. It is the safe default when the
 	// request is ambiguous — a wrong create is easy to delete, but confirming
 	// first is friendlier than guessing.
 	AdminClarify AdminActionKind = "clarify"
 )
 
-// AdminAgentSpec is the subset of an agent an admin request can set.
+// AdminAgentSpec is the subset of an agent an admin request can set. For an
+// update, only the fields the operator changed need be set; the executor keeps
+// the rest. The pointer bools distinguish "leave as is" (nil) from "set false".
 type AdminAgentSpec struct {
 	ID             string   `json:"id"`
 	Description    string   `json:"description,omitempty"`
@@ -40,6 +52,7 @@ type AdminAgentSpec struct {
 	RequireMention *bool    `json:"require_mention,omitempty"`
 	ReplyInThread  *bool    `json:"reply_in_thread,omitempty"`
 	Channels       []string `json:"channels,omitempty"`
+	AllowedTools   []string `json:"allowed_tools,omitempty"`
 }
 
 // AdminScheduleSpec is the subset of a schedule an admin request can set.
@@ -53,19 +66,44 @@ type AdminScheduleSpec struct {
 	SuppressIf string `json:"suppress_if,omitempty"`
 }
 
-// AdminAction is the planner's structured answer.
+// AdminWorkflowStep is one step of a workflow an admin request defines.
+type AdminWorkflowStep struct {
+	Name           string `json:"name,omitempty"`
+	Prompt         string `json:"prompt"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	Model          string `json:"model,omitempty"`
+}
+
+// AdminWorkflowSpec is an agent-less multi-step workflow an admin request sets.
+type AdminWorkflowSpec struct {
+	ID          string              `json:"id"`
+	Description string              `json:"description,omitempty"`
+	ChannelID   string              `json:"channel_id,omitempty"`
+	Steps       []AdminWorkflowStep `json:"steps,omitempty"`
+}
+
+// AdminAction is the planner's structured answer. Target names the id an action
+// operates on when it takes no full spec — show/delete an agent, run/delete a
+// workflow.
 type AdminAction struct {
 	Action   AdminActionKind    `json:"action"`
 	Reason   string             `json:"reason,omitempty"`
+	Target   string             `json:"target,omitempty"`
 	Agent    *AdminAgentSpec    `json:"agent,omitempty"`
 	Schedule *AdminScheduleSpec `json:"schedule,omitempty"`
+	Workflow *AdminWorkflowSpec `json:"workflow,omitempty"`
 }
 
 const adminSchema = `{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["create_agent", "create_schedule", "list_agents", "list_schedules", "clarify"]},
+    "action": {"type": "string", "enum": [
+      "create_agent", "update_agent", "delete_agent", "show_agent", "list_agents",
+      "create_schedule", "list_schedules",
+      "create_workflow", "run_workflow", "list_workflows", "delete_workflow",
+      "clarify"]},
     "reason": {"type": "string"},
+    "target": {"type": "string"},
     "agent": {
       "type": "object",
       "properties": {
@@ -74,19 +112,26 @@ const adminSchema = `{
         "permission_mode": {"type": "string", "enum": ["default", "acceptEdits", "bypassPermissions", "plan"]},
         "require_mention": {"type": "boolean"},
         "reply_in_thread": {"type": "boolean"},
-        "channels": {"type": "array", "items": {"type": "string"}}
+        "channels": {"type": "array", "items": {"type": "string"}},
+        "allowed_tools": {"type": "array", "items": {"type": "string"}}
       }
     },
     "schedule": {
       "type": "object",
       "properties": {
-        "id": {"type": "string"},
-        "agent_id": {"type": "string"},
-        "cron": {"type": "string"},
-        "timezone": {"type": "string"},
-        "prompt": {"type": "string"},
-        "channel_id": {"type": "string"},
-        "suppress_if": {"type": "string"}
+        "id": {"type": "string"}, "agent_id": {"type": "string"}, "cron": {"type": "string"},
+        "timezone": {"type": "string"}, "prompt": {"type": "string"},
+        "channel_id": {"type": "string"}, "suppress_if": {"type": "string"}
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"}, "description": {"type": "string"}, "channel_id": {"type": "string"},
+        "steps": {"type": "array", "items": {"type": "object", "properties": {
+          "name": {"type": "string"}, "prompt": {"type": "string"},
+          "permission_mode": {"type": "string"}, "model": {"type": "string"}
+        }, "required": ["prompt"]}}
       }
     }
   },
@@ -111,12 +156,13 @@ type Admin struct {
 // in an admin thread — what was said and done earlier so a follow-up like
 // "actually make it 10am" resolves against the right thing.
 type AdminContext struct {
-	Agents           []AgentSummary
 	CurrentChannelID string
-	// Schedules is the pre-formatted list of existing schedules, one per line.
-	// Without it the model has no idea what schedules exist and hallucinates
-	// "there are none" when asked to list or modify one.
+	// Agents, Schedules and Workflows are the current state, pre-formatted one
+	// per line with enough detail for the planner to answer questions and resolve
+	// references. Without them the model has no idea what exists and hallucinates.
+	Agents    string
 	Schedules string
+	Workflows string
 	// History is the prior admin exchange in this thread, oldest first, already
 	// formatted for the prompt. Empty for a one-shot request.
 	History string
@@ -178,25 +224,20 @@ func adminPrompt(request string, world AdminContext) string {
 	var b strings.Builder
 	b.WriteString("You are roundclaw's admin. Turn the operator's request into one structured action.\n\n")
 
-	b.WriteString("Existing agents:\n")
-	if len(world.Agents) == 0 {
-		b.WriteString("- (none yet)\n")
-	}
-	for _, a := range world.Agents {
-		fmt.Fprintf(&b, "- %s", a.ID)
-		if a.Description != "" {
-			fmt.Fprintf(&b, ": %s", a.Description)
+	section := func(title, body string) {
+		fmt.Fprintf(&b, "%s:\n", title)
+		if strings.TrimSpace(body) == "" {
+			b.WriteString("- (none yet)\n")
+		} else {
+			b.WriteString(body)
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\nExisting schedules:\n")
-	if strings.TrimSpace(world.Schedules) == "" {
-		b.WriteString("- (none yet)\n")
-	} else {
-		b.WriteString(world.Schedules)
-	}
+	section("Existing agents", world.Agents)
+	section("Existing schedules", world.Schedules)
+	section("Existing workflows", world.Workflows)
 
-	fmt.Fprintf(&b, "\nThe request was sent from Discord channel %s. When the operator says \"here\" or\n"+
+	fmt.Fprintf(&b, "The request was sent from Discord channel %s. When the operator says \"here\" or\n"+
 		"\"this channel\", use that ID.\n", world.CurrentChannelID)
 
 	if strings.TrimSpace(world.History) != "" {
@@ -206,26 +247,35 @@ func adminPrompt(request string, world AdminContext) string {
 	}
 
 	b.WriteString(`
-Rules:
-- create_agent: the operator wants a new agent. Set a short lowercase id
-  ([a-z0-9_-]), a one-line description, and permission_mode (default acceptEdits).
-  Default require_mention and reply_in_thread to true unless they say otherwise.
-  Only set channels to Discord channel IDs the operator actually gave.
-- create_schedule: recurring work for an EXISTING agent (agent_id must be one
-  listed above). Set a cron expression, a timezone (default Asia/Seoul), the
-  prompt to run, and channel_id to report into.
-  Every schedule runs its prompt ON an agent — the agent is what executes it;
-  there is no agent-less schedule. If the operator asks for one without an
-  agent, do NOT just re-ask: use clarify and *explain* in reason (their
-  language) that a schedule always runs a prompt on some agent, then suggest
-  picking one of the existing agents (or creating one first). A utility task
-  like a weather check can be run by any agent.
-- Do not loop on clarify. If you already have enough to act, act. Only clarify
-  when a required field is genuinely missing, and when you do, explain why.
-- list_agents / list_schedules: they are asking what exists.
-- clarify: the request is ambiguous or references an agent that does not exist.
-  Put the question in reason. Prefer this over guessing.
-- Never invent an agent_id that is not in the list above.
+An AGENT is a persistent, conversational bot bound to Discord channels. A
+WORKFLOW is an agent-less, multi-step automation: a pipeline of prompts run in
+order, each receiving the earlier steps' outputs — no agent, no channel binding.
+A SCHEDULE runs a prompt on an existing agent on a cron.
+
+Actions:
+- create_agent: a new agent. Short lowercase id ([a-z0-9_-]), a one-line
+  description, permission_mode (default acceptEdits). Default require_mention and
+  reply_in_thread to true unless told otherwise. Only set channels to IDs given.
+- update_agent: change an EXISTING agent (agent.id must be listed above). Set
+  ONLY the fields to change; the rest are kept. The current settings are shown
+  above — use them to answer "what is X set to" via show_agent, or to change one.
+- delete_agent: remove an agent. Put its id in "target".
+- show_agent / list_agents: report an agent's full settings, or all agents. For
+  show_agent put the id in "target".
+- create_schedule: recurring work on an EXISTING agent (agent_id must be listed).
+  cron, timezone (default Asia/Seoul), prompt, channel_id. A schedule always runs
+  on an agent — there is no agent-less schedule. If asked for one without an
+  agent, clarify and explain, and suggest a workflow instead if it is multi-step
+  or standalone.
+- create_workflow: an agent-less pipeline. Set an id, an optional channel_id to
+  report the final result into, and steps (each a prompt; optional name,
+  permission_mode, model). Use this when the operator wants standalone or
+  multi-step automation with no agent.
+- run_workflow: run one now. Put its id in "target".
+- delete_workflow / list_workflows: remove a workflow (id in "target"), or list.
+- clarify: ambiguous, or references something not listed. Explain in reason.
+  Do not loop on clarify — if you have enough to act, act.
+- Never invent an id that is not listed above.
 - Write "reason" in the same language as the request (Korean if it is Korean).
 
 Request:

@@ -152,7 +152,7 @@ func (d *Discord) registerCommands() error {
 			// Natural-language management: "create an agent called pr-bot",
 			// "schedule dev to report at 9am". roundclaw validates and applies it.
 			Name:        "admin",
-			Description: "Manage roundclaw in natural language (create agents, schedules)",
+			Description: "Manage roundclaw in natural language (agents, schedules, workflows)",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
@@ -518,17 +518,21 @@ func (d *Discord) handleAdminCommand(i *discordgo.InteractionCreate, request str
 // runAdmin plans and executes one management request, returning the result text.
 // Shared by the admin channel, admin threads and the /admin command.
 func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID, history string) string {
+	// Give the planner the full current state — agents with their settings,
+	// schedules, and workflows — so it can answer questions and resolve
+	// references instead of inventing an answer.
 	agents, err := d.disp.Registry().List(ctx)
 	if err != nil {
 		return "⚠️ Could not read the registry: " + err.Error()
 	}
-	summaries := make([]claude.AgentSummary, 0, len(agents))
+	var agentLines strings.Builder
 	for _, a := range agents {
-		summaries = append(summaries, claude.AgentSummary{ID: a.ID, Description: a.Description})
+		fmt.Fprintf(&agentLines,
+			"- %s: %s | permission=%s require_mention=%v reply_in_thread=%v channels=[%s] enabled=%v\n",
+			a.ID, a.Description, noneIfEmpty(a.PermissionMode), a.RequireMention, a.ReplyInThread,
+			strings.Join(a.DiscordChannels, ","), a.Enabled)
 	}
 
-	// Give the planner the current schedules too, or it invents an answer when
-	// asked to list or change one.
 	var scheduleLines strings.Builder
 	if schedules, err := d.disp.ListSchedules(ctx); err == nil {
 		for _, s := range schedules {
@@ -536,10 +540,19 @@ func (d *Discord) runAdmin(ctx context.Context, request, currentChannelID, histo
 		}
 	}
 
+	var workflowLines strings.Builder
+	if wfs, err := d.disp.Registry().ListWorkflows(ctx); err == nil {
+		for _, w := range wfs {
+			fmt.Fprintf(&workflowLines, "- %s: %s (%d steps, channel=%s)\n",
+				w.ID, w.Description, len(w.Steps), noneIfEmpty(w.ChannelID))
+		}
+	}
+
 	action, err := d.admin.Plan(ctx, request, claude.AdminContext{
-		Agents:           summaries,
 		CurrentChannelID: currentChannelID,
+		Agents:           agentLines.String(),
 		Schedules:        scheduleLines.String(),
+		Workflows:        workflowLines.String(),
 		History:          history,
 	})
 	if err != nil {

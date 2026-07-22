@@ -100,6 +100,50 @@ Run an agent automatically on a cron schedule (a daily report, an hourly check):
 Scheduled runs use the agent's **default** session, so a daily job builds on what
 it did yesterday. Editing a schedule takes effect on its next run.
 
+### Managing in plain language — `/admin`
+
+Instead of the forms above, `/admin` lets you manage roundclaw by describing what
+you want. It opens a **thread** and does it there, so you can keep going in
+context:
+
+```
+/admin request: create an agent called pr-bot for reviews, bound to this channel
+   → 🛠️ opens an admin thread, "✅ created pr-bot"
+
+(in the thread, no /admin needed)
+"show me dev's settings"        → dev's permission, channels, flags, tools
+"show dev's persona"            → dev's CLAUDE.md
+"disable pm for now"            → pm stopped and paused
+"change dev's persona to: …"    → rewrites dev's instructions
+"build a 2-step workflow: collect the news, then summarise it, post here"
+```
+
+You describe it; roundclaw validates and applies it through the same paths the
+forms use — a bad request gets a question back, not a broken agent. `/admin` is
+gated to the people on the allow-list (see [permissions](#a-note-on-permissions)).
+
+### Workflows — agent-less pipelines
+
+A **workflow** is a standalone, multi-step job — no agent needed. Each step is a
+prompt; a step receives the earlier steps' outputs, and the final result is
+posted to a channel. Use it for automation that is a sequence of tasks rather
+than a conversation (collect → analyse → report).
+
+Create and run one in plain language via `/admin` ("build a workflow…", "run the
+news workflow now"), or over the API:
+
+```
+POST   /v1/workflows                    create (id, channel_id, steps[])
+GET    /v1/workflows                    list
+POST   /v1/workflows/{id}/run           run one now
+DELETE /v1/workflows/{id}
+```
+
+Each step can set its own `permission_mode` and `model` — a cheap model for a
+mechanical step, a stronger one for analysis. Steps run non-interactively, so
+they never wait on a permission prompt. Scheduling a workflow to run on a cron is
+coming; for now runs are started by hand or from `/admin`.
+
 ### A note on permissions
 
 Two gates decide who can do what. Discord's own permissions filter commands

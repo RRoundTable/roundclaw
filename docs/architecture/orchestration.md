@@ -79,6 +79,24 @@ nothing to recreate in Temporal. It always targets the agent's **default**
 conversation: a daily report that opened a new conversation each morning could
 never build on what it said yesterday.
 
+### `RunWorkflow` — the agent-less pipeline
+
+`internal/temporal/workflow/runworkflow.go`. A workflow is not an agent: no
+session, no queue, no channel binding. It is a definition of ordered *steps* —
+each a prompt with its own settings — that Temporal runs as a pipeline, feeding
+each step's output to the next and delivering the final result to a channel.
+
+- `LoadWorkflow` reads the definition at run time (an edit takes effect on the
+  next run), then the workflow loops the steps, running each through
+  `RunWorkflowStep` and accumulating a context string of prior outputs.
+- **Each step is its own activity**, so a worker crash resumes the pipeline at
+  the step it was on rather than from the top — the whole reason to model a
+  pipeline in Temporal rather than one long turn.
+- Started manually (`Dispatcher.RunWorkflow` → `ExecuteWorkflow`, one execution
+  per run so runs never collide) or, later, by a schedule. It is agent-less
+  precisely because a scheduled or one-off job needs none of what an agent
+  carries; forcing one on it was ceremony.
+
 ## Activities
 
 `internal/temporal/activity`. Registered as one struct via
@@ -108,6 +126,17 @@ activity builds a recap from the last N turns of the *same conversation*
 (`store.RecentTurnsIn`) and starts a fresh session with it. This is the only
 place the turn window is fed back into a prompt — the live session already holds
 the context, so replaying it every turn would just be duplication.
+
+### `LoadWorkflow`, `RunWorkflowStep`
+
+Housekeeping for `RunWorkflow`. `RunWorkflowStep` reuses the same container
+execution as `RunClaudeTurn` — streaming, heartbeat, graceful stop — but its
+config comes from the step, not an agent, and there is no session to resume:
+each step is a one-shot run that receives the earlier steps' outputs as input.
+The workflow's own `state.db` (under `workspace/workflows/<id>/`) records each
+step as a turn, so a run is inspectable. Steps run under `bypassPermissions` by
+default — a pipeline has no human to answer a permission prompt — and get the
+**global** secrets injected, since a workflow has no agent scope of its own.
 
 ### `DeliverResponse`
 

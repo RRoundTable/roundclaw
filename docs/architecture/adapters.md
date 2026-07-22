@@ -18,6 +18,8 @@ SQLite on its own.
 | `StopAll(ctx, agentID, reason)` | `stop` to every conversation the agent has (below) |
 | `Status(ctx, agentID, tail)` | SQLite only: `agent_runtime` + last N `live_logs` |
 | `Workflow(ctx, agentID)` | `DescribeWorkflowExecution` — alive, waiting, retrying, or absent |
+| `RunWorkflow(ctx, id)` | start one run of an agent-less workflow (`ExecuteWorkflow`) |
+| `ExecuteAdmin(ctx, action)` | apply a planned management action (below) |
 | `Budget(ctx, agentID)` | turns this hour, cost today, against configured limits |
 
 `Submit`/`Steer` are thin wrappers that pass an empty conversation ID, i.e. the
@@ -66,6 +68,7 @@ restart and leaves the guild with no commands.
 /ask        prompt [agent] [file]      send a request
 /agents                                list callable agents
 /agent      create | edit | show | enable | disable | delete
+/admin      request                    manage in plain language (below)
 /schedule   create | list | show | pause | resume | delete
 /status     [agent]                    what it is doing right now
 /workflow   [agent]                    Temporal execution state
@@ -136,6 +139,38 @@ route that returns a value, and the handlers log the name and scope but never th
 value. A write with no master key configured returns `503` rather than storing
 plaintext (`ErrSecretsDisabled`), and a per-agent write for an unknown agent is a
 `404`. The `roundclaw` CLI is just another client of these routes.
+
+## Natural-language admin
+
+`admin.go` (executor) + `internal/claude/admin.go` (planner). The `/admin`
+command and an optional admin channel let an operator manage roundclaw in plain
+language — "create an agent called pr-bot", "disable dev", "show dev's persona",
+"build a 3-step workflow". It works like the router, and for the same reason:
+
+1. **The planner proposes.** A stateless `claude --json-schema` call turns the
+   request into a structured `AdminAction`, given the current state (agents with
+   their settings, schedules, workflows) and, in a thread, the prior exchange.
+   The LLM only ever emits one of a fixed set of actions — it never holds a
+   token, reaches the API, or runs a command.
+2. **roundclaw executes.** `ExecuteAdmin` switches on the action and calls the
+   *same* `Create` / `Update` / `PutWorkflow` / `PutSchedule` paths the slash
+   commands use, so every existing guard — id validation, duplicate detection,
+   unknown-agent rejection — applies, and a hallucinated proposal fails safely
+   with a message rather than a bad write.
+
+Adding an action is four edits: the `AdminActionKind`, the JSON schema's enum,
+a prompt rule, and an `ExecuteAdmin` case. Actions cover the agent lifecycle
+(create/update/delete/enable/disable, show settings and persona, set persona),
+schedules, and workflows (create/run/list/delete).
+
+`/admin` opens a **thread** named `🛠️ admin: …` and runs the request there;
+further messages in that thread keep managing in context (the thread's history
+is fed back to the planner), recognised by the name prefix so it survives a
+restart with no in-memory state. Admin messages carry no slash-command
+permission gate, so the same allow-list is enforced on them explicitly — a
+public admin thread must not let anyone reconfigure agents. The planner runs
+`claude` in a container from the gateway, so the gateway holds the docker socket
+too, not only the worker.
 
 ## Webhooks
 

@@ -69,6 +69,8 @@ agent_channels(channel_id PK, agent_id → agents.id ON DELETE CASCADE)
 schedules(...)   -- see internal/registry/schedules.go
 
 secrets(scope, name, ciphertext, created_at, updated_at, PK(scope, name))
+
+workflows(id PK, description, channel_id, steps, enabled, created_at, updated_at)
 ```
 
 `channel_id` is the primary key of the binding table, so one Discord channel can
@@ -85,6 +87,13 @@ returns names only; the sole path that decrypts is `SecretsForAgent`, called by
 the activity to build a container's environment
 ([agent-runtime.md](agent-runtime.md#registered-secrets)). Without a configured
 key the store is off and every write fails closed rather than storing plaintext.
+
+**`workflows` are agent-less pipelines.** `steps` is a JSON array of
+`{name, prompt, permission_mode, allowed_tools, model}`, read as a unit like the
+other list columns. `channel_id` is where the final result is posted, empty to
+record the run and deliver nowhere. A workflow keeps its own `state.db` under
+`workspace/workflows/<id>/`, separate from any agent, where each run's steps are
+recorded as turns ([orchestration.md](orchestration.md#runworkflow--the-agent-less-pipeline)).
 
 List columns (`allowed_tools`, `additional_dirs`, `deny_paths`) are JSON arrays
 in a TEXT column. They are read as a unit and never queried into, so a join

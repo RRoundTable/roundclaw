@@ -170,8 +170,7 @@ func (s *agentState) receive(ctx workflow.Context, c workflow.ReceiveChannel, fr
 // abandonQueue drops everything waiting and closes out its turn rows.
 //
 // Dropping the slice alone would leave those rows open forever: they would show
-// as running in /status and keep counting against the hourly rate limit, so one
-// /stop would permanently eat part of the agent's budget.
+// as running in /status long after /stop cleared the queue.
 func (s *agentState) abandonQueue(ctx workflow.Context, reason string) {
 	if len(s.queue) == 0 {
 		return

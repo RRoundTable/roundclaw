@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS agents (
     reply_in_thread INTEGER NOT NULL DEFAULT 0,
     tools           TEXT NOT NULL DEFAULT '[]',
     skills          TEXT NOT NULL DEFAULT '[]',
+    image           TEXT NOT NULL DEFAULT '',
+    group_add       TEXT NOT NULL DEFAULT '[]',
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
@@ -84,6 +86,8 @@ var migrations = []string{
 	`ALTER TABLE agents ADD COLUMN reply_in_thread INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE agents ADD COLUMN tools TEXT NOT NULL DEFAULT '[]'`,
 	`ALTER TABLE agents ADD COLUMN skills TEXT NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE agents ADD COLUMN image TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents ADD COLUMN group_add TEXT NOT NULL DEFAULT '[]'`,
 }
 
 // Agent is a runtime agent definition.
@@ -127,7 +131,27 @@ type Agent struct {
 	// registry.Skill). Each resolves at turn time to a read-only mount into the
 	// agent's ~/.claude/skills, where the CLI discovers it. Like tools, only IDs
 	// of skills an operator already registered.
-	Skills          []string  `json:"skills"`
+	Skills []string `json:"skills"`
+	// Image overrides the container image this agent runs in, instead of the
+	// global container.image every agent shares by default. Empty keeps that
+	// default. It lets one agent run a purpose-built image — a dev agent with the
+	// docker CLI, say — without changing the image the rest of the fleet uses.
+	//
+	// The image must already exist on the host: the worker starts it by name and
+	// builds nothing. This is the same class of host reach an operator already
+	// grants through WorkDir, so it is a full-token (not delegate) operation.
+	Image string `json:"image"`
+	// GroupAdd lists supplementary groups (by GID or name) to add to the agent's
+	// container process, emitted as docker `--group-add`. Empty adds none.
+	//
+	// The one case that needs it: a tool mounts a host socket owned by a group
+	// the container's user is not in — /var/run/docker.sock, owned by the host's
+	// docker group — so the mount alone is refused until the process joins that
+	// group. Granting it is deliberately weighty: docker.sock plus its group is
+	// effective host root inside that container, and the agent is a
+	// prompt-injection target, so this belongs on a single trusted agent, never
+	// the fleet.
+	GroupAdd        []string  `json:"group_add"`
 	DiscordChannels []string  `json:"discord_channels"`
 	Enabled         bool      `json:"enabled"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -150,6 +174,17 @@ func (a Agent) Validate() error {
 	for _, d := range a.DenyPaths {
 		if err := claude.ValidateDenyPath(d); err != nil {
 			return err
+		}
+	}
+	// The image and each group become docker argv tokens directly, so a value
+	// with whitespace could not be one argument — reject it here rather than
+	// build a command that means something other than it reads.
+	if strings.TrimSpace(a.Image) != a.Image || strings.ContainsAny(a.Image, " \t\n") {
+		return fmt.Errorf("image %q must not contain whitespace", a.Image)
+	}
+	for _, g := range a.GroupAdd {
+		if g == "" || strings.ContainsAny(g, " \t\n") {
+			return fmt.Errorf("group_add entry %q must be a non-empty gid or name with no whitespace", g)
 		}
 	}
 	return nil
@@ -210,7 +245,7 @@ func (s *Store) List(ctx context.Context) ([]Agent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
 		       allowed_tools, additional_dirs, work_dir, deny_paths, require_mention,
-		       share_workspace, reply_in_thread, tools, skills, enabled, created_at, updated_at
+		       share_workspace, reply_in_thread, tools, skills, image, group_add, enabled, created_at, updated_at
 		FROM agents ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
@@ -241,7 +276,7 @@ func (s *Store) Get(ctx context.Context, id string) (Agent, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
 		       allowed_tools, additional_dirs, work_dir, deny_paths, require_mention,
-		       share_workspace, reply_in_thread, tools, skills, enabled, created_at, updated_at
+		       share_workspace, reply_in_thread, tools, skills, image, group_add, enabled, created_at, updated_at
 		FROM agents WHERE id = ?`, id)
 
 	a, err := scanAgent(row)
@@ -295,12 +330,12 @@ func (s *Store) Create(ctx context.Context, a Agent) (Agent, error) {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agents (id, description, agent_name, permission_mode,
 		                    allowed_tools, additional_dirs, work_dir, deny_paths,
-		                    require_mention, share_workspace, reply_in_thread, tools, skills, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                    require_mention, share_workspace, reply_in_thread, tools, skills, image, group_add, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
 		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.RequireMention),
-		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), boolToInt(a.Enabled), now, now,
+		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), boolToInt(a.Enabled), now, now,
 	); err != nil {
 		return Agent{}, fmt.Errorf("insert agent %s: %w", a.ID, err)
 	}
@@ -332,12 +367,12 @@ func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE agents SET description = ?, agent_name = ?, permission_mode = ?,
 		       allowed_tools = ?, additional_dirs = ?, work_dir = ?, deny_paths = ?,
-		       require_mention = ?, share_workspace = ?, reply_in_thread = ?, tools = ?, skills = ?, enabled = ?, updated_at = ?
+		       require_mention = ?, share_workspace = ?, reply_in_thread = ?, tools = ?, skills = ?, image = ?, group_add = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,
 		a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
 		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.RequireMention),
-		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
+		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
 	if err != nil {
 		return Agent{}, fmt.Errorf("update agent %s: %w", a.ID, err)
 	}
@@ -440,12 +475,13 @@ func scanAgent(row scanner) (Agent, error) {
 		a                     Agent
 		allowed, dirs, deny   string
 		tools, skills         string
+		groupAdd              string
 		mention, share, reply int
 		enabled               int
 		createdAt, updatedAt  int64
 	)
 	if err := row.Scan(&a.ID, &a.Description, &a.AgentName, &a.PermissionMode,
-		&allowed, &dirs, &a.WorkDir, &deny, &mention, &share, &reply, &tools, &skills, &enabled,
+		&allowed, &dirs, &a.WorkDir, &deny, &mention, &share, &reply, &tools, &skills, &a.Image, &groupAdd, &enabled,
 		&createdAt, &updatedAt); err != nil {
 		return Agent{}, err
 	}
@@ -457,6 +493,7 @@ func scanAgent(row scanner) (Agent, error) {
 	a.DenyPaths = decodeList(deny)
 	a.Tools = decodeList(tools)
 	a.Skills = decodeList(skills)
+	a.GroupAdd = decodeList(groupAdd)
 	a.Enabled = enabled != 0
 	a.CreatedAt = time.UnixMilli(createdAt)
 	a.UpdatedAt = time.UnixMilli(updatedAt)

@@ -165,9 +165,6 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrUnknownAgent):
 			writeError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, ErrLimitReached):
-			// 429 rather than 400: the request is fine, it just has to wait.
-			writeError(w, http.StatusTooManyRequests, err.Error())
 		default:
 			writeError(w, http.StatusBadRequest, err.Error())
 		}

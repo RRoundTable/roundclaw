@@ -109,7 +109,7 @@ func run(configPath string, log *slog.Logger) error {
 		MaxHeartbeatThrottleInterval: time.Second,
 		// Bounds containers running at once. Excess turns wait in Temporal
 		// rather than being refused, which is the right shape for a resource
-		// ceiling as opposed to a spend ceiling.
+		// ceiling: it protects the host, so backpressure beats rejection.
 		MaxConcurrentActivityExecutionSize: cfg.Limits.MaxConcurrentTurns,
 	})
 	w.RegisterWorkflow(rcworkflow.SubAgent)

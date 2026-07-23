@@ -88,8 +88,6 @@ func (h *HTTP) postWebhook(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrUnknownAgent):
 			writeError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, ErrLimitReached):
-			writeError(w, http.StatusTooManyRequests, err.Error())
 		default:
 			writeError(w, http.StatusBadRequest, err.Error())
 		}

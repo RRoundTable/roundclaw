@@ -86,18 +86,6 @@ const testToken = "test-token-value"
 
 func newHarness(t *testing.T) (*httptest.Server, *fakeTemporal, *store.Store) {
 	t.Helper()
-	return newHarnessWithLimits(t, "")
-}
-
-// newHarnessWithLimits builds the harness with a limits block, so the spend
-// ceilings can be exercised without a second copy of the setup.
-func newHarnessWithLimits(t *testing.T, limits string) (*httptest.Server, *fakeTemporal, *store.Store) {
-	t.Helper()
-
-	limitsBlock := ""
-	if limits != "" {
-		limitsBlock = "limits:\n  " + limits + "\n"
-	}
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "roundclaw.yaml")
@@ -108,7 +96,6 @@ container:
 http:
   wait_timeout: 300ms
   max_sse_per_agent: 2
-`+limitsBlock+`
 agents:
   - id: pr-reviewer
     discord_channels: ["chan-1"]

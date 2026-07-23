@@ -20,7 +20,6 @@ SQLite on its own.
 | `Workflow(ctx, agentID)` | `DescribeWorkflowExecution` — alive, waiting, retrying, or absent |
 | `RunWorkflow(ctx, id)` | start one run of an agent-less workflow (`ExecuteWorkflow`) |
 | `ExecuteAdmin(ctx, action)` | apply a planned management action (below) |
-| `Budget(ctx, agentID)` | turns this hour, cost today, against configured limits |
 
 `Submit`/`Steer` are thin wrappers that pass an empty conversation ID, i.e. the
 agent's default conversation.
@@ -45,18 +44,10 @@ rule: an explicit ID wins, otherwise the agent bound to the channel.
 
 ## Limits
 
-`limits.go` runs before anything is queued, so a runaway loop is stopped at the
-door rather than after it has spent money.
-
-| Config key | Checked against |
-|------------|-----------------|
-| `limits.turns_per_hour` | `turns` rows for this agent in the last hour |
-| `limits.cost_per_day_usd` | `SUM(cost_usd)` for this agent today |
-| `limits.global_cost_per_day_usd` | the same across every agent in the registry |
-| `limits.max_concurrent_turns` | agents currently `running` |
-
-All four read committed `turns` rows, so the accounting survives a restart. A
-rejection is `ErrLimitReached` → HTTP 429, or an ephemeral Discord reply.
+`limits.max_concurrent_turns` caps how many turn containers run at once across
+all agents. It is applied to the Temporal worker as
+`MaxConcurrentActivityExecutionSize`, so excess turns wait in the queue rather
+than fail. It defaults to 5.
 
 ## Discord (`discord*.go`)
 
@@ -175,6 +166,17 @@ The persona routes (`GET|PUT /v1/agents/{id}/persona`) exist for this: an agent
 in an isolated container cannot reach another agent's workspace file, so editing a
 persona — which the old planner did on the gateway's filesystem — is exposed as an
 API the admin agent calls like anything else.
+
+Because the admin agent replaces a whole definition through
+`PUT /v1/agents/{id}/definition`, it can also set another agent's **container
+image** and **`group_add`** ([data.md](data.md#registrydb)) — the fleet's own way
+to give, say, a dev agent a docker-capable image and the docker group so it can
+manage images. This is the same class of host reach `work_dir` already grants
+(both are why a delegate token cannot read a definition), one step larger: an
+image plus `group_add` for the docker group plus the socket mount is effective
+host root inside that agent's container, and that agent is a prompt-injection
+target. Which is exactly why the admin agent's own safety rests on channel access
+control — the power to hand out that reach is bounded by who can talk to it.
 
 > The previous stateless planner (`internal/claude/admin.go`, `adapter/admin.go`,
 > the `/admin` slash command, and the `discord.admin_channel` config) has been

@@ -96,21 +96,10 @@ http:
   # webhook — without it any caller on the network could queue billable work.
   webhook_secret_env: ROUNDCLAW_WEBHOOK_SECRET
 
-# What roundclaw is allowed to spend.
-#
-# Every agent turn costs real money, and the paths that start one — a Discord
-# command, an API call, a schedule — are all cheap to trigger. Without a ceiling
-# the only feedback is the bill.
-#
-# 0 means unlimited, so each ceiling is opted into deliberately. Cost is checked
-# against completed turns, so a limit stops the NEXT request rather than the one
-# that crossed the line: a turn's cost is not knowable before it runs.
+# Resource bounds.
 limits:
-  turns_per_hour: 30            # per agent
-  cost_per_day_usd: 5.0         # per agent
-  global_cost_per_day_usd: 20.0 # everything together — the real backstop
-  # Containers running at once. Unlike the spend ceilings this has a default
-  # (5): it bounds host resources, and excess turns wait rather than fail.
+  # Containers running at once, across all agents. Defaults to 5: it bounds
+  # host resources, and excess turns wait rather than fail.
   max_concurrent_turns: 5
 
 # How much history each agent keeps.

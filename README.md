@@ -202,9 +202,9 @@ POST   /v1/schedules/{id}/pause
 POST   /v1/schedules/{id}/resume
 ```
 
-A firing joins the agent's ordinary queue, so scheduled work shares one session,
-one ordering rule and one set of spend limits with everything else. There is no
-second execution path to keep in step.
+A firing joins the agent's ordinary queue, so scheduled work shares one session
+and one ordering rule with everything else. There is no second execution path to
+keep in step.
 
 The definition is read **at fire time**, not baked into the Temporal schedule,
 so editing a prompt takes effect on the next run without recreating anything.

@@ -54,12 +54,50 @@ workspace stays writable by the containers and by whoever is debugging them.
 | Image | Contents | Built from |
 |-------|----------|-----------|
 | roundclaw | `worker` + `gateway` + `roundclaw` CLI on `alpine:3.20`, plus `docker-cli` | `Dockerfile` |
-| agent | `@anthropic-ai/claude-code` on `node:22-slim` + git, ripgrep | `container/Dockerfile` |
+| agent | `@anthropic-ai/claude-code` on `node:22-slim` + git, ripgrep, docker CLI | `container/Dockerfile` |
 | fake agent | a scripted `claude` stand-in for tests | `container/fake/Dockerfile` |
 
 The roundclaw image builds with `CGO_ENABLED=0` — the SQLite driver is pure Go,
 so the binaries run on a base with no libc to match. It carries `docker-cli`
 because the worker shells out to start each turn.
+
+The agent image carries the **docker CLI** (the static client binary, no daemon)
+for an agent granted the host docker socket as a tool — a dev agent that builds
+or fixes images. It is inert on its own: reaching the socket also needs the mount
+(a registered tool) and the agent's `group_add` for the socket's owning group.
+Since it only carries a client, it never runs a daemon; it drives the host's
+daemon over the mounted socket, exactly as the worker does.
+
+**Rebuilding agent images, and letting the admin agent do it.** An agent turn is
+a fresh `docker run <tag>` every time, so *redeploying an agent image is just
+retagging it* — the next turn picks it up, with no compose restart (compose only
+builds the worker/gateway service image; the agent image is built ad-hoc). The
+admin agent can therefore build and redeploy agent images itself, given three
+grants: the docker socket as a tool (`host_path /var/run/docker.sock`, plus
+`DOCKER_HOST=unix:///mnt/docker.sock` in the tool's env so the CLI finds it at
+the mounted path), `group_add: ["${DOCKER_GID}"]` on its definition, and — since
+the agent image carries the CLI — nothing else in the image.
+
+Two rules keep that from bricking the fleet:
+
+- **Build with a gate, never by hand.** `container/build.sh [TAG] [CONTEXT]`
+  builds to a throwaway candidate tag, smoke-tests it (`claude --version`), and
+  promotes onto `TAG` only if it runs. A broken build leaves `TAG` untouched. A
+  raw `docker build -t roundclaw/claude:latest` has no such gate and can promote
+  an image that will not boot.
+- **Split the tags.** Keep the fleet default (`container.image`,
+  `roundclaw/claude:latest`) as the tag the admin *rebuilds*, but pin the admin
+  agent itself — and any other must-not-fail agent — to a separate stable tag via
+  its `image` field ([data.md](data.md#registrydb)). Then a bad `:latest` promote
+  degrades other agents but the admin still boots on its stable image and can
+  build a fix. Without the split, a bad promote takes down the very agent needed
+  to repair it, and recovery drops to a host shell.
+
+The common, inherently safe case needs neither worry: to give one agent a
+purpose-built image, the admin builds a *distinct* tag
+(`container/build.sh roundclaw/claude-dev:latest container`) and points that
+agent's `image` field at it — the fleet default and the admin's own image are
+never touched.
 
 **Networks.** The compose services share the project's default bridge. Agent
 containers, though, are siblings the worker starts through the host daemon and
@@ -82,7 +120,7 @@ Postgres.
 | `container` | `runtime`, `image`, `api_key_env`, `oauth_token_env`, `secrets_key_env`, `turn_timeout`, `stop_grace` |
 | `discord` | `token_env`, `guild_id`, `command_permission`, `allowed_roles`, `allowed_users` |
 | `http` | `addr`, `tokens_env`, `delegate_tokens_env`, `wait_timeout`, `max_sse_per_agent`, `callback_secret_env`, `webhook_secret_env` |
-| `limits` | `turns_per_hour`, `cost_per_day_usd`, `global_cost_per_day_usd`, `max_concurrent_turns` |
+| `limits` | `max_concurrent_turns` |
 | `retention` | `transcript_days`, `turn_days`, `interval` |
 | `router` | `enabled`, `model`, `timeout`, `channels` (v2 routing; not on by default) |
 

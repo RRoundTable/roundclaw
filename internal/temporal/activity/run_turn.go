@@ -175,9 +175,17 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		return core.TurnResult{}, err
 	}
 
+	// A per-agent image override wins over the global default, so one agent can
+	// run a purpose-built image (a dev agent with the docker CLI) without
+	// changing the image the rest of the fleet shares. Empty keeps the default.
+	image := a.cfg.Container.Image
+	if agentCfg.Image != "" {
+		image = agentCfg.Image
+	}
+
 	spec := claude.RunSpec{
 		Runtime:         a.cfg.Container.Runtime,
-		Image:           a.cfg.Container.Image,
+		Image:           image,
 		ContainerName:   claude.ContainerName(in.AgentID, in.TurnID),
 		WorkDir:         workspace,
 		DenyPaths:       agentCfg.DenyPaths,
@@ -191,6 +199,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		PermissionMode:  agentCfg.PermissionMode,
 		AllowedTools:    agentCfg.AllowedTools,
 		Network:         a.cfg.Container.Network,
+		GroupAdd:        agentCfg.GroupAdd,
 		Secrets:         secrets,
 		Skills:          skills,
 		Prompt:          toolNote + in.Prompt,
@@ -544,9 +553,8 @@ type AbandonInput struct {
 // AbandonTurns closes out turns dropped from an agent's queue.
 //
 // Clearing the queue on /stop leaves their rows open otherwise: they stay
-// "running" forever, show as in-flight in /status, and keep counting against
-// the hourly rate limit — which counts queued turns, so a single /stop would
-// permanently consume part of the agent's budget.
+// "running" forever and show as in-flight in /status long after the turn is
+// gone.
 //
 // No response is delivered for them. Whoever ran /stop was already told, and
 // fifteen separate cancellation notices would be worse than none.

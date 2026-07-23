@@ -258,7 +258,7 @@ back to polling the `turn_id`. Good for quick calls, not for long jobs.
 ### Status and execution
 
 ```
-GET /v1/agents/{agent}            what it is doing now (state, queue, recent log, budget)
+GET /v1/agents/{agent}            what it is doing now (state, queue, recent log)
 GET /v1/agents/{agent}/workflow   execution state: alive, waiting, retrying, absent
 ```
 
@@ -510,9 +510,11 @@ roundclaw tool set team \
   --env ROUNDCLAW_URL=http://roundclaw-gateway:8099 \
   --desc "delegate work to another agent" \
   --instructions - <<'EOF'
-Use `/mnt/team-cli/roundclaw send <agent> "..." --wait` to delegate and get the
-answer, or `... status <agent>` to see what a teammate is doing. Delegate only
-when needed; never call an agent that is calling you (no loops).
+Use `/mnt/team-cli/roundclaw send <agent> "..."` to delegate: it waits for the
+teammate's turn to finish and prints the result, so you can use the answer in the
+same turn (add `--no-wait` to just queue and move on). `... status <agent>` shows
+what a teammate is doing. Delegate only when needed; never call an agent that is
+calling you (no loops).
 EOF
 # 3. Give each collaborating agent the restricted token (encrypted) and the tool:
 printf %s "$DELEGATE_TOKEN" | roundclaw secret set ROUNDCLAW_API_TOKEN --agent pm
@@ -524,9 +526,9 @@ runs a turn that calls dev, waits for dev's own turn, and relays the answer.
 
 Guard rails and limits:
 
-- **Loops burn budget.** Nothing structurally prevents A→B→A; the backstop is the
-  spend ceiling (`limits.global_cost_per_day_usd`), which halts the fleet once
-  hit. The tool instructions tell agents not to form loops — keep that line.
+- **Loops burn money.** Nothing structurally prevents A→B→A. The tool
+  instructions tell agents not to form loops — keep that line, since there is no
+  spend backstop behind it.
 - **`--wait` blocks.** The delegating agent's container is held while the teammate
   runs, so a deep chain can occupy several `max_concurrent_turns` slots at once.
   Delegation is best kept shallow.

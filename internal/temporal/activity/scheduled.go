@@ -34,7 +34,7 @@ func (a *Activities) signaller() TemporalSignaller { return a.signal }
 // run without recreating anything in Temporal.
 //
 // The request joins the agent's ordinary queue, so scheduled work shares one
-// session, one ordering rule and one set of spend limits with everything else.
+// session and one ordering rule with everything else.
 func (a *Activities) EnqueueScheduled(ctx context.Context, in EnqueueScheduledInput) error {
 	log := activity.GetLogger(ctx)
 

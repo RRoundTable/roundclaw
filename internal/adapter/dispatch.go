@@ -132,11 +132,6 @@ func (d *Dispatcher) submit(ctx context.Context, agentID, conversationID, text s
 	if _, err := d.requireAgent(ctx, agentID); err != nil {
 		return Submission{}, err
 	}
-	// Before the turn row is written, so a refused request leaves no trace and
-	// the caller is told rather than left waiting on work that will not run.
-	if err := d.checkLimits(ctx, agentID); err != nil {
-		return Submission{}, err
-	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Submission{}, fmt.Errorf("request text is empty")
@@ -294,7 +289,6 @@ type StatusReport struct {
 	QueueLength int              `json:"queue_length"`
 	Recent      []store.LogEntry `json:"recent,omitempty"`
 	UpdatedAt   time.Time        `json:"updated_at,omitempty"`
-	Budget      Budget           `json:"budget"`
 }
 
 // Status answers "what is this agent doing right now?" straight from SQLite.
@@ -326,11 +320,6 @@ func (d *Dispatcher) Status(ctx context.Context, agentID string, tail int) (Stat
 		CurrentTurn: rt.CurrentTurn,
 		UpdatedAt:   rt.UpdatedAt,
 		QueueLength: d.queueDepth(ctx, agentID, ""),
-	}
-	// Best-effort: a status report is more useful without spend figures than
-	// not at all.
-	if budget, err := d.Budget(ctx, agentID); err == nil {
-		report.Budget = budget
 	}
 
 	if rt.CurrentTurn > 0 && tail > 0 {

@@ -50,9 +50,8 @@ idempotency(key PK, turn_id, created_at)
   thread ID otherwise. `RecentTurnsIn` scopes the recap window to one
   conversation — recapping a thread with another thread's history would hand the
   agent a conversation it never had.
-- `cost_usd` doubles as the accounting source for spend limits
-  (`UsageSince`), which is why it must be committed rather than held in the
-  workflow.
+- `cost_usd` is the per-turn accounting figure, recorded when the CLI reports
+  it on completion.
 - `turns` is **not** replayed into prompts. The live Claude session already
   holds the context; the window exists for user-facing summaries and for
   session-loss recovery.
@@ -62,7 +61,8 @@ idempotency(key PK, turn_id, created_at)
 ```sql
 agents(id PK, description, agent_name, permission_mode, allowed_tools,
        additional_dirs, work_dir, deny_paths, require_mention,
-       share_workspace, reply_in_thread, tools, skills, enabled, created_at, updated_at)
+       share_workspace, reply_in_thread, tools, skills, image, group_add,
+       enabled, created_at, updated_at)
 
 agent_channels(channel_id PK, agent_id → agents.id ON DELETE CASCADE)
 
@@ -116,9 +116,22 @@ nested mount over ClaudeHome where the CLI discovers it
 ([agent-runtime.md](agent-runtime.md#registered-skills)). Same operator/grant
 boundary and same skip-if-deleted behaviour as tools.
 
-List columns (`allowed_tools`, `additional_dirs`, `deny_paths`) are JSON arrays
-in a TEXT column. They are read as a unit and never queried into, so a join
-table would cost more than it explains.
+**`image` and `group_add` override the container an agent runs in.** `image`
+(empty by default) points one agent at a purpose-built image instead of the
+global `container.image` the fleet shares — a dev agent on an image with the
+docker CLI, say — while every other agent stays on the default. The image must
+already exist on the host; the worker starts it by name and builds nothing.
+`group_add` (a JSON array, empty by default) lists supplementary groups the
+container process joins via docker `--group-add`. Its one real use is reaching a
+host socket a tool mounts but the container's user is not in the owning group of
+— `/var/run/docker.sock`, owned by the host's docker group. The two together
+plus the socket mount are what let an agent drive the host daemon; each is inert
+without the others, and the pair is effective host root, so they belong on a
+single trusted agent (see [adapters.md](adapters.md#admin-is-an-agent)).
+
+List columns (`allowed_tools`, `additional_dirs`, `deny_paths`, `group_add`) are
+JSON arrays in a TEXT column. They are read as a unit and never queried into, so
+a join table would cost more than it explains.
 
 ## Migrations
 

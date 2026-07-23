@@ -69,7 +69,8 @@ Commands:
   agents                       list agents
   agent show <id>              print an agent's definition
   agent rm <id>                delete an agent (workspace kept)
-  send <agent> <text>          send a request; --wait, --steer, --callback, --key
+  send <agent> <text>          delegate a request; waits for the result by default
+                               (--no-wait to just queue), --timeout, --steer, --callback, --key
   status <agent>               what an agent is doing right now
   turn <agent> <turn-id>       a turn's state and result
 
@@ -255,7 +256,14 @@ func cmdAgent(args []string) int {
 func cmdSend(args []string) int {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	base, token := commonFlags(fs)
-	wait := fs.Bool("wait", false, "hold the connection until the turn finishes")
+	// Waiting is the default. Delegation is the main use of send, and a
+	// delegating agent almost always needs the result to continue. When wait was
+	// opt-in, an agent that forgot the flag fired and forgot: the delegated turn
+	// ran to completion but its result was recorded and never returned, so the
+	// caller was left promising a follow-up it had no way to deliver.
+	wait := fs.Bool("wait", true, "hold until the turn finishes, polling past the server's wait budget (default)")
+	noWait := fs.Bool("no-wait", false, "queue the turn and return its id immediately, without waiting")
+	timeout := fs.Duration("timeout", 30*time.Minute, "give up waiting after this long; the turn keeps running and can be read with `turn`")
 	steer := fs.Bool("steer", false, "interrupt the running turn instead of queueing")
 	callback := fs.String("callback", "", "URL to POST the result to when it finishes")
 	key := fs.String("key", "", "idempotency key (a retry with the same key is one turn)")
@@ -263,9 +271,10 @@ func cmdSend(args []string) int {
 		return 2
 	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: roundclaw send <agent> <text> [--wait] [--steer] [--callback URL] [--key K]")
+		fmt.Fprintln(os.Stderr, "usage: roundclaw send <agent> <text> [--wait|--no-wait] [--timeout D] [--steer] [--callback URL] [--key K]")
 		return 2
 	}
+	waiting := *wait && !*noWait
 	agent := fs.Arg(0)
 	text := strings.Join(fs.Args()[1:], " ")
 
@@ -278,7 +287,7 @@ func cmdSend(args []string) int {
 	}
 
 	path := "/v1/agents/" + agent + "/requests"
-	if *wait {
+	if waiting {
 		path += "?wait=true"
 	}
 	c := newClient(*base, *token)
@@ -316,20 +325,85 @@ func cmdSend(args []string) int {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return fail(err)
 	}
-	dup := ""
-	if out.Duplicate {
-		dup = " (duplicate — same key already ran)"
+
+	if !waiting {
+		dup := ""
+		if out.Duplicate {
+			dup = " (duplicate — same key already ran)"
+		}
+		fmt.Printf("turn %d, %s, queue position %d%s\n", out.TurnID, out.Status, out.QueuePosition, dup)
+		return 0
 	}
-	fmt.Printf("turn %d, %s, queue position %d%s\n", out.TurnID, out.Status, out.QueuePosition, dup)
-	if out.Result != "" {
-		fmt.Printf("\n%s\n", out.Result)
+
+	// Waiting. The server returns the finished turn when it completes inside its
+	// wait budget (HTTP 200); otherwise it demotes to 202 with the turn still
+	// running, and finishing the wait is ours. A busy agent shares its queue with
+	// Discord, so a delegated turn can take many minutes — longer than any single
+	// held connection should live, which is why the rest is done by polling.
+	status, result, errMsg, cost := out.Status, out.Result, out.Error, out.CostUSD
+	if !turnFinished(status) {
+		t, ok := pollTurn(c, agent, out.TurnID, *timeout)
+		if !ok {
+			fmt.Printf("turn %d still running after %s — read it later with: roundclaw turn %s %d\n",
+				out.TurnID, *timeout, agent, out.TurnID)
+			return 1
+		}
+		status, result, errMsg, cost = t.Status, t.Result, t.Error, t.CostUSD
 	}
-	if out.Error != "" {
-		fmt.Fprintf(os.Stderr, "\nturn error: %s\n", out.Error)
+
+	fmt.Printf("turn %d, %s (cost $%.4f)\n", out.TurnID, status, cost)
+	if result != "" {
+		fmt.Printf("\n%s\n", result)
+	}
+	if errMsg != "" {
+		fmt.Fprintf(os.Stderr, "\nturn error: %s\n", errMsg)
 		return 1
 	}
 	return 0
 }
+
+// turnState is the slice of GET /turns/{id} that a waiting caller needs.
+type turnState struct {
+	Status  string  `json:"status"`
+	Result  string  `json:"result"`
+	Error   string  `json:"error"`
+	CostUSD float64 `json:"cost_usd"`
+}
+
+// turnFinished reports whether a turn has left the running state. A turn is
+// created running and moves to done, stopped, or error; the 202 wait-demotion
+// response reports "queued", which is likewise not yet finished.
+func turnFinished(status string) bool {
+	switch status {
+	case "", "running", "queued":
+		return false
+	default:
+		return true
+	}
+}
+
+// pollTurn waits for a turn to finish, returning its final record. It polls the
+// turn by id rather than holding one long connection: a turn can run for many
+// minutes, and no single request should be expected to stay open that long. A
+// transient read error is retried rather than abandoning a turn already running.
+func pollTurn(c *client, agent string, turnID int64, timeout time.Duration) (turnState, bool) {
+	deadline := time.Now().Add(timeout)
+	path := fmt.Sprintf("/v1/agents/%s/turns/%d", agent, turnID)
+	for {
+		var t turnState
+		if err := c.do(http.MethodGet, path, nil, &t); err == nil && turnFinished(t.Status) {
+			return t, true
+		}
+		if time.Now().After(deadline) {
+			return turnState{}, false
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
+// pollInterval is how long pollTurn waits between reads. It is a variable so
+// tests can shrink it; in production the turn takes far longer than this.
+var pollInterval = 2 * time.Second
 
 func cmdStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)

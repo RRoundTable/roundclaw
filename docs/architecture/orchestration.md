@@ -140,7 +140,7 @@ exists.
 **Cancellation cleanup** runs in a `workflow.NewDisconnectedContext`; a
 cancelled context cannot start the activity that closes out the turn row.
 `abandonQueue` marks dropped turns so they do not sit at `running` forever,
-silently consuming rate-limit budget.
+misreporting the agent as busy long after the turn is gone.
 
 ### `ScheduledRequest`
 

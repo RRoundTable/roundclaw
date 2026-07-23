@@ -97,6 +97,14 @@ type RunSpec struct {
 	// reach services on it (e.g. a local Outline). Empty keeps the default.
 	Network string
 
+	// GroupAdd lists supplementary groups (GID or name) to add to the container
+	// process via `--group-add`. Empty adds none. It exists so an agent can use a
+	// host socket mounted by a tool but owned by a group its user is not in — the
+	// docker socket, owned by the host's docker group, being the case that needs
+	// it. The value is a host-specific GID, which is why it is a per-agent field
+	// and not baked into the image.
+	GroupAdd []string
+
 	Prompt string
 }
 
@@ -178,6 +186,15 @@ func (s RunSpec) Args() ([]string, error) {
 	// carries the internet the CLI itself needs. Empty keeps the default bridge.
 	if s.Network != "" {
 		args = append(args, "--network", s.Network)
+	}
+
+	// Supplementary groups, so the container's user can reach a mounted host
+	// socket owned by a group it is not otherwise in (the docker socket, above
+	// all). Order follows the definition, and each is its own token so a GID with
+	// no surrounding whitespace stays one argument. A run-time flag, not an image
+	// change, because the GID is the host's, not the image's.
+	for _, g := range s.GroupAdd {
+		args = append(args, "--group-add", g)
 	}
 
 	// Shadowing has to come after the workspace mount so it lands on top of it.

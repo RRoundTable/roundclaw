@@ -157,6 +157,38 @@ func TestArgsAdditionalDirsAreReadOnlyAndAdvertised(t *testing.T) {
 	}
 }
 
+func TestArgsGroupAddPrecedesImage(t *testing.T) {
+	s := baseSpec()
+	s.GroupAdd = []string{"984", "dialout"}
+	args, err := s.Args()
+	if err != nil {
+		t.Fatalf("args: %v", err)
+	}
+	// Each group is its own token — a GID must not be folded into another arg.
+	if !hasPair(args, "--group-add", "984") || !hasPair(args, "--group-add", "dialout") {
+		t.Errorf("group_add must emit a --group-add flag per group, got %v", args)
+	}
+	// Order follows the definition, and both are a docker run flag, so they must
+	// land before the image (everything after the image is `claude`'s argv).
+	first, second := indexOfPair(args, "--group-add", "984"), indexOfPair(args, "--group-add", "dialout")
+	if first < 0 || second < 0 || first > second {
+		t.Errorf("group_add flags are out of definition order, got %v", args)
+	}
+	if img := indexOf(args, s.Image); img >= 0 && second > img {
+		t.Errorf("group_add flags must precede the image, got %v", args)
+	}
+}
+
+func TestArgsNoGroupAddByDefault(t *testing.T) {
+	args, err := baseSpec().Args()
+	if err != nil {
+		t.Fatalf("args: %v", err)
+	}
+	if indexOf(args, "--group-add") >= 0 {
+		t.Errorf("no group_add should emit no --group-add flag, got %v", args)
+	}
+}
+
 func TestArgsRejectsOversizedPrompt(t *testing.T) {
 	s := baseSpec()
 	s.Prompt = strings.Repeat("x", MaxPromptBytes+1)

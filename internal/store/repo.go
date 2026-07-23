@@ -379,32 +379,6 @@ func (s *Store) TailLogs(ctx context.Context, turnID int64, n int) ([]LogEntry, 
 	return out, rows.Err()
 }
 
-// Usage is what an agent has spent and run inside a window.
-type Usage struct {
-	Turns   int
-	CostUSD float64
-}
-
-// UsageSince totals an agent's activity since a point in time.
-//
-// Turns are counted from when they were queued, not when they finished, so a
-// burst cannot slip past a rate limit by having its turns still running. Cost
-// only accrues on completion, because that is when the CLI reports it.
-func (s *Store) UsageSince(ctx context.Context, since time.Time) (Usage, error) {
-	var (
-		u    Usage
-		cost sql.NullFloat64
-	)
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*), SUM(cost_usd) FROM turns WHERE queued_at >= ?`,
-		since.UnixMilli()).Scan(&u.Turns, &cost)
-	if err != nil {
-		return u, fmt.Errorf("usage for %s: %w", s.agentID, err)
-	}
-	u.CostUSD = cost.Float64
-	return u, nil
-}
-
 // Pruned reports what a retention pass removed.
 type Pruned struct {
 	Logs  int64

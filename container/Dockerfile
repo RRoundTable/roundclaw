@@ -35,6 +35,16 @@ RUN set -eux; \
     rm -rf /tmp/docker /tmp/docker.tgz; \
     docker --version
 
+# The socket is granted as a tool, which mounts it at /mnt/<basename> —
+# /mnt/docker.sock — not the CLI's default /var/run/docker.sock. Point the CLI
+# there via an image ENV rather than the tool's env map: a tool's env is set on
+# the *worker's* subprocess (it is forwarded into the container by name), and
+# DOCKER_HOST there would redirect the worker's own `docker run` to a socket that
+# does not exist on the worker, breaking container startup for every agent that
+# holds the tool. In the image it is scoped to the container. Agents without the
+# socket mounted never call docker, so a dangling value is harmless to them.
+ENV DOCKER_HOST=unix:///mnt/docker.sock
+
 RUN npm install -g @anthropic-ai/claude-code
 
 # /workspace is the agent's working directory and must be the cwd for every

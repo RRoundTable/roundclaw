@@ -207,13 +207,14 @@ func TestValidateRejectsUnsafeIDsAndRelativeDirs(t *testing.T) {
 	}
 }
 
-func TestImageAndGroupAddRoundTrip(t *testing.T) {
+func TestImageGroupAddAndModelRoundTrip(t *testing.T) {
 	s := newStore(t)
 
 	want := Agent{
 		ID:       "dev",
 		Image:    "roundclaw-dev:latest",
 		GroupAdd: []string{"984", "docker"},
+		Model:    "claude-opus-5",
 		Enabled:  true,
 	}
 	if _, err := s.Create(t.Context(), want); err != nil {
@@ -230,10 +231,14 @@ func TestImageAndGroupAddRoundTrip(t *testing.T) {
 	if len(got.GroupAdd) != 2 || got.GroupAdd[0] != "984" || got.GroupAdd[1] != "docker" {
 		t.Errorf("group_add = %v, want [984 docker]", got.GroupAdd)
 	}
+	if got.Model != "claude-opus-5" {
+		t.Errorf("model = %q, want claude-opus-5", got.Model)
+	}
 
 	// An update must persist a change to these fields, not silently drop them.
 	got.Image = ""
 	got.GroupAdd = nil
+	got.Model = ""
 	if _, err := s.Update(t.Context(), got); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -241,12 +246,12 @@ func TestImageAndGroupAddRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after update: %v", err)
 	}
-	if after.Image != "" || len(after.GroupAdd) != 0 {
-		t.Errorf("update did not clear image/group_add: %+v", after)
+	if after.Image != "" || len(after.GroupAdd) != 0 || after.Model != "" {
+		t.Errorf("update did not clear image/group_add/model: %+v", after)
 	}
 }
 
-func TestValidateRejectsWhitespaceImageAndGroups(t *testing.T) {
+func TestValidateRejectsWhitespaceImageModelAndGroups(t *testing.T) {
 	s := newStore(t)
 
 	if _, err := s.Create(t.Context(), Agent{ID: "a", Image: "has space:tag"}); err == nil {
@@ -257,6 +262,9 @@ func TestValidateRejectsWhitespaceImageAndGroups(t *testing.T) {
 	}
 	if _, err := s.Create(t.Context(), Agent{ID: "c", GroupAdd: []string{""}}); err == nil {
 		t.Error("an empty group_add entry was accepted")
+	}
+	if _, err := s.Create(t.Context(), Agent{ID: "d", Model: "claude opus 5"}); err == nil {
+		t.Error("a model with whitespace was accepted")
 	}
 }
 

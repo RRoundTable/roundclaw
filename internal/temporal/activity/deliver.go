@@ -15,8 +15,11 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
 
 	"github.com/roundtable/roundclaw/internal/core"
+	"github.com/roundtable/roundclaw/internal/store"
+	"github.com/roundtable/roundclaw/internal/temporal/contract"
 )
 
 // DiscordMaxMessage is Discord's hard per-message character limit.
@@ -24,9 +27,14 @@ const DiscordMaxMessage = 2000
 
 // DeliverInput is one response delivery.
 type DeliverInput struct {
-	AgentID string          `json:"agent_id"`
-	Origin  core.Origin     `json:"origin"`
-	Result  core.TurnResult `json:"result"`
+	AgentID string `json:"agent_id"`
+	// Conversation is the conversation the finished turn ran in — the sender's
+	// side, not the destination's. It is what a delegator is given as the handle
+	// to continue in, so a follow-up resumes the session that did the work
+	// instead of briefing a fresh one.
+	Conversation string          `json:"conversation,omitempty"`
+	Origin       core.Origin     `json:"origin"`
+	Result       core.TurnResult `json:"result"`
 	// SuppressIf stops delivery when the result contains it. The turn stays
 	// recorded either way — this hides a message, it does not hide a run.
 	SuppressIf string `json:"suppress_if,omitempty"`
@@ -64,6 +72,9 @@ func (a *Activities) DeliverResponse(ctx context.Context, in DeliverInput) error
 	case core.OriginHTTPCallback:
 		return a.deliverCallback(ctx, in)
 
+	case core.OriginAgent:
+		return a.deliverToAgent(ctx, in)
+
 	default:
 		// Unknown origin types are dropped rather than retried forever: the
 		// result is safe in SQLite and no retry will teach this binary a type
@@ -91,6 +102,156 @@ func (a *Activities) deliverDiscord(in DeliverInput) error {
 		}
 	}
 	return nil
+}
+
+// deliverToAgent hands a finished turn's result to the agent that delegated it,
+// as an ordinary request in that agent's conversation.
+//
+// This is what makes "I'll tell you when it's done" keepable. The delegator does
+// not have to stay alive waiting: the return address is on the delegated turn's
+// row, so the result finds its way back even if the delegating process, its HTTP
+// connection and the worker have all died in between.
+//
+// It deliberately queues a turn rather than posting the result to the channel
+// itself. The delegator knows what the human asked and can answer in its own
+// words; a raw dump of another agent's output is not an answer.
+//
+// The row write and the signal live in one activity so that a single idempotency
+// key covers both: DeliverResponse is retried, and without it a retry would wake
+// the delegator a second time with the same result.
+func (a *Activities) deliverToAgent(ctx context.Context, in DeliverInput) error {
+	log := activity.GetLogger(ctx)
+	parent, conversation := in.Origin.Agent, in.Origin.Conversation
+
+	// An agent that has been deleted cannot be woken, and no retry will bring it
+	// back. The result stays recorded on the delegated turn either way.
+	agent, err := a.reg.Get(ctx, parent)
+	if err != nil {
+		return newNonRetryable(fmt.Errorf("notify %s: %w", parent, err))
+	}
+	if !agent.Enabled {
+		log.Info("delegator is disabled; not waking it with the result",
+			"agent", parent, "from", in.AgentID, "turn_id", in.Result.TurnID)
+		return nil
+	}
+
+	st, err := a.stores.Get(parent)
+	if err != nil {
+		return fmt.Errorf("open %s store: %w", parent, err)
+	}
+
+	replyTo, err := a.replyOriginFor(ctx, st, conversation)
+	if err != nil {
+		return err
+	}
+
+	// Deterministic on purpose: the delegated turn can only finish once, so
+	// (agent, turn) is a stable name for this notification however many times
+	// the activity is retried.
+	key := fmt.Sprintf("notify:%s:%d", in.AgentID, in.Result.TurnID)
+	prompt := notifyPrompt(in)
+
+	turnID, existed, err := st.CreateTurn(ctx, store.NewTurn{
+		Request: prompt, Origin: replyTo,
+		Conversation: conversation, IdempotencyKey: key,
+	})
+	if err != nil {
+		return fmt.Errorf("queue notification for %s: %w", parent, err)
+	}
+	if existed {
+		log.Info("this result was already handed to the delegator",
+			"agent", parent, "from", in.AgentID, "turn_id", turnID)
+		return nil
+	}
+
+	req := core.Request{
+		AgentID:        parent,
+		ConversationID: conversation,
+		RequestID:      key,
+		TurnID:         turnID,
+		Text:           prompt,
+		Origin:         replyTo,
+		ReceivedAt:     time.Now().UTC(),
+	}
+
+	workflowID := contract.WorkflowID(parent, conversation)
+	_, err = a.signaller().SignalWithStartWorkflow(ctx, workflowID, contract.SignalEnqueue, req,
+		client.StartWorkflowOptions{ID: workflowID, TaskQueue: a.cfg.Temporal.TaskQueue},
+		// By name, not by function reference: importing the package that defines
+		// the workflow would close an import cycle.
+		contract.AgentWorkflowType, contract.AgentInput{AgentID: parent, ConversationID: conversation})
+	if err != nil {
+		return fmt.Errorf("wake %s with the result: %w", parent, err)
+	}
+
+	log.Info("handed a delegated result back to the delegator",
+		"agent", parent, "conversation", conversation,
+		"from", in.AgentID, "from_turn", in.Result.TurnID, "turn_id", turnID)
+	return nil
+}
+
+// replyOriginFor is where the woken agent's own answer should go: wherever that
+// conversation last answered.
+//
+// A conversation has exactly one audience — the Discord thread it lives in — so
+// the last human-facing turn is the authoritative address, and reading it here
+// keeps a second copy of it out of the delegated turn's origin.
+//
+// A conversation whose only turns are notifications has no audience to answer
+// to; recording the result is then all that can be done, which is what
+// http_poll means.
+func (a *Activities) replyOriginFor(ctx context.Context, st *store.Store, conversation string) (core.Origin, error) {
+	turns, err := st.RecentTurnsIn(ctx, conversation, replyOriginLookback)
+	if err != nil {
+		return core.Origin{}, fmt.Errorf("read conversation %q: %w", conversation, err)
+	}
+	for _, t := range turns {
+		switch t.Origin.Type {
+		case core.OriginDiscord, core.OriginHTTPCallback:
+			return t.Origin, nil
+		}
+	}
+	return core.HTTPPollOrigin(), nil
+}
+
+// replyOriginLookback bounds how far back the reply address is searched. A
+// conversation can accumulate several notification turns in a row — one per
+// delegated task — and the human-facing turn that started it all sits behind
+// them.
+const replyOriginLookback = 20
+
+// notifyPrompt is what the delegator reads when it wakes. It says who finished,
+// what it cost, and what to do now, and it hands over the conversation handle so
+// a follow-up continues in the same session rather than briefing a fresh one.
+func notifyPrompt(in DeliverInput) string {
+	var b strings.Builder
+	status := "완료"
+	if in.Result.Status == core.TurnError {
+		status = "실패"
+	} else if in.Result.Status == core.TurnStopped {
+		status = "중단됨"
+	}
+
+	fmt.Fprintf(&b, "[위임 %s] 에이전트 %s · turn %d · $%.4f\n",
+		status, in.AgentID, in.Result.TurnID, in.Result.CostUSD)
+	if in.Conversation != "" {
+		fmt.Fprintf(&b, "이어서 시키려면: roundclaw send %s --conversation %s \"...\"\n",
+			in.AgentID, in.Conversation)
+	} else {
+		fmt.Fprintf(&b, "이어서 시키려면: roundclaw send %s \"...\" (기본 대화)\n", in.AgentID)
+	}
+	b.WriteString("\n")
+
+	if in.Result.ErrorMessage != "" {
+		fmt.Fprintf(&b, "오류:\n%s\n\n", in.Result.ErrorMessage)
+	}
+	if in.Result.Text != "" {
+		fmt.Fprintf(&b, "결과:\n%s\n\n", in.Result.Text)
+	}
+	b.WriteString("---\n" +
+		"이 결과를 요청한 사람에게 당신의 말로 보고하세요. " +
+		"추가 작업이 필요하면 지금 하거나 위 핸들로 이어서 위임하세요.")
+	return b.String()
 }
 
 // callbackPayload is the JSON body POSTed to a callback URL.

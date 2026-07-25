@@ -92,9 +92,13 @@ Notable behaviour:
 
 There are **two token scopes**. Full tokens (`http.tokens_env`) reach every
 route. Delegate tokens (`http.delegate_tokens_env`) are restricted by
-`delegateAllowed` to sending a request and reading agent status — list, status,
-turns, stream, workflow, and `POST …/requests`; everything else is `403`,
-including an agent's `definition` (it exposes host paths). This is what lets an
+`delegateAllowed` to sending a request, reading agent status, and speaking in a
+conversation — list, status, turns, stream, workflow, `POST …/requests` and
+`POST …/messages`; everything else is `403`, including an agent's `definition`
+(it exposes host paths). Speaking is on the restricted surface because it starts
+no work, spends no tokens, and cannot reach a channel the agent is not already
+spoken to in: the target is resolved from that conversation's own history, never
+from the request, so a prompt-injected agent cannot broadcast. This is what lets an
 agent's own container carry a token to delegate to another agent (the `team`
 tool, [agent-runtime.md](agent-runtime.md#registered-tools)) without being able
 to reconfigure or delete the fleet — the check runs in the auth middleware,
@@ -102,7 +106,10 @@ before routing, and denies by default. Tokens are held only as SHA-256 hashes an
 compared in constant time.
 
 ```
-POST   /v1/agents/{agent}/requests        202 {turn_id, queue_position, duplicate}
+POST   /v1/agents/{agent}/requests        202 {turn_id, conversation, queue_position, duplicate}
+                                          body: notify {agent, conversation} = return address,
+                                                conversation_id = which conversation to run in
+POST   /v1/agents/{agent}/messages        200 — say one thing, no turn created
 GET    /v1/agents/{agent}/turns/{turn}    turn state and result
 GET    /v1/agents/{agent}/turns/{turn}/stream   SSE tail of live_logs
 GET    /v1/agents/{agent}                 status

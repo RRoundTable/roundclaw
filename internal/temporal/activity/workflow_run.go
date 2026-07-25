@@ -92,6 +92,13 @@ func (a *Activities) RunWorkflowStep(ctx context.Context, in RunStepInput) (Step
 		permission = "bypassPermissions"
 	}
 
+	// A step names its own model when it wants a cheap or a strong one for that
+	// step alone; otherwise it runs the fleet's model, like an agent turn does.
+	model := in.Step.Model
+	if model == "" {
+		model = a.cfg.Container.Model
+	}
+
 	spec := claude.RunSpec{
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           a.cfg.Container.Image,
@@ -106,7 +113,7 @@ func (a *Activities) RunWorkflowStep(ctx context.Context, in RunStepInput) (Step
 		Resume:         false,
 		PermissionMode: permission,
 		AllowedTools:   in.Step.AllowedTools,
-		Model:          in.Step.Model,
+		Model:          model,
 		Network:        a.cfg.Container.Network,
 		Secrets:        secrets,
 		Prompt:         prompt,

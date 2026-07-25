@@ -158,3 +158,117 @@ func writeTestJSON(w http.ResponseWriter, code int, body map[string]any) {
 		panic(err)
 	}
 }
+
+// Flags written after the positional arguments must still be parsed. Go's flag
+// package stops at the first non-flag token, so before parseFlags this exact
+// command line queued a *waiting* turn and appended "--notify-me" to the prompt
+// text — silently doing the opposite of what was asked, which is the failure this
+// whole return-address mechanism exists to prevent.
+func TestSendAcceptsFlagsAfterPositionals(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "pm")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "thread-1")
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("wait") == "true" {
+			t.Error("--notify-me must not wait")
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeTestJSON(w, http.StatusAccepted, map[string]any{
+			"turn_id": 3, "status": "queued", "conversation": "worker-1",
+		})
+	}))
+	defer srv.Close()
+
+	code := cmdSend([]string{
+		"--url", srv.URL, "--token", "t",
+		"dev", "QA 버튼 만들어줘", // positionals first, as anyone would write it
+		"--notify-me", "--conversation", "worker-1",
+	})
+	if code != 0 {
+		t.Fatalf("cmdSend exit = %d, want 0", code)
+	}
+	if text, _ := got["text"].(string); text != "QA 버튼 만들어줘" {
+		t.Errorf("text = %q; a trailing flag leaked into the prompt", text)
+	}
+	if got["conversation_id"] != "worker-1" {
+		t.Errorf("conversation_id = %v, want worker-1", got["conversation_id"])
+	}
+	notify, ok := got["notify"].(map[string]any)
+	if !ok {
+		t.Fatalf("no notify in body: %v", got)
+	}
+	if notify["agent"] != "pm" || notify["conversation"] != "thread-1" {
+		t.Errorf("notify = %v, want the caller's own identity from the environment", notify)
+	}
+}
+
+// Without an injected identity there is nobody to notify, and guessing would
+// wake the wrong agent.
+func TestSendRefusesNotifyMeOutsideAContainer(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("no request should be sent")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if code := cmdSend([]string{"--url", srv.URL, "--token", "t", "dev", "x", "--notify-me"}); code == 0 {
+		t.Error("--notify-me succeeded with no identity to return to")
+	}
+}
+
+// say takes its target from the environment, so an agent needs no arguments to
+// speak where it already is.
+func TestSayUsesInjectedIdentity(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "thread-9")
+
+	var path string
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeTestJSON(w, http.StatusOK, map[string]any{"delivered": true, "target": "chan-1"})
+	}))
+	defer srv.Close()
+
+	if code := cmdSay([]string{"--url", srv.URL, "--token", "t", "빌드 중, 5분쯤 더"}); code != 0 {
+		t.Fatalf("cmdSay exit = %d, want 0", code)
+	}
+	if path != "/v1/agents/dev/messages" {
+		t.Errorf("path = %q, want /v1/agents/dev/messages", path)
+	}
+	if got["conversation"] != "thread-9" {
+		t.Errorf("conversation = %v, want thread-9", got["conversation"])
+	}
+}
+
+// --to the delegator resolves that agent's waiting conversation, not this one.
+func TestSayToDelegatorUsesReplyToConversation(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "worker-1")
+	t.Setenv("ROUNDCLAW_REPLY_TO", "pm")
+	t.Setenv("ROUNDCLAW_REPLY_TO_CONVERSATION", "thread-1")
+
+	var path string
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeTestJSON(w, http.StatusOK, map[string]any{"delivered": true, "target": "chan-1"})
+	}))
+	defer srv.Close()
+
+	if code := cmdSay([]string{"--url", srv.URL, "--token", "t", "PRD와 다른 부분 발견", "--to", "pm"}); code != 0 {
+		t.Fatalf("cmdSay exit = %d, want 0", code)
+	}
+	if path != "/v1/agents/pm/messages" {
+		t.Errorf("path = %q, want /v1/agents/pm/messages", path)
+	}
+	if got["conversation"] != "thread-1" {
+		t.Errorf("conversation = %v, want thread-1 (the delegator's, not mine)", got["conversation"])
+	}
+}

@@ -259,6 +259,7 @@ within an agent. Every turn route is therefore agent-scoped.
 
 ```
 POST /v1/agents/{agent}/requests             queue a request
+POST /v1/agents/{agent}/messages             say one thing in a conversation (no turn)
 GET  /v1/agents/{agent}                      status + recent transcript
 GET  /v1/agents/{agent}/turns/{turn}         turn state and result
 GET  /v1/agents/{agent}/turns/{turn}/stream  SSE live transcript
@@ -287,6 +288,7 @@ Three ways to get the result, with different durability:
 | --- | --- | --- |
 | Poll / SSE | `GET .../turns/{turn}` or `/stream` | Yes — SQLite is the source of truth |
 | `callback_url` | roundclaw POSTs to you when done | Yes — retried as a Temporal activity |
+| `notify` | the result becomes a new turn for another agent | Yes — the address is on the turn row |
 | `?wait=true` | connection held until the turn ends | **No** — a convenience only |
 
 `?wait=true` demotes to `202` at the timeout and hands back a `turn_id` to poll.
@@ -295,6 +297,27 @@ because of someone else's request; `queue_position` says how long.
 
 Supply `Idempotency-Key` on every POST. Without it a client retry becomes a
 second agent run.
+
+### Agents delegating to each other
+
+`notify` is the mode for one agent handing work to another. It writes a return
+address onto the delegated turn, so when that turn finishes the result is queued
+as a **new turn for the delegator**, which then answers the human in its own
+words. Nothing has to stay alive in between — not the caller, not its connection,
+not the worker:
+
+```bash
+# from inside an agent container, where identity is injected
+roundclaw send dev "QA 버튼 만들어줘" --notify-me
+roundclaw say "빌드 중, 5분쯤 더"     # progress, no turn, no cost
+```
+
+Waiting (`--wait`, the default) is fine for short work and wrong for long work: it
+ties the result to a process that a shell timeout can kill, and then the result
+exists with nobody to read it. `--notify-me` is the durable form. Failures travel
+the same path — a delegated turn that dies still reports.
+
+Details and the security model: [docs/usage.md](docs/usage.md#delegating-between-agents).
 
 ## Discord
 

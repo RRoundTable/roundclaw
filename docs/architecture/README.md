@@ -146,9 +146,10 @@ on the leaf instead of on each other.
   retried activity reattaches to the same session with no state to look up.
   See [agent-runtime.md](agent-runtime.md).
 - **Origin as a discriminated union.** `core.Origin` carries where a reply must
-  go (`discord` / `http_poll` / `http_callback`). It is written to
+  go (`discord` / `http_poll` / `http_callback` / `agent`). It is written to
   `turns.origin` and read back by `DeliverResponse`. A new event source is one
-  constant plus one switch case.
+  constant plus one switch case — `agent`, which hands a delegated result back to
+  the agent that asked for it, was exactly that.
 - **Read path bypasses the core.** Status and results are served by reading the
   agent's SQLite file directly, in the gateway process. WAL makes this safe
   while the worker writes.

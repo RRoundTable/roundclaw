@@ -25,6 +25,7 @@ import (
 // Routes:
 //
 //	POST /v1/agents/{agent}/requests             queue a request
+//	POST /v1/agents/{agent}/messages             speak in a conversation (no turn)
 //	GET  /v1/agents/{agent}                      agent status
 //	GET  /v1/agents/{agent}/turns/{turn}         turn state and result
 //	GET  /v1/agents/{agent}/turns/{turn}/stream  SSE live transcript
@@ -35,6 +36,11 @@ type HTTP struct {
 	tokens         [][32]byte
 	delegateTokens [][32]byte
 	waitTimeout    time.Duration
+
+	// sender is how an agent speaks outside a turn (POST .../messages). Nil when
+	// no Discord connection exists, which that endpoint reports rather than
+	// silently swallowing.
+	sender MessageSender
 
 	sse sseLimiter
 }
@@ -67,6 +73,7 @@ func NewHTTP(disp *Dispatcher, log *slog.Logger, tokens, delegateTokens []string
 func (h *HTTP) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/agents/{agent}/requests", h.postRequest)
+	mux.HandleFunc("POST /v1/agents/{agent}/messages", h.postMessage)
 	mux.HandleFunc("GET /v1/agents/{agent}", h.getStatus)
 	mux.HandleFunc("GET /v1/agents/{agent}/turns/{turn}", h.getTurn)
 	mux.HandleFunc("GET /v1/agents/{agent}/turns/{turn}/stream", h.streamTurn)
@@ -90,16 +97,46 @@ func (h *HTTP) Handler() http.Handler {
 type submitBody struct {
 	Text        string `json:"text"`
 	CallbackURL string `json:"callback_url,omitempty"`
+	// ConversationID puts the turn in a named conversation of the target agent
+	// rather than its default one. A conversation owns a session, a queue and a
+	// workspace, so two of them run in parallel without sharing any.
+	//
+	// Note the workspace: a managed workspace starts a new conversation empty
+	// (only CLAUDE.md is seeded), so naming a fresh conversation for work that
+	// expects an existing checkout hands the agent an empty directory. Agents
+	// with a git work_dir get a worktree instead and are safe to split.
+	ConversationID string `json:"conversation_id,omitempty"`
+	// Notify hands this turn's result to another agent when it finishes, instead
+	// of leaving it for a poller. It is how one agent delegates to another
+	// without holding a connection open for the whole run: the return address
+	// lives on the turn row, so the result comes back even if the caller is long
+	// gone. See core.OriginAgent.
+	Notify *notifyTarget `json:"notify,omitempty"`
 	// Steer interrupts the running turn instead of queueing behind it. It is
 	// opt-in and explicit: nothing infers a steer from message content, so a
 	// misread can never destroy work in progress.
 	Steer bool `json:"steer,omitempty"`
 }
 
+// notifyTarget is who to wake with the result.
+//
+// The caller states its own identity here, which a shared delegate token cannot
+// prove. That is bounded rather than trusted: the named agent must exist, an
+// agent cannot name itself in the conversation it is already running in, and the
+// worst a wrong claim buys is a wasted turn on another agent. Per-agent tokens
+// would let the server fill this in instead of believing it.
+type notifyTarget struct {
+	Agent        string `json:"agent"`
+	Conversation string `json:"conversation,omitempty"`
+}
+
 type submitResponse struct {
-	AgentID       string `json:"agent_id"`
-	TurnID        int64  `json:"turn_id"`
-	Status        string `json:"status"`
+	AgentID string `json:"agent_id"`
+	TurnID  int64  `json:"turn_id"`
+	Status  string `json:"status"`
+	// Conversation echoes which conversation the turn landed in, so a delegating
+	// caller can keep the handle and continue in the same session later.
+	Conversation  string `json:"conversation,omitempty"`
 	QueuePosition int    `json:"queue_position"`
 	Duplicate     bool   `json:"duplicate,omitempty"`
 
@@ -122,6 +159,19 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	origin := core.HTTPPollOrigin()
+	if body.Notify != nil && body.CallbackURL != "" {
+		writeError(w, http.StatusBadRequest,
+			"notify and callback_url are two different return addresses; set one")
+		return
+	}
+	if body.Notify != nil {
+		notifyOrigin, err := h.resolveNotify(r.Context(), agentID, body.ConversationID, *body.Notify)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		origin = notifyOrigin
+	}
 	if body.CallbackURL != "" {
 		origin = core.HTTPCallbackOrigin(body.CallbackURL, "default")
 		if err := origin.Validate(); err != nil {
@@ -155,12 +205,12 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 		prompt = PromptWithAttachments(prompt, paths)
 	}
 
-	submit := h.disp.Submit
+	submit := h.disp.SubmitIn
 	if body.Steer {
-		submit = h.disp.Steer
+		submit = h.disp.SteerIn
 	}
 
-	sub, err := submit(r.Context(), agentID, prompt, origin, idempotencyKey)
+	sub, err := submit(r.Context(), agentID, body.ConversationID, prompt, origin, idempotencyKey)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUnknownAgent):
@@ -175,6 +225,7 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 		AgentID:       agentID,
 		TurnID:        sub.TurnID,
 		Status:        "queued",
+		Conversation:  body.ConversationID,
 		QueuePosition: sub.QueuePosition,
 		Duplicate:     sub.Duplicate,
 	}
@@ -199,6 +250,32 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 	resp.CostUSD = turn.CostUSD
 	resp.Error = turn.Error
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveNotify turns a caller's claimed return address into an Origin, and
+// refuses the shapes that cannot end.
+//
+// The self-loop check is the load-bearing one: a turn whose result wakes the same
+// agent in the same conversation would queue a successor of itself forever, and
+// each iteration costs a container run. Delegating to yourself in a *different*
+// conversation is allowed — that is a background job, not a loop — and is bounded
+// by the ordinary queue.
+func (h *HTTP) resolveNotify(ctx context.Context, targetAgent, targetConversation string, n notifyTarget) (core.Origin, error) {
+	origin := core.AgentOrigin(n.Agent, n.Conversation)
+	if err := origin.Validate(); err != nil {
+		return core.Origin{}, err
+	}
+	if n.Agent == targetAgent && n.Conversation == targetConversation {
+		return core.Origin{}, fmt.Errorf(
+			"notify would wake %s in the conversation this turn already runs in, which cannot terminate; "+
+				"name a different conversation or a different agent", n.Agent)
+	}
+	// Checked here rather than at delivery: a typo should cost a 400, not a turn
+	// that runs and then has nowhere to report.
+	if _, err := h.disp.requireAgent(ctx, n.Agent); err != nil {
+		return core.Origin{}, err
+	}
+	return origin, nil
 }
 
 // waitForTurn polls until the turn reaches a terminal state, the client goes
@@ -454,8 +531,20 @@ func delegateAllowed(method, path string) bool {
 			return segs[3] == "turns" && segs[5] == "stream"
 		}
 	case http.MethodPost:
+		switch {
 		// /v1/agents/{id}/requests                    delegate a task
-		return len(segs) == 4 && segs[3] == "requests"
+		case len(segs) == 4 && segs[3] == "requests":
+			return true
+		// /v1/agents/{id}/messages                    speak in a conversation
+		//
+		// Allowed on the restricted surface because it cannot start work, cannot
+		// spend tokens, and cannot reach a channel the agent is not already
+		// spoken to in — the target is resolved from that conversation's own
+		// history, never from the request.
+		case len(segs) == 4 && segs[3] == "messages":
+			return true
+		}
+		return false
 	}
 	return false
 }

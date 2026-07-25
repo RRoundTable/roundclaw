@@ -368,10 +368,15 @@ func (s *agentState) deliver(ctx workflow.Context, req core.Request, result core
 		})
 
 	err := workflow.ExecuteActivity(deliverCtx, (*activity.Activities).DeliverResponse, activity.DeliverInput{
-		AgentID:    s.agentID,
-		Origin:     req.Origin,
-		Result:     result,
-		SuppressIf: req.SuppressIf,
+		AgentID: s.agentID,
+		// Which conversation produced the result, not where it is going. A
+		// delegator is handed this as the handle to continue in — the session that
+		// already knows the work — so it must not be confused with the origin's
+		// conversation, which is the delegator's own.
+		Conversation: s.conversationID,
+		Origin:       req.Origin,
+		Result:       result,
+		SuppressIf:   req.SuppressIf,
 	}).Get(deliverCtx, nil)
 	if err != nil {
 		// Delivery is best-effort by design: the result is already durable in

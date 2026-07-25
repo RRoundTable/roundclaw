@@ -155,9 +155,51 @@ DELETE /v1/workflows/{id}
 ```
 
 Each step can set its own `permission_mode` and `model` — a cheap model for a
-mechanical step, a stronger one for analysis. Steps run non-interactively, so
+mechanical step, a stronger one for analysis. A step that names no model runs the
+fleet's `container.model`, the same one agents run. Steps run non-interactively, so
 they never wait on a permission prompt. Scheduling a workflow to run on a cron is
 coming; for now runs are started by hand or from `/admin`.
+
+### Delegating between agents
+
+An agent with the roundclaw CLI as a tool can hand work to another agent. Two
+primitives decide how the answer gets back.
+
+```
+POST /v1/agents/{agent}/requests   notify: {agent, conversation}   # 결과를 되돌려받는 주소
+POST /v1/agents/{agent}/messages   {text, conversation}            # 턴 없이 한 마디
+```
+
+**`send --notify-me`** writes a return address onto the delegated turn. When that
+turn finishes — minutes or hours later, success or failure — the framework queues
+the result as a new turn in the *delegating* conversation, and that agent reports
+to the human in its own words. The delegator does not wait, does not hold a
+connection open, and does not have to be alive: the address is on the row, so the
+result comes back even if the caller, its shell and the worker have all died.
+
+**`say`** posts one message into a conversation without running a turn — no
+session, no container, no model call. Use it for "this will take 20 minutes" and
+mid-run findings. It is not retried and not recorded as work, so a *final* result
+must never travel this way.
+
+|  | `--notify-me` | `say` |
+|---|---|---|
+| decided by | the delegator, up front | the worker, in the moment |
+| result | a new turn for the delegator | one Discord message |
+| guaranteed | yes, by the framework | only if the agent calls it |
+| cost | one extra turn | none |
+| use for | final results and failures | progress |
+
+Inside a container the CLI reads `ROUNDCLAW_AGENT_ID`, `ROUNDCLAW_CONVERSATION_ID`
+and `ROUNDCLAW_REPLY_TO`, so `roundclaw say "..."` and `send dev "..." --notify-me`
+need no arguments to know where they are.
+
+`--conversation` puts the delegated turn in a named conversation of the target
+agent — its own session, queue and workspace, so two delegations run in parallel.
+Mind the workspace: a managed workspace starts a new conversation **empty** (only
+CLAUDE.md is seeded), so an agent asked to fix a checkout it has never cloned
+lands in an empty directory. Give that agent a git `work_dir` first — then each
+conversation gets a worktree with the files already there.
 
 ### A note on permissions
 
@@ -321,7 +363,10 @@ roundclaw agents                       # list agents
 roundclaw agent show pr-reviewer       # print a definition
 roundclaw status pr-reviewer           # what it's doing now
 roundclaw send pr-reviewer "review PR #482"
-roundclaw send pr-reviewer "..." --wait          # block for the result
+roundclaw send pr-reviewer "..." --wait          # block for the result (default)
+roundclaw send pr-reviewer "..." --notify-me     # don't block; the result comes
+                                                 # back as a new turn for me
+roundclaw say "진행 중입니다"                      # speak without running a turn
 roundclaw send pr-reviewer "..." --steer         # interrupt and redirect
 roundclaw send pr-reviewer "..." --key deploy-42 # idempotent retry
 roundclaw turn pr-reviewer 123         # a turn's state and result
@@ -485,17 +530,52 @@ Notes:
 
 ## Agents working together — delegation
 
-An agent can delegate work to another agent and use the answer, because roundclaw
-is itself reachable over its own HTTP API. It is a special case of a tool: the
-`team` tool mounts the `roundclaw` CLI into the container, and the agent runs
-`roundclaw send <other> "..." --wait` to hand a task to a teammate.
+An agent can hand work to another agent, because roundclaw is reachable over its
+own HTTP API. It is a special case of a tool: the `team` tool mounts the
+`roundclaw` CLI into the container, and the agent runs it.
 
-The token an agent carries for this is deliberately **weaker** than the operator
-token. `http.delegate_tokens_env` names a set of tokens restricted to exactly two
-things — sending a request to an agent and reading agent status. Managing agents,
-secrets, tools, workflows or schedules is `403`. So even if one agent is talked
-into misbehaving by a message in its channel, it cannot delete or reconfigure the
-others; the blast radius is "it can send another agent a request".
+```bash
+roundclaw send dev "QA 버튼 만들어줘" --notify-me    # 위임하고 손 떼기 (권장)
+roundclaw send dev "짧은 확인 하나"                  # 끝날 때까지 대기 (동기)
+roundclaw say "빌드 중, 5분쯤 더"                    # 진행 보고 (턴 없음, 무료)
+roundclaw turn dev 71                              # 위임한 턴 직접 조회
+```
+
+**`--notify-me` is the one to reach for.** It writes a return address onto the
+delegated turn, so when that turn finishes the result is queued as a new turn for
+the delegator, in the conversation that asked. The delegator then reports to the
+human in its own words, with its session — and therefore the original request —
+still in context. Nothing has to stay alive in between, and failures come back the
+same way.
+
+Waiting (the default) is right for short work only. It ties the result to a live
+process, and a shell timeout or a turn ending kills the reader while the delegated
+turn keeps going — leaving the result recorded with nobody to deliver it. That is
+the failure mode `--notify-me` exists to remove.
+
+`say` is for the middle of a long job. It costs nothing and guarantees nothing:
+no session, no container, no retry, no record as work. Never send a final result
+this way.
+
+`--conversation <name>` runs the delegated turn in a named conversation of the
+target agent — its own session, queue and workspace, so several delegations run in
+parallel and a follow-up resumes the session that already knows the work. **Check
+the workspace first:** a managed workspace starts a new conversation empty (only
+CLAUDE.md is seeded), so an agent asked to fix a checkout it has never cloned
+lands in an empty directory. Give that agent a git `work_dir` and each conversation
+gets a worktree with the files already present.
+
+### The token is deliberately weaker
+
+`http.delegate_tokens_env` names a set of tokens restricted to sending a request,
+reading agent status, and speaking in a conversation. Managing agents, secrets,
+tools, workflows or schedules is `403`, and so is reading a definition (it exposes
+host paths). So an agent talked into misbehaving by a message in its channel
+cannot delete or reconfigure the others.
+
+Speaking is on that restricted surface because it cannot reach a channel the agent
+is not already spoken to in: the target is resolved from the conversation's own
+history, never from the request. There is no way to name an arbitrary channel.
 
 Setting it up (operator, once):
 
@@ -510,30 +590,39 @@ roundclaw tool set team \
   --env ROUNDCLAW_URL=http://roundclaw-gateway:8099 \
   --desc "delegate work to another agent" \
   --instructions - <<'EOF'
-Use `/mnt/team-cli/roundclaw send <agent> "..."` to delegate: it waits for the
-teammate's turn to finish and prints the result, so you can use the answer in the
-same turn (add `--no-wait` to just queue and move on). `... status <agent>` shows
-what a teammate is doing. Delegate only when needed; never call an agent that is
-calling you (no loops).
+Delegate with `/mnt/team-cli/roundclaw send <agent> "..." --notify-me`: the result
+comes back to you as a new turn when it finishes, so end your turn saying you
+delegated — do not promise a follow-up you cannot send. Short tasks may use plain
+`send` (it waits and prints the result). `say "..."` posts a progress line without
+a turn. Never say "I'll tell you when it's done" without --notify-me: once your
+turn ends your process is gone and nothing will report.
 EOF
 # 3. Give each collaborating agent the restricted token (encrypted) and the tool:
 printf %s "$DELEGATE_TOKEN" | roundclaw secret set ROUNDCLAW_API_TOKEN --agent pm
 #    then from /admin: "pm에 team 도구 붙여줘"  (or set the agent's tools list)
 ```
 
-After that, from Discord: ask `pm` to *"dev에게 X를 위임해서 결과를 알려줘"* and pm
-runs a turn that calls dev, waits for dev's own turn, and relays the answer.
+The CLI needs no arguments to know where it is: the worker injects
+`ROUNDCLAW_AGENT_ID`, `ROUNDCLAW_CONVERSATION_ID` and — on a delegated turn —
+`ROUNDCLAW_REPLY_TO`, so `--notify-me` and `say` fill themselves in.
 
-Guard rails and limits:
+### Guard rails and limits
 
-- **Loops burn money.** Nothing structurally prevents A→B→A. The tool
-  instructions tell agents not to form loops — keep that line, since there is no
-  spend backstop behind it.
-- **`--wait` blocks.** The delegating agent's container is held while the teammate
-  runs, so a deep chain can occupy several `max_concurrent_turns` slots at once.
-  Delegation is best kept shallow.
+- **A→B→A is normal; a loop is not.** The return trip *is* the reporting path, so
+  it must be allowed. What is refused at admission is the one shape that cannot
+  end: an agent notifying itself in the conversation it is already running in. A
+  ping-pong between two agents is not yet bounded — there is no hop count or spend
+  budget behind it, so the tool instructions telling agents not to form loops are
+  still load-bearing.
+- **Identity is claimed, not proved.** Delegate tokens are shared, so the server
+  believes a caller's `notify.agent`. It checks that the agent exists and refuses
+  the self-loop; a wrong claim costs one wasted turn on another agent. Per-agent
+  tokens would let the server fill this in instead.
+- **Waiting occupies a slot.** A synchronous chain holds several
+  `max_concurrent_turns` slots at once. `--notify-me` holds none.
 - **Same queue.** A delegated request waits behind whatever that agent is already
-  doing (Discord included), exactly like any other request.
+  doing (Discord included), exactly like any other request. Separate conversations
+  are how you get parallelism.
 
 ---
 
@@ -543,7 +632,7 @@ Guard rails and limits:
 |------------|---------|------|
 | Send a request | message / `@bot` / `/ask` | `POST /v1/agents/{a}/requests` |
 | See what it's doing | `/status` | `GET /v1/agents/{a}` |
-| Get a result | reply arrives | poll `…/turns/{id}`, SSE, or `callback_url` |
+| Get a result | reply arrives | poll `…/turns/{id}`, SSE, `callback_url`, or `notify` (another agent) |
 | Interrupt & redirect | `/steer` | `POST …/requests` with `"steer": true` |
 | Stop and clear the queue | `/stop` | — |
 | A separate, parallel session | reply in a **thread** | — |
@@ -552,7 +641,8 @@ Guard rails and limits:
 | Give an agent a secret | — | `roundclaw secret set` · `PUT /v1/agents/{a}/secrets/{name}` |
 | Give an agent a local tool | register: `roundclaw tool set` · grant: `/admin` "붙여줘" | `PUT /v1/tools/{id}` · agent `tools` list |
 | Give an agent a skill | register: `roundclaw skill set` · grant: agent `skills` list | `PUT /v1/skills/{id}` · agent `skills` list |
-| Let agents delegate to each other | ask pm to "dev에게 위임해줘" | the `team` tool + a delegate-scoped token |
+| Let agents delegate to each other | ask pm to "dev에게 위임해줘" | the `team` tool + a delegate-scoped token; `--notify-me` for the return trip |
+| Report progress mid-task | — | `POST /v1/agents/{a}/messages` (`roundclaw say`) |
 
 The `roundclaw` CLI covers the HTTP column from a terminal — see
 [Command line](#command-line-roundclaw).

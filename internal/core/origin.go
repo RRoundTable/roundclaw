@@ -25,6 +25,15 @@ const (
 	OriginHTTPPoll OriginType = "http_poll"
 	// OriginHTTPCallback POSTs the result to a caller-supplied URL.
 	OriginHTTPCallback OriginType = "http_callback"
+	// OriginAgent hands the result to another agent as a new request, in a named
+	// conversation of that agent. It is how a delegated turn reports back: the
+	// delegator wakes with the result and answers the human in its own words.
+	//
+	// Unlike the other three this origin creates work rather than just
+	// delivering, which is why admission has to bound it (see the depth and
+	// budget checks at the dispatcher) and why an agent may not name itself in
+	// its own conversation — that would be an unbounded self-loop.
+	OriginAgent OriginType = "agent"
 )
 
 // Origin says where a turn's response has to go. It is persisted as JSON in
@@ -42,6 +51,13 @@ type Origin struct {
 	// the key itself, so secrets stay out of the Temporal history and the DB.
 	URL       string `json:"url,omitempty"`
 	SecretRef string `json:"secret_ref,omitempty"`
+
+	// Agent. Conversation may be empty, meaning that agent's default
+	// conversation. The reply address the woken agent then answers to is not
+	// stored here: it is read from the last human-facing turn of that
+	// conversation, which is by definition where the conversation answers.
+	Agent        string `json:"agent,omitempty"`
+	Conversation string `json:"conversation,omitempty"`
 }
 
 // DiscordOrigin builds an Origin that replies in a Discord channel.
@@ -57,6 +73,12 @@ func HTTPPollOrigin() Origin {
 // HTTPCallbackOrigin builds an Origin that pushes the result to callbackURL.
 func HTTPCallbackOrigin(callbackURL, secretRef string) Origin {
 	return Origin{Type: OriginHTTPCallback, URL: callbackURL, SecretRef: secretRef}
+}
+
+// AgentOrigin builds an Origin that wakes agentID in conversationID with the
+// result. Empty conversationID means that agent's default conversation.
+func AgentOrigin(agentID, conversationID string) Origin {
+	return Origin{Type: OriginAgent, Agent: agentID, Conversation: conversationID}
 }
 
 // Validate rejects an Origin that delivery could not act on. Callers must run
@@ -89,6 +111,11 @@ func (o Origin) Validate() error {
 			return fmt.Errorf("http_callback origin: url has no host")
 		}
 		return nil
+	case OriginAgent:
+		if err := ValidateAgentID(o.Agent); err != nil {
+			return fmt.Errorf("agent origin: %w", err)
+		}
+		return nil
 	case "":
 		return fmt.Errorf("origin: type is required")
 	default:
@@ -102,6 +129,11 @@ func (o Origin) String() string {
 	switch o.Type {
 	case OriginDiscord:
 		return "discord:" + o.ChannelID
+	case OriginAgent:
+		if o.Conversation == "" {
+			return "agent:" + o.Agent
+		}
+		return "agent:" + o.Agent + "/" + o.Conversation
 	case OriginHTTPCallback:
 		if u, err := url.Parse(o.URL); err == nil {
 			return "http_callback:" + u.Scheme + "://" + u.Host + u.Path

@@ -96,6 +96,11 @@ func run(configPath string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Speaking outside a turn needs the live session, which only exists when
+	// Discord is connected. Hoisted out of the block below so the HTTP API can be
+	// given it; nil when running API-only, which that endpoint reports.
+	var sender adapter.MessageSender
+
 	if token := os.Getenv(cfg.Discord.TokenEnv); token != "" {
 		dc, err := adapter.NewDiscord(token, cfg.Discord.GuildID, disp, log)
 		if err != nil {
@@ -130,6 +135,7 @@ func run(configPath string, log *slog.Logger) error {
 			return err
 		}
 		defer dc.Close()
+		sender = dc.Sender()
 	} else {
 		log.Warn("discord token is unset; running with the HTTP API only",
 			"env", cfg.Discord.TokenEnv)
@@ -149,6 +155,7 @@ func run(configPath string, log *slog.Logger) error {
 	}
 
 	api := adapter.NewHTTP(disp, log, tokens, delegateTokens, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
+	api.SetMessageSender(sender)
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
 		Handler:           api.Handler(),

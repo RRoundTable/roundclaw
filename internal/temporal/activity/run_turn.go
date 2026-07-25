@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -183,6 +184,22 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		image = agentCfg.Image
 	}
 
+	// Same shape for the model: the fleet runs one model unless an agent names
+	// its own. Both empty leaves the choice to the CLI's default.
+	model := a.cfg.Container.Model
+	if agentCfg.Model != "" {
+		model = agentCfg.Model
+	}
+
+	// Who and where this turn is, so the roundclaw CLI inside the container can
+	// name itself instead of making the model guess an ID. Set last, and
+	// deliberately after the secrets and tool env: a registered secret must not
+	// be able to shadow the agent's own identity, which `say` and `--notify-me`
+	// are authorised against.
+	for name, value := range a.identityEnv(ctx, st, in) {
+		secrets[name] = value
+	}
+
 	spec := claude.RunSpec{
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           image,
@@ -198,6 +215,7 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		AgentName:       agentCfg.AgentName,
 		PermissionMode:  agentCfg.PermissionMode,
 		AllowedTools:    agentCfg.AllowedTools,
+		Model:           model,
 		Network:         a.cfg.Container.Network,
 		GroupAdd:        agentCfg.GroupAdd,
 		Secrets:         secrets,
@@ -594,6 +612,38 @@ func workDirFor(cfg *config.Config, agent registry.Agent) string {
 		return agent.WorkDir
 	}
 	return cfg.WorkDir(agent.ID)
+}
+
+// identityEnv is what the container is told about the turn it is running.
+//
+// Without it the roundclaw CLI inside the container cannot name itself, and an
+// agent asked to "reply in this conversation" would have to guess an ID out of
+// its prompt. With it, `say` and `send --notify-me` need no arguments to know
+// where they are.
+//
+// ROUNDCLAW_REPLY_TO is set only when this turn arrived by delegation, and names
+// the agent (and conversation) waiting on the result — it is read from the turn's
+// own origin, which is the durable record of where the answer goes.
+func (a *Activities) identityEnv(ctx context.Context, st *store.Store, in RunTurnInput) map[string]string {
+	env := map[string]string{
+		"ROUNDCLAW_AGENT_ID":        in.AgentID,
+		"ROUNDCLAW_TURN_ID":         strconv.FormatInt(in.TurnID, 10),
+		"ROUNDCLAW_CONVERSATION_ID": in.ConversationID,
+	}
+	// A failed read is not worth failing the turn over: the agent simply runs
+	// without knowing who delegated to it, which is how every turn ran before
+	// this existed.
+	turn, err := st.GetTurn(ctx, in.TurnID)
+	if err != nil {
+		activity.GetLogger(ctx).Warn("could not read the turn's origin for identity env",
+			"agent", in.AgentID, "turn_id", in.TurnID, "error", err)
+		return env
+	}
+	if turn.Origin.Type == core.OriginAgent {
+		env["ROUNDCLAW_REPLY_TO"] = turn.Origin.Agent
+		env["ROUNDCLAW_REPLY_TO_CONVERSATION"] = turn.Origin.Conversation
+	}
+	return env
 }
 
 // resolveTools turns an agent's granted tool IDs into what a container needs:

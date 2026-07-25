@@ -217,6 +217,21 @@ Switches on `turns.origin`:
 - `http_callback` — signed POST, retried by Temporal's retry policy, host
   re-validated before the request.
 - `http_poll` — nothing to do; the row is already the answer.
+- `agent` — queue the result as a new request for the agent that delegated the
+  work, in its conversation, so it reports to the human in its own words. This is
+  the only case that *creates* work rather than just delivering it, and the only
+  one that crosses a workflow boundary: it writes the turn row and calls
+  `SignalWithStartWorkflow` in the same activity, under one idempotency key
+  (`notify:<agent>:<turn>`), because this activity is retried and a second signal
+  would wake the delegator twice for one result. The delegator's own reply address
+  is read from the last human-facing turn of that conversation rather than carried
+  along, since a conversation has exactly one audience.
+
+That last case is what makes "I'll tell you when it's done" keepable: the return
+address is on the delegated turn's row, so the result comes back even after the
+delegating process, its connection and the worker have all died. Nothing in the
+agent's own behaviour is required — an agent that simply ends its turn still
+reports.
 
 ### `AbandonTurns`, `RemoveConversationWorkspace`
 

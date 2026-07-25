@@ -50,6 +50,13 @@ type ContainerConfig struct {
 	Runtime string `yaml:"runtime"`
 	// Image must contain the `claude` binary. roundclaw ships no code into it.
 	Image string `yaml:"image"`
+	// Model is the fleet-wide model, passed to the CLI as `--model`. Empty
+	// leaves the choice to the CLI's own default, which is what the image's
+	// version happens to ship — fine until two agents disagree because their
+	// images differ. Naming it here makes the fleet's model an operator
+	// decision instead of an image detail. A per-agent `model` (see
+	// registry.Agent) overrides it; a workflow step's `model` overrides it too.
+	Model string `yaml:"model"`
 	// APIKeyEnv names the host env var holding an Anthropic API key.
 	APIKeyEnv string `yaml:"api_key_env"`
 	// OAuthTokenEnv names the host env var holding a long-lived Claude Code

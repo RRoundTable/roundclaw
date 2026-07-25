@@ -608,6 +608,10 @@ The CLI needs no arguments to know where it is: the worker injects
 
 ### Guard rails and limits
 
+The end-to-end flows, with sequence diagrams and what each step records, are in
+[architecture/delegation.md](architecture/delegation.md).
+
+
 - **A→B→A is normal; a loop is not.** The return trip *is* the reporting path, so
   it must be allowed. What is refused at admission is the one shape that cannot
   end: an agent notifying itself in the conversation it is already running in. A

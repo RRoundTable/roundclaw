@@ -107,6 +107,7 @@ compose.yaml         # Postgres + Temporal + worker + gateway
 | [orchestration.md](orchestration.md) | Temporal workflows, activities, signals, contract package |
 | [data.md](data.md) | SQLite schemas, migrations, retention, cross-process access |
 | [agent-runtime.md](agent-runtime.md) | Container invocation, session derivation, workspaces, isolation |
+| [delegation.md](delegation.md) | How a delegated result returns (`notify`) and how an agent speaks mid-turn (`say`) |
 | [infrastructure.md](infrastructure.md) | Compose topology, images, configuration, CI |
 
 ## Module structure

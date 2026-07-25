@@ -237,6 +237,9 @@ Switches on `turns.origin`:
   is read from the last human-facing turn of that conversation rather than carried
   along, since a conversation has exactly one audience.
 
+The `agent` case is drawn end to end in [delegation.md](delegation.md), with what
+is written where at each step.
+
 That last case is what makes "I'll tell you when it's done" keepable: the return
 address is on the delegated turn's row, so the result comes back even after the
 delegating process, its connection and the worker have all died. Nothing in the

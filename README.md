@@ -317,7 +317,9 @@ ties the result to a process that a shell timeout can kill, and then the result
 exists with nobody to read it. `--notify-me` is the durable form. Failures travel
 the same path — a delegated turn that dies still reports.
 
-Details and the security model: [docs/usage.md](docs/usage.md#delegating-between-agents).
+Details and the security model: [docs/usage.md](docs/usage.md#agents-working-together--delegation).
+The flows end to end, with sequence diagrams:
+[docs/architecture/delegation.md](docs/architecture/delegation.md).
 
 ## Discord
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/roundtable/roundclaw/internal/claude"
 	"github.com/roundtable/roundclaw/internal/config"
@@ -554,11 +555,22 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-var errNonRetryable = errors.New("roundclaw: non-retryable")
+// NonRetryableType is the error type carried by a non-retryable activity
+// failure. Workflows may list it in RetryPolicy.NonRetryableErrorTypes, though
+// the flag on the error is enough on its own.
+const NonRetryableType = "roundclaw: non-retryable"
 
 // newNonRetryable marks configuration errors so Temporal stops retrying them.
+//
+// It must build an ApplicationError, not a wrapped ordinary error. Temporal
+// matches NonRetryableErrorTypes against the failure's *type*, and an ordinary
+// error's type is its Go type name — `wrapErrors` for anything from fmt.Errorf.
+// A sentinel in the message therefore never matched, and every "no retry will
+// fix this" error was retried the full policy anyway: a missing agent, an
+// unknown origin, a malformed spec. The flag set here is honoured directly,
+// which also covers callers whose policy names no types at all.
 func newNonRetryable(err error) error {
-	return fmt.Errorf("%w: %w", errNonRetryable, err)
+	return temporal.NewNonRetryableApplicationError(err.Error(), NonRetryableType, err)
 }
 
 // AbandonInput names turns that were queued but will never run.

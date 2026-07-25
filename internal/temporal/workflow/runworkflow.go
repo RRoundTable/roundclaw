@@ -36,7 +36,7 @@ func RunWorkflow(ctx workflow.Context, in RunWorkflowInput) error {
 		StartToCloseTimeout: time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts:        3,
-			NonRetryableErrorTypes: []string{"roundclaw: non-retryable"},
+			NonRetryableErrorTypes: []string{activity.NonRetryableType},
 		},
 	})
 	var def registry.Workflow
@@ -58,7 +58,7 @@ func RunWorkflow(ctx workflow.Context, in RunWorkflowInput) error {
 			BackoffCoefficient:     2,
 			MaximumInterval:        time.Minute,
 			MaximumAttempts:        2,
-			NonRetryableErrorTypes: []string{"roundclaw: non-retryable"},
+			NonRetryableErrorTypes: []string{activity.NonRetryableType},
 		},
 	})
 

@@ -175,6 +175,16 @@ each step's output to the next and delivering the final result to a channel.
 through the constructor because `RegisterActivity` on a struct registers *every*
 exported method, and a stray `SetDiscord` setter panics worker startup.
 
+**Failing fast is explicit.** `newNonRetryable` wraps the errors no retry can
+fix — a deleted agent, a missing credential, an origin this binary does not
+implement — as a `temporal.ApplicationError` with `NonRetryable` set. It must be
+an ApplicationError rather than a marked ordinary error: Temporal matches
+`RetryPolicy.NonRetryableErrorTypes` against the failure's *type*, and an
+ordinary error's type is its Go type name (`wrapErrors` for anything built by
+`fmt.Errorf`), so a sentinel in the message never matches. The flag is honoured
+directly, which also covers callers whose policy names no types — `deliver()`
+does not.
+
 ### `RunClaudeTurn`
 
 1. Resolve the agent definition and the conversation's workspace

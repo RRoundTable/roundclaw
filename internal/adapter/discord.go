@@ -34,6 +34,19 @@ type Discord struct {
 // SetRouter enables routing of messages in channels bound to no agent.
 func (d *Discord) SetRouter(r *claude.Router) { d.router = r }
 
+// Sender exposes just enough of the live session for the HTTP API to let an
+// agent speak outside a turn (POST /v1/agents/{id}/messages). The session itself
+// stays unexported: this adapter owns the one gateway connection, and handing it
+// out whole invites a second consumer of inbound events.
+func (d *Discord) Sender() MessageSender { return discordSender{d} }
+
+type discordSender struct{ d *Discord }
+
+func (s discordSender) ChannelMessageSend(channelID, text string) error {
+	_, err := s.d.session.ChannelMessageSend(channelID, text)
+	return err
+}
+
 // NewDiscord builds the adapter. token is the bot token; guildID scopes slash
 // command registration (empty registers globally, which Discord propagates
 // slowly).

@@ -39,6 +39,8 @@ func run(args []string) int {
 		return cmdAgent(rest)
 	case "send":
 		return cmdSend(rest)
+	case "say":
+		return cmdSay(rest)
 	case "status":
 		return cmdStatus(rest)
 	case "turn":
@@ -70,7 +72,11 @@ Commands:
   agent show <id>              print an agent's definition
   agent rm <id>                delete an agent (workspace kept)
   send <agent> <text>          delegate a request; waits for the result by default
+                               --notify-me: don't wait, the result comes back to you as a new turn
+                               --conversation C: run in a named conversation of that agent
                                (--no-wait to just queue), --timeout, --steer, --callback, --key
+  say <text>                   say something in this conversation, without a turn
+                               --to <agent> to speak in the conversation that delegated to you
   status <agent>               what an agent is doing right now
   turn <agent> <turn-id>       a turn's state and result
 
@@ -106,6 +112,31 @@ type client struct {
 	base  string
 	token string
 	http  *http.Client
+}
+
+// parseFlags parses args and returns the positional ones, accepting flags
+// *after* positionals as well as before.
+//
+// Go's flag package stops at the first non-flag token, so `send dev "text"
+// --notify-me` would leave --notify-me unparsed and swallow it into the text —
+// silently doing the opposite of what was asked, which is precisely the failure
+// this tooling exists to prevent. Callers write flags last far more often than
+// first, and an agent writing a command has no way to know it mattered.
+func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		// The first leftover is a positional; everything after it may hold more
+		// flags, so hand the remainder back to Parse.
+		positional = append(positional, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
 }
 
 // commonFlags registers --url and --token on a flag set, defaulting to the
@@ -267,16 +298,27 @@ func cmdSend(args []string) int {
 	steer := fs.Bool("steer", false, "interrupt the running turn instead of queueing")
 	callback := fs.String("callback", "", "URL to POST the result to when it finishes")
 	key := fs.String("key", "", "idempotency key (a retry with the same key is one turn)")
-	if err := fs.Parse(args); err != nil {
+	// --notify-me is the durable alternative to waiting. Waiting ties the result
+	// to this process: a bash timeout or a finished turn kills the reader and the
+	// result is then recorded with nobody to read it. With a return address on the
+	// turn row instead, the delegated result comes back as a new turn in the
+	// calling conversation however long it takes.
+	notifyMe := fs.Bool("notify-me", false,
+		"return the result to me as a new turn when it finishes, instead of waiting (implies --no-wait)")
+	conversation := fs.String("conversation", "",
+		"run in this named conversation of the target agent (own session, queue and workspace)")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
 		return 2
 	}
-	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: roundclaw send <agent> <text> [--wait|--no-wait] [--timeout D] [--steer] [--callback URL] [--key K]")
+	if len(pos) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: roundclaw send <agent> <text> [--notify-me] [--conversation C] "+
+			"[--wait|--no-wait] [--timeout D] [--steer] [--callback URL] [--key K]")
 		return 2
 	}
 	waiting := *wait && !*noWait
-	agent := fs.Arg(0)
-	text := strings.Join(fs.Args()[1:], " ")
+	agent := pos[0]
+	text := strings.Join(pos[1:], " ")
 
 	body := map[string]any{"text": text}
 	if *callback != "" {
@@ -284,6 +326,26 @@ func cmdSend(args []string) int {
 	}
 	if *steer {
 		body["steer"] = true
+	}
+	if *conversation != "" {
+		body["conversation_id"] = *conversation
+	}
+	if *notifyMe {
+		// Who to wake comes from the environment the worker injects, not from a
+		// flag: the caller should not have to know its own agent ID, and a value
+		// it typed could name someone else.
+		me := os.Getenv("ROUNDCLAW_AGENT_ID")
+		if me == "" {
+			return fail(fmt.Errorf("--notify-me needs ROUNDCLAW_AGENT_ID, which is set inside an agent container; " +
+				"from a terminal use --wait or --callback instead"))
+		}
+		body["notify"] = map[string]any{
+			"agent":        me,
+			"conversation": os.Getenv("ROUNDCLAW_CONVERSATION_ID"),
+		}
+		// Waiting as well would defeat the point and hold this process open for
+		// a result that is already guaranteed to come back.
+		waiting = false
 	}
 
 	path := "/v1/agents/" + agent + "/requests"
@@ -316,6 +378,7 @@ func cmdSend(args []string) int {
 	var out struct {
 		TurnID        int64   `json:"turn_id"`
 		Status        string  `json:"status"`
+		Conversation  string  `json:"conversation"`
 		QueuePosition int     `json:"queue_position"`
 		Duplicate     bool    `json:"duplicate"`
 		Result        string  `json:"result"`
@@ -332,6 +395,13 @@ func cmdSend(args []string) int {
 			dup = " (duplicate — same key already ran)"
 		}
 		fmt.Printf("turn %d, %s, queue position %d%s\n", out.TurnID, out.Status, out.QueuePosition, dup)
+		if out.Conversation != "" {
+			fmt.Printf("conversation %s — continue there with: roundclaw send %s --conversation %s \"...\"\n",
+				out.Conversation, agent, out.Conversation)
+		}
+		if *notifyMe {
+			fmt.Printf("the result will come back to you as a new turn; do not promise a follow-up yourself\n")
+		}
 		return 0
 	}
 
@@ -405,18 +475,78 @@ func pollTurn(c *client, agent string, turnID int64, timeout time.Duration) (tur
 // tests can shrink it; in production the turn takes far longer than this.
 var pollInterval = 2 * time.Second
 
+// cmdSay speaks in a conversation without running a turn.
+//
+// It exists for the middle of a long job. A turn's result is the agent's only
+// scheduled chance to say anything, which is no use to whoever is watching an
+// empty channel for twenty minutes. This costs nothing — no session, no
+// container, no model call — and correspondingly guarantees nothing: it is not
+// retried and not recorded as work. Final results belong in --notify-me.
+func cmdSay(args []string) int {
+	fs := flag.NewFlagSet("say", flag.ContinueOnError)
+	base, token := commonFlags(fs)
+	to := fs.String("to", "", "agent whose conversation to speak in (default: my own)")
+	conversation := fs.String("conversation", "", "conversation to speak in (default: inferred from where I am)")
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(pos) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: roundclaw say <text> [--to <agent>] [--conversation C]")
+		return 2
+	}
+	text := strings.Join(pos, " ")
+
+	// Defaults come from the environment the worker injects, so the common cases
+	// need no flags: speaking here, or reporting to whoever delegated to me.
+	agent, conv := *to, *conversation
+	switch {
+	case agent == "" && conv == "":
+		agent, conv = os.Getenv("ROUNDCLAW_AGENT_ID"), os.Getenv("ROUNDCLAW_CONVERSATION_ID")
+	case agent != "" && conv == "" && agent == os.Getenv("ROUNDCLAW_REPLY_TO"):
+		// --to the delegator: its conversation is the one that is waiting.
+		conv = os.Getenv("ROUNDCLAW_REPLY_TO_CONVERSATION")
+	case agent == "":
+		agent = os.Getenv("ROUNDCLAW_AGENT_ID")
+	}
+	if agent == "" {
+		return fail(fmt.Errorf("nothing to speak as: set --to, or run inside an agent container where " +
+			"ROUNDCLAW_AGENT_ID is set"))
+	}
+
+	body := map[string]any{"text": text}
+	if conv != "" {
+		body["conversation"] = conv
+	}
+
+	c := newClient(*base, *token)
+	var out struct {
+		Delivered bool   `json:"delivered"`
+		Target    string `json:"target"`
+	}
+	if err := c.do(http.MethodPost, "/v1/agents/"+agent+"/messages", body, &out); err != nil {
+		return fail(err)
+	}
+	if !out.Delivered {
+		return fail(fmt.Errorf("not delivered"))
+	}
+	fmt.Printf("said it in %s (channel %s)\n", agent, out.Target)
+	return 0
+}
+
 func cmdStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	base, token := commonFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseFlags(fs, args)
+	if err != nil {
 		return 2
 	}
-	if fs.NArg() < 1 {
+	if len(pos) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: roundclaw status <agent>")
 		return 2
 	}
 	var out map[string]any
-	if err := newClient(*base, *token).do(http.MethodGet, "/v1/agents/"+fs.Arg(0), nil, &out); err != nil {
+	if err := newClient(*base, *token).do(http.MethodGet, "/v1/agents/"+pos[0], nil, &out); err != nil {
 		return fail(err)
 	}
 	printJSON(out)
@@ -426,15 +556,16 @@ func cmdStatus(args []string) int {
 func cmdTurn(args []string) int {
 	fs := flag.NewFlagSet("turn", flag.ContinueOnError)
 	base, token := commonFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseFlags(fs, args)
+	if err != nil {
 		return 2
 	}
-	if fs.NArg() < 2 {
+	if len(pos) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: roundclaw turn <agent> <turn-id>")
 		return 2
 	}
 	var out map[string]any
-	path := "/v1/agents/" + fs.Arg(0) + "/turns/" + fs.Arg(1)
+	path := "/v1/agents/" + pos[0] + "/turns/" + pos[1]
 	if err := newClient(*base, *token).do(http.MethodGet, path, nil, &out); err != nil {
 		return fail(err)
 	}

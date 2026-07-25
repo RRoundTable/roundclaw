@@ -62,7 +62,7 @@ idempotency(key PK, turn_id, created_at)
 agents(id PK, description, agent_name, permission_mode, allowed_tools,
        additional_dirs, work_dir, deny_paths, require_mention,
        share_workspace, reply_in_thread, tools, skills, image, group_add,
-       enabled, created_at, updated_at)
+       model, enabled, created_at, updated_at)
 
 agent_channels(channel_id PK, agent_id → agents.id ON DELETE CASCADE)
 
@@ -80,6 +80,16 @@ skills(id PK, description, host_path, created_at, updated_at)
 `channel_id` is the primary key of the binding table, so one Discord channel can
 never map to two agents. Enforcing it in the schema rather than in a config
 check means it holds even when two processes write concurrently.
+
+**`turns.origin` is the return address, and one of its four types creates work.**
+`discord` posts to a channel, `http_poll` records and stops, `http_callback` POSTs
+to a URL — and `agent` hands the result to another agent as a new request in a
+named conversation of theirs. That last one is how a delegated turn reports back
+without the delegator waiting: the address is on the row, so the result is
+delivered even if the caller, its shell and the worker have all died in between
+([orchestration.md](orchestration.md)). Because it *queues* rather than just
+delivers, admission refuses the one shape that cannot end — an agent naming itself
+in the conversation it is already running in.
 
 **`secrets` holds values, encrypted.** `scope` is an agent ID, or `''` for a
 global secret every agent sees; a per-agent row of the same name overrides the
@@ -128,6 +138,15 @@ host socket a tool mounts but the container's user is not in the owning group of
 plus the socket mount are what let an agent drive the host daemon; each is inert
 without the others, and the pair is effective host root, so they belong on a
 single trusted agent (see [adapters.md](adapters.md#admin-is-an-agent)).
+
+**`model` overrides which model an agent runs on.** Empty (the default) means the
+fleet-wide `container.model`, and an empty setting there leaves the choice to the
+CLI's own default — which is whatever the agent image's version ships, so two
+agents on different images can silently disagree. Naming a model makes that an
+operator decision instead of an image detail. The value is passed straight to
+`claude --model`, so it must be a name the CLI accepts (`claude-opus-5`). A
+workflow step's `model` plays the same role for a step
+([orchestration.md](orchestration.md#runworkflow--the-agent-less-pipeline)).
 
 List columns (`allowed_tools`, `additional_dirs`, `deny_paths`, `group_add`) are
 JSON arrays in a TEXT column. They are read as a unit and never queried into, so

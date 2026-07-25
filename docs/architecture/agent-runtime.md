@@ -40,12 +40,14 @@ docker run --rm --name roundclaw-<agent>-<turn>
   -v <agent>/claude-home:/home/node/.claude
   -e CLAUDE_CODE_OAUTH_TOKEN            # by name, never by value
   [-e SECRET_NAME] ...                  # registered secrets, also by name
+  -e ROUNDCLAW_AGENT_ID -e ROUNDCLAW_TURN_ID -e ROUNDCLAW_CONVERSATION_ID
+  [-e ROUNDCLAW_REPLY_TO] ...           # who delegated this turn, if anyone
   [-v /dev/null:<denied path>:ro] ...
   [-v <dir>:/mnt/<base>:ro] ...
   <image> claude -p "<prompt>"
     (--session-id <uuid> | --resume <uuid>)
     --output-format stream-json --verbose
-    [--agent NAME] [--permission-mode MODE]
+    [--agent NAME] [--permission-mode MODE] [--model NAME]
     [--allowedTools a,b,c] [--add-dir /mnt/x] ...
 ```
 
@@ -54,6 +56,17 @@ Details that are load-bearing rather than stylistic:
 - **The prompt sits immediately after `-p`.** `--allowedTools` is variadic; a
   prompt after it is swallowed and `claude` exits with "Input must be provided",
   having never seen the request.
+- **`--model` is emitted only when a model is named**, and it resolves in two
+  steps: the agent's own `model`, else the fleet-wide `container.model`. With
+  neither set the flag is absent and the CLI picks — which means the image's
+  version, not an operator, decides.
+- **Identity is injected, not inferred.** The CLI inside the container reads
+  `ROUNDCLAW_AGENT_ID` / `ROUNDCLAW_CONVERSATION_ID` to know where it is, and
+  `ROUNDCLAW_REPLY_TO` (present only on a delegated turn, read from the turn's
+  `agent` origin) to know who is waiting. Without these, `say` and
+  `send --notify-me` would need the model to guess IDs out of its prompt. They are
+  set after secrets and tool env deliberately: a registered secret must not be
+  able to shadow the identity those calls are authorised against.
 - **Credentials pass by name (`-e NAME`), not value**, so the secret appears
   neither in the process table nor in a Temporal history event.
 - **`--verbose` is required** for stream-json to emit anything before the final

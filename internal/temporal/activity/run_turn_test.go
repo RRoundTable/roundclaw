@@ -255,6 +255,80 @@ func TestRunClaudeTurnPassesSessionFlags(t *testing.T) {
 	}
 }
 
+// A model reaches the CLI only if the activity threads it from the definition
+// into the argv, so this asserts on the runtime's recorded command rather than
+// on the spec: the flag is what the container actually receives.
+func TestRunClaudeTurnPassesAgentModel(t *testing.T) {
+	dir := t.TempDir()
+	a, st, _ := newActivities(t, fakeRuntime(t, dir, false))
+
+	agent, err := a.reg.Get(t.Context(), "tester")
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	agent.Model = "claude-opus-5"
+	if _, err := a.reg.Update(t.Context(), agent); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+
+	turnID, _, err := st.CreateTurn(t.Context(), store.NewTurn{Request: "hi", Origin: core.HTTPPollOrigin()})
+	if err != nil {
+		t.Fatalf("create turn: %v", err)
+	}
+	if _, err := runTurn(t, a, RunTurnInput{
+		AgentID: "tester", TurnID: turnID, WorkflowID: "roundclaw-tester-default", Prompt: "hi",
+	}); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+
+	calls, err := os.ReadFile(filepath.Join(dir, "calls.log"))
+	if err != nil {
+		t.Fatalf("read runtime calls: %v", err)
+	}
+	if !strings.Contains(string(calls), "--model claude-opus-5") {
+		t.Errorf("the turn did not pass the agent's model: %s", calls)
+	}
+}
+
+// The CLI inside the container reads its identity from the environment, so `say`
+// and `send --notify-me` need no arguments to know where they are. Secrets pass
+// by name, so the names show up in the argv the runtime records.
+func TestRunClaudeTurnInjectsIdentity(t *testing.T) {
+	dir := t.TempDir()
+	a, st, _ := newActivities(t, fakeRuntime(t, dir, false))
+
+	// A turn that arrived by delegation: its origin is the return address, and the
+	// agent is told who is waiting so it can report progress there.
+	turnID, _, err := st.CreateTurn(t.Context(), store.NewTurn{
+		Request: "hi", Origin: core.AgentOrigin("pm", "thread-1"), Conversation: "thread-9",
+	})
+	if err != nil {
+		t.Fatalf("create turn: %v", err)
+	}
+	if _, err := runTurn(t, a, RunTurnInput{
+		AgentID: "tester", TurnID: turnID, WorkflowID: "roundclaw-tester-thread-9",
+		ConversationID: "thread-9", Prompt: "hi",
+	}); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+
+	calls, err := os.ReadFile(filepath.Join(dir, "calls.log"))
+	if err != nil {
+		t.Fatalf("read runtime calls: %v", err)
+	}
+	text := string(calls)
+	for _, want := range []string{
+		"-e ROUNDCLAW_AGENT_ID",
+		"-e ROUNDCLAW_TURN_ID",
+		"-e ROUNDCLAW_CONVERSATION_ID",
+		"-e ROUNDCLAW_REPLY_TO",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("argv is missing %q:\n%s", want, text)
+		}
+	}
+}
+
 // stopContainer takes the runtime from the spec, not from config, so a spec
 // built for a test has to carry it too.
 func claudeSpec(runtime, name string) claude.RunSpec {

@@ -189,6 +189,26 @@ func TestArgsNoGroupAddByDefault(t *testing.T) {
 	}
 }
 
+func TestArgsModelIsOptional(t *testing.T) {
+	args, err := baseSpec().Args()
+	if err != nil {
+		t.Fatalf("args: %v", err)
+	}
+	if indexOf(args, "--model") >= 0 {
+		t.Errorf("no model should emit no --model flag, got %v", args)
+	}
+
+	s := baseSpec()
+	s.Model = "claude-opus-5"
+	args, err = s.Args()
+	if err != nil {
+		t.Fatalf("args with model: %v", err)
+	}
+	if !hasPair(args, "--model", "claude-opus-5") {
+		t.Errorf("--model claude-opus-5 missing from %v", args)
+	}
+}
+
 func TestArgsRejectsOversizedPrompt(t *testing.T) {
 	s := baseSpec()
 	s.Prompt = strings.Repeat("x", MaxPromptBytes+1)

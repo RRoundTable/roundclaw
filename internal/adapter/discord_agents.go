@@ -198,6 +198,7 @@ func (d *Discord) handleAgentForm(i *discordgo.InteractionCreate) {
 		agent.RequireMention = existing.RequireMention
 		agent.Image = existing.Image
 		agent.GroupAdd = existing.GroupAdd
+		agent.Model = existing.Model
 		agent.Enabled = existing.Enabled
 
 		updated, err := d.disp.Registry().Update(ctx, agent)

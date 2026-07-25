@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS agents (
     skills          TEXT NOT NULL DEFAULT '[]',
     image           TEXT NOT NULL DEFAULT '',
     group_add       TEXT NOT NULL DEFAULT '[]',
+    model           TEXT NOT NULL DEFAULT '',
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
@@ -88,6 +89,7 @@ var migrations = []string{
 	`ALTER TABLE agents ADD COLUMN skills TEXT NOT NULL DEFAULT '[]'`,
 	`ALTER TABLE agents ADD COLUMN image TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents ADD COLUMN group_add TEXT NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 }
 
 // Agent is a runtime agent definition.
@@ -151,7 +153,16 @@ type Agent struct {
 	// effective host root inside that container, and the agent is a
 	// prompt-injection target, so this belongs on a single trusted agent, never
 	// the fleet.
-	GroupAdd        []string  `json:"group_add"`
+	GroupAdd []string `json:"group_add"`
+	// Model overrides the model this agent runs on, instead of the fleet-wide
+	// container.model. Empty keeps that default (and an empty default leaves the
+	// choice to the CLI). It exists so one agent can be moved — to a cheaper
+	// model for high-volume chatter, or a stronger one for the work that needs
+	// it — without touching the rest of the fleet.
+	//
+	// The value is passed straight to `claude --model`, so it must be a model
+	// name the CLI accepts, e.g. claude-opus-5.
+	Model           string    `json:"model"`
 	DiscordChannels []string  `json:"discord_channels"`
 	Enabled         bool      `json:"enabled"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -176,11 +187,14 @@ func (a Agent) Validate() error {
 			return err
 		}
 	}
-	// The image and each group become docker argv tokens directly, so a value
-	// with whitespace could not be one argument — reject it here rather than
-	// build a command that means something other than it reads.
+	// The image, the model and each group become docker or CLI argv tokens
+	// directly, so a value with whitespace could not be one argument — reject it
+	// here rather than build a command that means something other than it reads.
 	if strings.TrimSpace(a.Image) != a.Image || strings.ContainsAny(a.Image, " \t\n") {
 		return fmt.Errorf("image %q must not contain whitespace", a.Image)
+	}
+	if strings.TrimSpace(a.Model) != a.Model || strings.ContainsAny(a.Model, " \t\n") {
+		return fmt.Errorf("model %q must not contain whitespace", a.Model)
 	}
 	for _, g := range a.GroupAdd {
 		if g == "" || strings.ContainsAny(g, " \t\n") {
@@ -245,7 +259,7 @@ func (s *Store) List(ctx context.Context) ([]Agent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
 		       allowed_tools, additional_dirs, work_dir, deny_paths, require_mention,
-		       share_workspace, reply_in_thread, tools, skills, image, group_add, enabled, created_at, updated_at
+		       share_workspace, reply_in_thread, tools, skills, image, group_add, model, enabled, created_at, updated_at
 		FROM agents ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
@@ -276,7 +290,7 @@ func (s *Store) Get(ctx context.Context, id string) (Agent, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, description, agent_name, permission_mode,
 		       allowed_tools, additional_dirs, work_dir, deny_paths, require_mention,
-		       share_workspace, reply_in_thread, tools, skills, image, group_add, enabled, created_at, updated_at
+		       share_workspace, reply_in_thread, tools, skills, image, group_add, model, enabled, created_at, updated_at
 		FROM agents WHERE id = ?`, id)
 
 	a, err := scanAgent(row)
@@ -330,12 +344,12 @@ func (s *Store) Create(ctx context.Context, a Agent) (Agent, error) {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agents (id, description, agent_name, permission_mode,
 		                    allowed_tools, additional_dirs, work_dir, deny_paths,
-		                    require_mention, share_workspace, reply_in_thread, tools, skills, image, group_add, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                    require_mention, share_workspace, reply_in_thread, tools, skills, image, group_add, model, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
 		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.RequireMention),
-		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), boolToInt(a.Enabled), now, now,
+		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), a.Model, boolToInt(a.Enabled), now, now,
 	); err != nil {
 		return Agent{}, fmt.Errorf("insert agent %s: %w", a.ID, err)
 	}
@@ -367,12 +381,12 @@ func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE agents SET description = ?, agent_name = ?, permission_mode = ?,
 		       allowed_tools = ?, additional_dirs = ?, work_dir = ?, deny_paths = ?,
-		       require_mention = ?, share_workspace = ?, reply_in_thread = ?, tools = ?, skills = ?, image = ?, group_add = ?, enabled = ?, updated_at = ?
+		       require_mention = ?, share_workspace = ?, reply_in_thread = ?, tools = ?, skills = ?, image = ?, group_add = ?, model = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,
 		a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
 		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.RequireMention),
-		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
+		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), a.Model, boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
 	if err != nil {
 		return Agent{}, fmt.Errorf("update agent %s: %w", a.ID, err)
 	}
@@ -481,7 +495,7 @@ func scanAgent(row scanner) (Agent, error) {
 		createdAt, updatedAt  int64
 	)
 	if err := row.Scan(&a.ID, &a.Description, &a.AgentName, &a.PermissionMode,
-		&allowed, &dirs, &a.WorkDir, &deny, &mention, &share, &reply, &tools, &skills, &a.Image, &groupAdd, &enabled,
+		&allowed, &dirs, &a.WorkDir, &deny, &mention, &share, &reply, &tools, &skills, &a.Image, &groupAdd, &a.Model, &enabled,
 		&createdAt, &updatedAt); err != nil {
 		return Agent{}, err
 	}

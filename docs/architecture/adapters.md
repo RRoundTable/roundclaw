@@ -59,13 +59,16 @@ restart and leaves the guild with no commands.
 /ask        prompt [agent] [file]      send a request
 /agents                                list callable agents
 /agent      create | edit | show | enable | disable | delete
-/admin      request                    manage in plain language (below)
 /schedule   create | list | show | pause | resume | delete
+/proposals                             decide changes waiting on a person
 /status     [agent]                    what it is doing right now
 /workflow   [agent]                    Temporal execution state
 /stop       [agent]                    kill the turn, drop the queue
 /steer      instruction [agent]        interrupt and redirect
 ```
+
+There is no `/admin`. Management in plain language is an ordinary agent holding a
+full-scope token, not a command — see "Agent-based admin" below.
 
 Notable behaviour:
 
@@ -125,8 +128,31 @@ GET|PUT|DELETE /v1/secrets[/{name}]                 global secrets
 GET|PUT|DELETE /v1/agents/{agent}/secrets[/{name}]  per-agent secrets
 GET    /v1/schedules  ·  GET|PUT|DELETE /v1/schedules/{schedule}
 POST   /v1/schedules/{schedule}/pause  ·  /resume
+GET    /v1/agents/{agent}/turns           request history (?since=&status=&full=)
+GET    /v1/agents/{agent}/versions        definition+persona history
+GET    /v1/agents/{agent}/versions/{n}    one snapshot
+POST   /v1/agents/{agent}/versions/{n}/rollback   apply an old version as a new one
+GET|POST /v1/evals  ·  GET|PUT|DELETE /v1/evals/{eval}
+POST   /v1/evals/{eval}/run               202 {run_id} — body: version, notify
+GET    /v1/evals/runs  ·  GET /v1/evals/runs/{run}
+GET    /v1/evals/compare?base=&candidate= what regressed, what improved
+GET|POST /v1/proposals  ·  GET /v1/proposals/{proposal}
+POST   /v1/proposals/{proposal}/approve  ·  /reject
 POST   /v1/webhooks/{agent}               signature-authenticated
 ```
+
+Two headers apply to every write: `X-Roundclaw-Author` and `X-Roundclaw-Note` are
+recorded on the agent version the write mints. Neither is authenticated — a
+bearer token says what may be done, not who is doing it — so they are a
+changelog, not an audit log. That is the honest reading: "curator, because eval
+run 12 regressed" is useful to whoever reads the history later, and nothing
+depends on it being true.
+
+The delegate whitelist (`delegateAllowed`) refuses all of the routes above. One
+agent must not read another's request history — those turns are other people's
+requests — and evals spend money while proposals change the fleet. The
+single-turn route stays open because a delegator has to be able to read the
+result it asked for.
 
 Three ways to get a result, with different durability:
 
@@ -188,6 +214,50 @@ control — the power to hand out that reach is bounded by who can talk to it.
 > The previous stateless planner (`internal/claude/admin.go`, `adapter/admin.go`,
 > the `/admin` slash command, and the `discord.admin_channel` config) has been
 > removed. Management now flows entirely through the ordinary agent path.
+
+`admin` is a **convention, not a feature** — no roundclaw code knows the name.
+The recipe for building one ships as a Claude Code skill in the repository
+(`skills/roundclaw-fleet`), which is both readable by a person and grantable to
+the agent itself through the ordinary skill machinery.
+
+## Proposals — where automation meets a person
+
+`http_proposals.go` and `discord_proposals.go` are two front ends on one thing:
+a queue of changes an agent wrote down and a person decides. The work itself
+lives on the **dispatcher** (`proposals.go`), not in either handler, because both
+edges approve — a button in Discord, or the CLI against the API — and two
+implementations of "what approving means" would drift.
+
+Applying goes through the ordinary `registry.Create` / `Update` / `Snapshot`
+calls rather than writing rows directly. That is what makes an approved change
+indistinguishable from a hand edit afterwards: same validation, same version
+snapshot, same rollback. The response carries the version it produced and the
+command that undoes it.
+
+Two ordering rules are load-bearing:
+
+- **The persona is written before the definition.** The registry snapshots
+  whatever the persona source reads at write time, so the other order would mint
+  a version pairing the new definition with the old instructions — a combination
+  that never existed. Rollback does the same thing for the same reason.
+- **Apply, then record.** A failed application marks the proposal `failed` with
+  the reason rather than leaving it pending; a person already said yes, and a
+  pending row would invite a second person to approve the same broken change.
+  `DecideProposal` compare-and-sets on `pending`, so simultaneous clicks cannot
+  apply a change twice.
+
+The Discord buttons check the allow-list themselves rather than relying on the
+command that posted them: the message they sit on is visible to the whole
+channel. They carry the proposal **id**, not an index into the list — by the time
+anyone clicks, another proposal may have been filed or decided, and "approve the
+second one" would then mean something else than when it was rendered.
+
+**What this is not.** Nothing prevents a full-scope token from calling
+`PUT /v1/agents/{id}/definition` and skipping the queue. The gate is a convention
+the curator's instructions keep, not a permission the server enforces — the same
+trade the admin agent already makes. What the queue guarantees is that a change
+made through it is recorded, atomic, and reversible. Enforcing it would need a
+token scope narrower than roundclaw issues today.
 
 ## Webhooks
 

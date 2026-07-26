@@ -70,6 +70,11 @@ func run(configPath string, log *slog.Logger) error {
 		log.Info("secret store disabled; master key unset", "key_env", cfg.Container.SecretsKeyEnv)
 	}
 
+	// Both processes seed, and whichever wins the cold-start race writes the
+	// first version of every seeded agent. Installing the persona source here too
+	// means that version carries the persona no matter which one got there first.
+	reg.UsePersonaSource(registry.PersonaFromWorkspace(cfg.WorkDir))
+
 	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
 	if err != nil {
 		return err
@@ -117,6 +122,8 @@ func run(configPath string, log *slog.Logger) error {
 	w.RegisterWorkflow(rcworkflow.ScheduledRequest)
 	// Agent-less, multi-step workflows: started manually or by a schedule.
 	w.RegisterWorkflow(rcworkflow.RunWorkflow)
+	// Eval runs: a set of cases against one pinned agent version.
+	w.RegisterWorkflow(rcworkflow.EvalRun)
 	// Registering the struct exposes every exported method as an activity,
 	// which is why Activities carries no exported non-activity methods.
 	w.RegisterActivity(activity.NewActivities(cfg, stores, reg, discord, tc))

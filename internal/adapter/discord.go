@@ -239,6 +239,13 @@ func (d *Discord) registerCommands() error {
 			},
 		},
 		{
+			// The human gate on automated fleet changes: a curator agent writes
+			// down what it would change, and nothing happens until somebody here
+			// approves it.
+			Name:        "proposals",
+			Description: "Review changes waiting on your approval",
+		},
+		{
 			Name:        "status",
 			Description: "Show what an agent is doing right now",
 			Options:     []*discordgo.ApplicationCommandOption{agentOption(false)},
@@ -571,6 +578,12 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	case discordgo.InteractionModalSubmit:
 		d.handleAgentForm(i)
 		return
+	case discordgo.InteractionMessageComponent:
+		// Buttons carry their own authorisation check: the message they sit on is
+		// visible to the whole channel, so the gate cannot live on the command
+		// that posted them.
+		d.handleProposalButton(i)
+		return
 	case discordgo.InteractionApplicationCommand:
 	default:
 		return
@@ -598,6 +611,13 @@ func (d *Discord) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	// is exactly where someone is trying to find out what to call.
 	if data.Name == "agents" {
 		d.handleAgents(i)
+		return
+	}
+
+	// /proposals is fleet-wide: a queue of changes waiting on a person, not
+	// something one agent owns, so it takes no agent argument either.
+	if data.Name == "proposals" {
+		d.handleProposals(i)
 		return
 	}
 

@@ -201,7 +201,7 @@ func (d *Discord) handleAgentForm(i *discordgo.InteractionCreate) {
 		agent.Model = existing.Model
 		agent.Enabled = existing.Enabled
 
-		updated, err := d.disp.Registry().Update(ctx, agent)
+		updated, err := d.disp.Registry().Update(ctx, agent, discordChange(i, "edited from discord"))
 		if err != nil {
 			d.followUp(i, "⚠️ Could not save: "+err.Error())
 			return
@@ -211,7 +211,7 @@ func (d *Discord) handleAgentForm(i *discordgo.InteractionCreate) {
 		return
 	}
 
-	created, err := d.disp.Registry().Create(ctx, agent)
+	created, err := d.disp.Registry().Create(ctx, agent, discordChange(i, "created from discord"))
 	if err != nil {
 		d.followUp(i, "⚠️ Could not create: "+err.Error())
 		return
@@ -274,7 +274,11 @@ func (d *Discord) setAgentEnabled(i *discordgo.InteractionCreate, agentID string
 		return
 	}
 	agent.Enabled = enabled
-	if _, err := d.disp.Registry().Update(ctx, agent); err != nil {
+	verb := "disabled"
+	if enabled {
+		verb = "enabled"
+	}
+	if _, err := d.disp.Registry().Update(ctx, agent, discordChange(i, verb+" from discord")); err != nil {
 		d.followUp(i, "⚠️ Could not save: "+err.Error())
 		return
 	}
@@ -366,6 +370,12 @@ func splitList(s string) []string {
 
 // interactionUser names whoever ran the command, for the audit line. An
 // interaction from a guild carries Member; a DM carries User.
+// discordChange labels the version an interaction mints, so the history says who
+// made the change rather than only that something did.
+func discordChange(i *discordgo.InteractionCreate, note string) registry.Change {
+	return registry.Change{Note: note, Author: "discord:" + interactionUser(i)}
+}
+
 func interactionUser(i *discordgo.InteractionCreate) string {
 	if i.Member != nil && i.Member.User != nil {
 		return i.Member.User.Username

@@ -281,6 +281,44 @@ func (d *Dispatcher) RunWorkflow(ctx context.Context, id string) (string, error)
 	return execID, nil
 }
 
+// StartEvalRun records a run and starts the workflow that executes it.
+//
+// The row is written first, and its ID names the execution. That ordering is
+// what lets the caller poll a run that has not started yet, and what keeps a
+// retried start from creating a second execution of the same run.
+func (d *Dispatcher) StartEvalRun(ctx context.Context, run registry.EvalRun) (registry.EvalRun, error) {
+	set, err := d.reg.GetEvalSet(ctx, run.EvalSetID)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			return registry.EvalRun{}, fmt.Errorf("%w: %s", ErrUnknownAgent, run.EvalSetID)
+		}
+		return registry.EvalRun{}, err
+	}
+	run.AgentID = set.AgentID
+	run.Total = len(set.Cases)
+
+	started, err := d.reg.StartEvalRun(ctx, run)
+	if err != nil {
+		return registry.EvalRun{}, err
+	}
+
+	execID := fmt.Sprintf("roundclaw-eval-%d", started.ID)
+	if _, err := d.tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        execID,
+		TaskQueue: d.cfg.Temporal.TaskQueue,
+	}, rcworkflow.EvalRunType, rcworkflow.EvalRunInput{RunID: started.ID}); err != nil {
+		// The row would otherwise sit at "running" forever, describing work that
+		// was never started — worse than no row, because it reads as in progress.
+		if finErr := d.reg.FinishEvalRun(ctx, started.ID, registry.EvalFailed, 0, 0, 0,
+			"could not start the run: "+err.Error()); finErr != nil {
+			slog.Error("could not mark an unstartable eval run as failed",
+				"run", started.ID, "error", finErr)
+		}
+		return registry.EvalRun{}, fmt.Errorf("start eval run %d: %w", started.ID, err)
+	}
+	return started, nil
+}
+
 // StatusReport is what /status and GET /v1/agents/{id} return.
 type StatusReport struct {
 	AgentID     string           `json:"agent_id"`

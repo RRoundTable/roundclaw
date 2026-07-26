@@ -5,9 +5,9 @@ two things and only two: the request queue, and the durability of the work.
 Everything a user can *observe* is served from SQLite instead
 ([data.md](data.md)).
 
-## What you register: agents, schedules, workflows
+## What you register: agents, schedules, workflows, evals
 
-Three kinds of work live in the runtime registry ([registry.db](data.md#registrydb))
+Four kinds of work live in the runtime registry ([registry.db](data.md#registrydb))
 and can be created, changed, and removed *while roundclaw runs* — no restart, no
 YAML edit. Each maps to a different Temporal execution described below.
 
@@ -24,29 +24,33 @@ flowchart TB
     REG --> AGENT[Agent<br/>persistent · conversational]
     REG --> SCHED[Schedule<br/>cron trigger]
     REG --> WF[Workflow<br/>agent-less pipeline]
+    REG --> EV[Eval set<br/>cases + marking]
     REG -.-> MOD[Tool / Secret<br/>modifiers]
 
     SCHED -->|runs on| AGENT
     MOD -. granted to .-> AGENT
+    EV -. measures .-> AGENT
 
     subgraph temporal["Temporal executions (durable)"]
         SA[[SubAgent<br/>one per conversation]]
         SR[[ScheduledRequest<br/>→ default conversation]]
         RW[[RunWorkflow<br/>ordered steps]]
+        ER[[EvalRun<br/>cases against one version]]
     end
     AGENT ==> SA
     SCHED ==> SR
     WF ==> RW
+    EV ==> ER
 ```
 
-| | **Agent** | **Schedule** | **Workflow** |
-|---|---|---|---|
-| What it is | a persistent, conversational bot | a cron trigger on an agent | an agent-less pipeline of prompts |
-| Runs as | `SubAgent`, one per conversation | `ScheduledRequest` → the agent's default conversation | `RunWorkflow`, ordered steps |
-| Session / memory | yes — resumes its Claude session | uses its agent's session | none — each step is one-shot, chained by passing outputs forward |
-| Triggered by | a Discord message or an API request | a cron on a Temporal Schedule | started by hand (or, later, a schedule) |
-| Channel | bound to one (one channel → one agent) | reports into a channel | reports the final result into a channel |
-| Registry table | `agents` (+ `agent_channels`) | `schedules` | `workflows` |
+| | **Agent** | **Schedule** | **Workflow** | **Eval set** |
+|---|---|---|---|---|
+| What it is | a persistent, conversational bot | a cron trigger on an agent | an agent-less pipeline of prompts | cases that measure one agent |
+| Runs as | `SubAgent`, one per conversation | `ScheduledRequest` → the agent's default conversation | `RunWorkflow`, ordered steps | `EvalRun`, one case at a time |
+| Session / memory | yes — resumes its Claude session | uses its agent's session | none — each step is one-shot, chained by passing outputs forward | none — each case is a fresh session in a throwaway workspace |
+| Triggered by | a Discord message or an API request | a cron on a Temporal Schedule | started by hand (or, later, a schedule) | started by hand or by an agent reviewing the fleet |
+| Channel | bound to one (one channel → one agent) | reports into a channel | reports the final result into a channel | none — it wakes whoever asked |
+| Registry table | `agents` (+ `agent_channels`) | `schedules` | `workflows` | `eval_sets`, `eval_runs`, `eval_results` |
 
 How they relate:
 
@@ -61,6 +65,16 @@ How they relate:
 - **Tools and secrets are modifiers, not work.** A registered tool
   ([agent-runtime.md](agent-runtime.md#registered-tools)) or secret is *granted*
   to an agent to widen what a turn can do; neither runs on its own.
+- **An eval set measures an agent without being one.** It runs the agent's pinned
+  *version* — definition and persona together — in a throwaway workspace, so a
+  run says what configuration produced its numbers and two runs can be compared.
+  It is the only registerable thing that produces a verdict rather than work.
+
+Two more kinds of row are records rather than work: `agent_versions`, written
+automatically on every definition or persona change, and `proposals`, changes
+written down for a person to approve. Neither has a Temporal execution — a
+proposal is applied through the ordinary registry calls when somebody approves
+it, so an approved change mints a version exactly like a hand edit.
 
 All three are registered the same three ways, because they are all just registry
 rows — nothing needs a redeploy to appear:
@@ -167,6 +181,49 @@ each step's output to the next and delivering the final result to a channel.
   per run so runs never collide) or, later, by a schedule. It is agent-less
   precisely because a scheduled or one-off job needs none of what an agent
   carries; forcing one on it was ceremony.
+
+### `EvalRun` — measuring one agent version
+
+`internal/temporal/workflow/evalrun.go`. An eval set's cases, run against a
+pinned agent version, marked, and totalled. Started by
+`Dispatcher.StartEvalRun`, which writes the run row *before* starting the
+execution — so the caller has something to poll immediately, the execution ID is
+derived from the run ID (`roundclaw-eval-<id>`, retry-safe), and a start that
+fails marks the row failed rather than leaving it at "running" forever.
+
+- `LoadEvalPlan` reads the set and the pinned version's definition **and**
+  persona. Version 0 means "whatever is live" and is resolved to a concrete
+  number here, because a comparison needs both sides pinned.
+- Cases run **one at a time**. They are container starts against a shared host
+  and the same `max_concurrent_turns` budget as real work; an eval is background
+  work and running ten at once would starve the agents doing the job.
+- Each case is scored in this order: an activity error is a recorded zero; a
+  container error is a recorded zero; a broken `must_contain` fails without a
+  judge ever being asked (an exact rule should not be subject to a model's
+  opinion, and skipping the judge is also free); no rubric means a smoke test
+  that passes on any answer; otherwise `JudgeEvalCase` marks it.
+- **A failing case is not a failing run.** An agent that errors on one question
+  has answered the other nine, and those answers are what a comparison needs. A
+  case that never ran is still recorded, with the reason — a missing row would
+  read as a case that was never asked, and the next comparison would call it
+  removed rather than broken.
+- A judge that cannot be reached leaves the case *unmarked* rather than zero:
+  the answer exists and was not marked, and scoring it zero would invent a
+  regression out of a judge having a bad day.
+- `FinishEvalRun` aggregates from the recorded rows rather than from anything
+  carried through the workflow, then `NotifyEvalRun` wakes the requester through
+  the same `wakeAgent` path a delegated result uses. A run outlasts the turn
+  that started it by minutes, so the requester is told rather than made to wait.
+
+`RunEvalCase` runs the case in an isolated conversation of the agent
+(`EvalConversation(runID, case)`), which reuses `resolveWorkspace` — a git
+worktree for a repo-backed agent, a fresh directory for a managed one — so the
+workspace is shaped like the real one without touching it. The version's own
+persona is written into that workspace. Secrets, `group_add` and the agent's
+identity environment are **withheld** unless the set sets `full_grants`: an eval
+that can push, deploy, post or delegate is not a test. Tools and skills are
+mounted either way, because an agent stripped of its capabilities is not the
+agent anyone wants measured.
 
 ## Activities
 

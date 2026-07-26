@@ -122,6 +122,9 @@ agents:
 		t.Fatalf("open registry: %v", err)
 	}
 	t.Cleanup(func() { reg.Close() })
+	// Mirrors the gateway: version snapshots capture the persona, which lives in
+	// the agent's workspace rather than in the registry.
+	reg.UsePersonaSource(registry.PersonaFromWorkspace(cfg.WorkDir))
 	if _, err := reg.Seed(context.Background(), []registry.Agent{
 		{ID: "pr-reviewer", Description: "Reviews pull requests", DiscordChannels: []string{"chan-1"}},
 	}); err != nil {
@@ -484,6 +487,20 @@ func TestDelegateAllowed(t *testing.T) {
 		{http.MethodPut, "/v1/agents/dev/definition", false}, // reconfigure
 		{http.MethodGet, "/v1/agents/dev/definition", false}, // exposes host paths
 		{http.MethodGet, "/v1/secrets", false},
+		// One agent must not read another's history: the turns of an agent are
+		// other people's requests, and a delegate token is held by every agent
+		// that can delegate. The single-turn route stays allowed because a
+		// delegator has to be able to read the result it asked for.
+		{http.MethodGet, "/v1/agents/dev/turns", false},
+		{http.MethodGet, "/v1/agents/dev/versions", false},
+		{http.MethodGet, "/v1/agents/dev/versions/3", false},
+		{http.MethodPost, "/v1/agents/dev/versions/3/rollback", false},
+		// Evals spend money and proposals change the fleet, so neither belongs on
+		// the token every agent carries in order to delegate.
+		{http.MethodPost, "/v1/evals/dev-basic/run", false},
+		{http.MethodGet, "/v1/evals/runs", false},
+		{http.MethodPost, "/v1/proposals", false},
+		{http.MethodPost, "/v1/proposals/3/approve", false},
 		{http.MethodPut, "/v1/tools/outline", false},
 		{http.MethodPost, "/v1/workflows", false},
 		{http.MethodPut, "/v1/schedules/x", false},

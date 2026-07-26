@@ -223,6 +223,9 @@ type Store struct {
 	// aead encrypts and decrypts secret values. Nil until UseSecretKey is
 	// called, and secret operations fail closed while it is.
 	aead cipher.AEAD
+	// persona reads an agent's CLAUDE.md so a version snapshot can capture it.
+	// Nil until UsePersonaSource is called; see versions.go.
+	persona PersonaSource
 }
 
 // Open opens (and creates) the registry at path.
@@ -240,7 +243,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open registry %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := applySchema(db, schema+scheduleSchema+secretSchema+workflowSchema+toolSchema+skillSchema); err != nil {
+	if err := applySchema(db, schema+scheduleSchema+secretSchema+workflowSchema+toolSchema+skillSchema+versionSchema+evalSchema+proposalSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply registry schema: %w", err)
 	}
@@ -320,11 +323,18 @@ func (s *Store) ByChannel(ctx context.Context, channelID string) (Agent, error) 
 	return s.Get(ctx, id)
 }
 
-// Create inserts a new agent.
-func (s *Store) Create(ctx context.Context, a Agent) (Agent, error) {
+// Create inserts a new agent and records its first version.
+//
+// change is optional metadata — why, and by whom — for the version this write
+// mints; see Change.
+func (s *Store) Create(ctx context.Context, a Agent, change ...Change) (Agent, error) {
 	if err := a.Validate(); err != nil {
 		return Agent{}, err
 	}
+	// Read before the transaction opens: the persona lives on the filesystem, and
+	// holding a write lock across a file read would let a slow disk block every
+	// other registry writer.
+	persona := s.personaOf(a.ID)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -356,21 +366,31 @@ func (s *Store) Create(ctx context.Context, a Agent) (Agent, error) {
 	if err := replaceChannels(ctx, tx, a.ID, a.DiscordChannels); err != nil {
 		return Agent{}, err
 	}
+	// Version 1, in the same transaction as the agent itself. A history that can
+	// start at version 2 is not a history.
+	a.CreatedAt, a.UpdatedAt = time.UnixMilli(now), time.UnixMilli(now)
+	if err := snapshotTx(ctx, tx, a, persona, firstChange(change), now); err != nil {
+		return Agent{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Agent{}, fmt.Errorf("commit create agent: %w", err)
 	}
 	return s.Get(ctx, a.ID)
 }
 
-// Update replaces an existing agent's definition.
+// Update replaces an existing agent's definition and records a new version.
 //
 // The change takes effect on the agent's next turn, not the one in flight: the
 // running turn already has its arguments. That is the behaviour to want —
 // rewriting a turn's tools halfway through would be far stranger.
-func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
+//
+// change is optional metadata — why, and by whom — for the version this write
+// mints; see Change.
+func (s *Store) Update(ctx context.Context, a Agent, change ...Change) (Agent, error) {
 	if err := a.Validate(); err != nil {
 		return Agent{}, err
 	}
+	persona := s.personaOf(a.ID)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -378,6 +398,7 @@ func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once committed
 
+	now := time.Now().UnixMilli()
 	res, err := tx.ExecContext(ctx, `
 		UPDATE agents SET description = ?, agent_name = ?, permission_mode = ?,
 		       allowed_tools = ?, additional_dirs = ?, work_dir = ?, deny_paths = ?,
@@ -386,7 +407,7 @@ func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
 		a.Description, a.AgentName, a.PermissionMode,
 		encodeList(a.AllowedTools), encodeList(a.AdditionalDirs),
 		a.WorkDir, encodeList(a.DenyPaths), boolToInt(a.RequireMention),
-		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), a.Model, boolToInt(a.Enabled), time.Now().UnixMilli(), a.ID)
+		boolToInt(a.ShareWorkspace), boolToInt(a.ReplyInThread), encodeList(a.Tools), encodeList(a.Skills), a.Image, encodeList(a.GroupAdd), a.Model, boolToInt(a.Enabled), now, a.ID)
 	if err != nil {
 		return Agent{}, fmt.Errorf("update agent %s: %w", a.ID, err)
 	}
@@ -394,6 +415,17 @@ func (s *Store) Update(ctx context.Context, a Agent) (Agent, error) {
 		return Agent{}, fmt.Errorf("%w: %s", ErrNotFound, a.ID)
 	}
 	if err := replaceChannels(ctx, tx, a.ID, a.DiscordChannels); err != nil {
+		return Agent{}, err
+	}
+	// The caller's struct carries no creation time — it came off the wire — so
+	// take it from the row being replaced. Without this every snapshot would
+	// claim the agent was created the moment it was last edited.
+	var createdAt int64
+	if err := tx.QueryRowContext(ctx, `SELECT created_at FROM agents WHERE id = ?`, a.ID).Scan(&createdAt); err != nil {
+		return Agent{}, fmt.Errorf("read created_at of %s: %w", a.ID, err)
+	}
+	a.CreatedAt, a.UpdatedAt = time.UnixMilli(createdAt), time.UnixMilli(now)
+	if err := snapshotTx(ctx, tx, a, persona, firstChange(change), now); err != nil {
 		return Agent{}, err
 	}
 	if err := tx.Commit(); err != nil {

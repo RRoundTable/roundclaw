@@ -120,73 +120,82 @@ func (a *Activities) deliverDiscord(in DeliverInput) error {
 // key covers both: DeliverResponse is retried, and without it a retry would wake
 // the delegator a second time with the same result.
 func (a *Activities) deliverToAgent(ctx context.Context, in DeliverInput) error {
-	log := activity.GetLogger(ctx)
 	parent, conversation := in.Origin.Agent, in.Origin.Conversation
+	// Deterministic on purpose: the delegated turn can only finish once, so
+	// (agent, turn) is a stable name for this notification however many times
+	// the activity is retried.
+	key := fmt.Sprintf("notify:%s:%d", in.AgentID, in.Result.TurnID)
+	return a.wakeAgent(ctx, parent, conversation, key, notifyPrompt(in))
+}
+
+// wakeAgent queues text as a new turn for an agent and starts its workflow.
+//
+// This is what makes "I'll tell you when it's done" keepable, and it is shared
+// by everything that finishes long after the turn that asked for it — a
+// delegated request, an eval run. The caller does not have to stay alive: the
+// address is on the row, so the result finds its way back even if the requester,
+// its container and the worker have all died in between.
+//
+// idempotencyKey must name the event rather than the moment. The row write and
+// the signal are one activity so that a single key covers both; without it a
+// retry would wake the agent a second time with the same news.
+func (a *Activities) wakeAgent(ctx context.Context, agentID, conversation, idempotencyKey, prompt string) error {
+	log := activity.GetLogger(ctx)
 
 	// An agent that has been deleted cannot be woken, and no retry will bring it
-	// back. The result stays recorded on the delegated turn either way.
-	agent, err := a.reg.Get(ctx, parent)
+	// back. The result stays recorded either way.
+	agent, err := a.reg.Get(ctx, agentID)
 	if err != nil {
-		return newNonRetryable(fmt.Errorf("notify %s: %w", parent, err))
+		return newNonRetryable(fmt.Errorf("notify %s: %w", agentID, err))
 	}
 	if !agent.Enabled {
-		log.Info("delegator is disabled; not waking it with the result",
-			"agent", parent, "from", in.AgentID, "turn_id", in.Result.TurnID)
+		log.Info("agent is disabled; not waking it", "agent", agentID, "key", idempotencyKey)
 		return nil
 	}
 
-	st, err := a.stores.Get(parent)
+	st, err := a.stores.Get(agentID)
 	if err != nil {
-		return fmt.Errorf("open %s store: %w", parent, err)
+		return fmt.Errorf("open %s store: %w", agentID, err)
 	}
-
 	replyTo, err := a.replyOriginFor(ctx, st, conversation)
 	if err != nil {
 		return err
 	}
 
-	// Deterministic on purpose: the delegated turn can only finish once, so
-	// (agent, turn) is a stable name for this notification however many times
-	// the activity is retried.
-	key := fmt.Sprintf("notify:%s:%d", in.AgentID, in.Result.TurnID)
-	prompt := notifyPrompt(in)
-
 	turnID, existed, err := st.CreateTurn(ctx, store.NewTurn{
 		Request: prompt, Origin: replyTo,
-		Conversation: conversation, IdempotencyKey: key,
+		Conversation: conversation, IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		return fmt.Errorf("queue notification for %s: %w", parent, err)
+		return fmt.Errorf("queue notification for %s: %w", agentID, err)
 	}
 	if existed {
-		log.Info("this result was already handed to the delegator",
-			"agent", parent, "from", in.AgentID, "turn_id", turnID)
+		log.Info("this notification was already delivered", "agent", agentID, "key", idempotencyKey, "turn_id", turnID)
 		return nil
 	}
 
 	req := core.Request{
-		AgentID:        parent,
+		AgentID:        agentID,
 		ConversationID: conversation,
-		RequestID:      key,
+		RequestID:      idempotencyKey,
 		TurnID:         turnID,
 		Text:           prompt,
 		Origin:         replyTo,
 		ReceivedAt:     time.Now().UTC(),
 	}
 
-	workflowID := contract.WorkflowID(parent, conversation)
+	workflowID := contract.WorkflowID(agentID, conversation)
 	_, err = a.signaller().SignalWithStartWorkflow(ctx, workflowID, contract.SignalEnqueue, req,
 		client.StartWorkflowOptions{ID: workflowID, TaskQueue: a.cfg.Temporal.TaskQueue},
 		// By name, not by function reference: importing the package that defines
 		// the workflow would close an import cycle.
-		contract.AgentWorkflowType, contract.AgentInput{AgentID: parent, ConversationID: conversation})
+		contract.AgentWorkflowType, contract.AgentInput{AgentID: agentID, ConversationID: conversation})
 	if err != nil {
-		return fmt.Errorf("wake %s with the result: %w", parent, err)
+		return fmt.Errorf("wake %s: %w", agentID, err)
 	}
 
-	log.Info("handed a delegated result back to the delegator",
-		"agent", parent, "conversation", conversation,
-		"from", in.AgentID, "from_turn", in.Result.TurnID, "turn_id", turnID)
+	log.Info("woke an agent with a result it was waiting on",
+		"agent", agentID, "conversation", conversation, "key", idempotencyKey, "turn_id", turnID)
 	return nil
 }
 

@@ -81,8 +81,23 @@ Admin-gated commands (your server decides who can run them):
 
 `disable` and `delete` stop **every** running turn the agent has — the main
 channel and all its threads — so nothing keeps running after you take it out of
-service. `delete` keeps the workspace and session on disk, so recreating an agent
-with the same name resumes where it left off.
+service. `delete` keeps the workspace, session and version history on disk, so
+recreating an agent with the same name resumes where it left off.
+
+### Approving changes
+
+```
+/proposals                 changes waiting on a decision, each with Approve / Reject
+```
+
+A proposal is a change written down but not made: what it does, why, and what
+evidence backs it. Nothing happens until somebody presses a button. This is where
+an automated fleet review meets a person — see
+[the curator agent](#reviewing-the-fleet--the-curator-agent).
+
+Approving applies the change and tells you the command that undoes it. The
+buttons carry the same allow-list as the command that posted them: the message is
+visible to the whole channel, so the check cannot live on the command alone.
 
 ### Schedules
 
@@ -137,6 +152,67 @@ The token it carries is a normal per-agent secret (`ROUNDCLAW_API_TOKEN` = a
 full token), and the CLI + `ROUNDCLAW_URL` come from an `admin-cli` tool — so the
 whole thing is built out of the tool and secret machinery above, nothing bespoke.
 
+`admin` is a **convention, not a feature**: no roundclaw code knows that name.
+Any agent with a full-scope token and the CLI is one. The recipe for building it
+ships as a skill in this repository — `skills/roundclaw-fleet` — so you can hand
+it to Claude Code locally, or grant it to the agent itself.
+
+### Reviewing the fleet — the `curator` agent
+
+The same pattern, pointed at a different job: instead of changing agents when you
+ask, a curator agent reviews them on a schedule and proposes changes you approve.
+
+```
+history  →  what is going wrong        GET /v1/agents/{a}/turns?status=error
+versions →  what changed, and when     GET /v1/agents/{a}/versions
+eval     →  measure it as it is        POST /v1/evals/{set}/run
+compare  →  did the change help        GET /v1/evals/compare?base=&candidate=
+proposal →  a person decides           /proposals in Discord
+```
+
+Three pieces make this more than an agent with opinions:
+
+**Versions.** Every definition or persona write snapshots both together. An eval
+run pins the version it measured, so a comparison is between two known
+configurations rather than between "before" and "whatever it is now".
+
+**Evals.** A set of cases — a prompt, a rubric, and exact `must_contain` rules
+checked in code before any judge runs. Cases run in a throwaway workspace with
+the agent's tools mounted but its **secrets withheld**, so a scheduled eval
+cannot push, deploy or post. Opt in per set with `full_grants` if a case really
+needs credentials.
+
+**Comparison is arithmetic, not opinion.** `eval compare` decides what counts as
+a regression — a case that passed before and fails now — and derives the verdict
+from those counts. The agent's job is to explain the verdict, not to reach one;
+reading outputs and forming an impression is how a regression gets talked away.
+
+Nothing is applied until somebody approves it:
+
+```
+/proposals        in Discord: each pending change with Approve / Reject buttons
+```
+
+Approving applies it through the ordinary registry calls, so it mints a version
+and the response tells you the command that undoes it. The buttons carry their
+own permission check — the message is visible to the whole channel.
+
+**Be honest about the gate.** The curator holds a full-scope token, so nothing in
+the server *stops* it applying a change directly; the proposal queue is a
+convention its instructions keep, not a permission the server enforces. What the
+queue does guarantee is that a change made this way is recorded, atomic, and
+reversible. If you want that enforced instead, the agent needs a narrower token
+than roundclaw currently issues.
+
+The recipe ships as `skills/roundclaw-curator`. Register both skills and grant
+them:
+
+```bash
+roundclaw skill set roundclaw-fleet   --path $PWD/skills/roundclaw-fleet
+roundclaw skill set roundclaw-curator --path $PWD/skills/roundclaw-curator
+# then add both ids to the curator agent's "skills" list
+```
+
 ### Workflows — agent-less pipelines
 
 A **workflow** is a standalone, multi-step job — no agent needed. Each step is a
@@ -144,7 +220,7 @@ prompt; a step receives the earlier steps' outputs, and the final result is
 posted to a channel. Use it for automation that is a sequence of tasks rather
 than a conversation (collect → analyse → report).
 
-Create and run one in plain language via `/admin` ("build a workflow…", "run the
+Create and run one by asking the admin agent ("build a workflow…", "run the
 news workflow now"), or over the API:
 
 ```
@@ -158,7 +234,7 @@ Each step can set its own `permission_mode` and `model` — a cheap model for a
 mechanical step, a stronger one for analysis. A step that names no model runs the
 fleet's `container.model`, the same one agents run. Steps run non-interactively, so
 they never wait on a permission prompt. Scheduling a workflow to run on a cron is
-coming; for now runs are started by hand or from `/admin`.
+coming; for now runs are started by hand or by asking the admin agent.
 
 ### Delegating between agents
 
@@ -304,6 +380,39 @@ GET /v1/agents/{agent}            what it is doing now (state, queue, recent log
 GET /v1/agents/{agent}/workflow   execution state: alive, waiting, retrying, absent
 ```
 
+### Request history
+
+```
+GET /v1/agents/{agent}/turns?limit=&since=&status=&conversation=&full=
+```
+
+What has been asked of an agent and how it went, newest first. `since` takes an
+RFC3339 instant or a duration back from now (`72h`); `status` is `running`,
+`done`, `stopped` or `error`; `conversation=default` selects the agent's default
+conversation, which is stored as the empty string.
+
+Requests and results are truncated unless `full=true`, because the usual reader
+is a model paying for every row.
+
+### Agent versions
+
+```
+GET  /v1/agents/{agent}/versions            list, newest first
+GET  /v1/agents/{agent}/versions/{n}        one snapshot: definition + persona
+POST /v1/agents/{agent}/versions/{n}/rollback
+```
+
+Every definition or persona write records a version; a write that changes nothing
+does not, so every row is a real change. Send `X-Roundclaw-Note` and
+`X-Roundclaw-Author` on any write and they are recorded against it.
+
+A rollback applies the old snapshot as a **new** version. History is append-only,
+so the change being undone stays on the record — which is what you want to look
+at afterwards.
+
+Version history outlives the agent, exactly like its workspace: deleting an agent
+keeps both, so recreating the ID can resume from what it was.
+
 ### Manage agents
 
 ```
@@ -329,6 +438,39 @@ POST   /v1/schedules/{schedule}/resume   let it fire again
 
 A schedule carries a `cron` expression, a `timezone` (default `UTC`), and the
 `prompt` to run.
+
+### Evals
+
+```
+GET    /v1/evals                     list sets (?agent= to narrow)
+POST   /v1/evals                     create or replace (id in the body)
+GET    /v1/evals/{eval}              read a set
+PUT    /v1/evals/{eval}              create or replace
+DELETE /v1/evals/{eval}              delete a set; its runs are kept
+POST   /v1/evals/{eval}/run          start a run
+GET    /v1/evals/runs?eval=&agent=&limit=
+GET    /v1/evals/runs/{run}?full=    one run with its per-case results
+GET    /v1/evals/compare?base=&candidate=
+```
+
+A run body takes `version` (which agent version to measure — 0 uses whatever is
+live) and `notify: {agent, conversation}`, the same return address a delegated
+request carries. Use `notify`: a run is minutes of container work, far longer
+than the turn that started it.
+
+### Proposals
+
+```
+GET  /v1/proposals?status=&target=       what has been proposed
+POST /v1/proposals                       file one
+GET  /v1/proposals/{proposal}
+POST /v1/proposals/{proposal}/approve    apply it, and record who said so
+POST /v1/proposals/{proposal}/reject
+```
+
+Approving applies the change through the ordinary registry calls, so it mints a
+version and is rolled back like any hand edit. The response carries the version
+and an `undo` command.
 
 ### Inbound webhooks
 
@@ -375,6 +517,28 @@ roundclaw tool set outline --path /path/to/outline-cli \
   --env OUTLINE_CONFIG=/mnt/outline-cli/config.json --desc "local Outline wiki"
 roundclaw tool ls                      # registered tools
 roundclaw tool rm outline
+```
+
+Reviewing an agent — history, versions, evals and proposals:
+
+```bash
+roundclaw history dev --since 168h --status error   # what broke this week
+roundclaw history dev --full --limit 5              # read a few whole
+
+roundclaw version ls dev                            # what changed, and when
+roundclaw version show dev 7                        # definition + persona
+roundclaw version rollback dev 6 --note "v7 regressed"
+
+roundclaw eval set dev-basic --agent dev --cases cases.json
+roundclaw eval run dev-basic --version 7            # --notify inside an agent
+roundclaw eval compare 12 13                        # base first, candidate second
+roundclaw eval result 13 --full
+
+roundclaw proposal new --kind persona_update --target dev \
+  --why "v7 stopped citing line numbers" --evidence "eval compare 12 13" \
+  --payload persona.json
+roundclaw proposal ls --status pending
+roundclaw proposal approve 4                        # or /proposals in Discord
 ```
 
 `--url` and `--token` override the environment on any command.
@@ -435,7 +599,7 @@ Registering and granting are deliberately separated:
 - **Registering** a tool names a **host path**, which is sensitive, so it is an
   operator act — done over the CLI/HTTP with a bearer token.
 - **Granting** a registered tool to an agent is then safe to do in plain
-  language from Discord `/admin`, because admin can only pick from tools that
+  language in the admin agent's channel, because admin can only pick from tools that
   already exist; it can never mount an arbitrary path.
 
 ```bash
@@ -451,7 +615,7 @@ Config (URL + token) is pointed to by $OUTLINE_CONFIG. No setup needed.
 EOF
 ```
 
-Then, from the Discord admin (`/admin` or the admin channel):
+Then, in the admin agent's channel:
 
 ```
 dev에 outline 도구 붙여줘          → grants the tool to dev
@@ -599,7 +763,7 @@ turn ends your process is gone and nothing will report.
 EOF
 # 3. Give each collaborating agent the restricted token (encrypted) and the tool:
 printf %s "$DELEGATE_TOKEN" | roundclaw secret set ROUNDCLAW_API_TOKEN --agent pm
-#    then from /admin: "pm에 team 도구 붙여줘"  (or set the agent's tools list)
+#    then ask admin: "pm에 team 도구 붙여줘"  (or set the agent's tools list)
 ```
 
 The CLI needs no arguments to know where it is: the worker injects
@@ -643,10 +807,16 @@ The end-to-end flows, with sequence diagrams and what each step records, are in
 | Schedule recurring work | `/schedule create` | `PUT /v1/schedules/{id}` |
 | Trigger from an external system | — | `POST /v1/webhooks/{a}` (signed) |
 | Give an agent a secret | — | `roundclaw secret set` · `PUT /v1/agents/{a}/secrets/{name}` |
-| Give an agent a local tool | register: `roundclaw tool set` · grant: `/admin` "붙여줘" | `PUT /v1/tools/{id}` · agent `tools` list |
+| Give an agent a local tool | register: `roundclaw tool set` · grant: ask admin "붙여줘" | `PUT /v1/tools/{id}` · agent `tools` list |
 | Give an agent a skill | register: `roundclaw skill set` · grant: agent `skills` list | `PUT /v1/skills/{id}` · agent `skills` list |
 | Let agents delegate to each other | ask pm to "dev에게 위임해줘" | the `team` tool + a delegate-scoped token; `--notify-me` for the return trip |
 | Report progress mid-task | — | `POST /v1/agents/{a}/messages` (`roundclaw say`) |
+| See what an agent has been asked | — | `roundclaw history {a}` · `GET /v1/agents/{a}/turns` |
+| See what changed about an agent | — | `roundclaw version ls {a}` · `GET /v1/agents/{a}/versions` |
+| Undo a change | — | `roundclaw version rollback {a} {n}` |
+| Measure an agent | — | `roundclaw eval run {set} --version N` |
+| Decide whether a change helped | — | `roundclaw eval compare {base} {candidate}` |
+| Approve a proposed change | `/proposals` | `roundclaw proposal approve {id}` |
 
 The `roundclaw` CLI covers the HTTP column from a terminal — see
 [Command line](#command-line-roundclaw).

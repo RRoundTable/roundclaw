@@ -205,8 +205,8 @@ each granted ID:
 The split between **registering** and **granting** is a security boundary:
 registering names a host path and is an operator act (CLI/HTTP with a bearer
 token); granting only references a registered ID, so it is safe to do in natural
-language from `/admin` (`attach_tool` / `detach_tool`) — a hallucinated name
-resolves to no tool rather than mounting an arbitrary path. A granted tool that
+language by asking the admin agent — a hallucinated name resolves to no tool
+rather than mounting an arbitrary path. A granted tool that
 was since deleted is skipped with a warning, not a turn failure: an agent should
 still answer when a capability is pulled out from under it.
 

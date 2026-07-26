@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -510,4 +511,21 @@ func (c *Config) WorkflowClaudeHome(id string) string {
 }
 func (c *Config) WorkflowDBPath(id string) string {
 	return filepath.Join(c.WorkflowDir(id), "state.db")
+}
+
+// Eval paths live under their own subtree, one directory per run.
+//
+// An eval run borrows the agent's workspace machinery — it has to, or it would
+// not be evaluating the agent that exists — but its session and its turn records
+// are kept apart. Writing eval turns into the agent's own state.db would put the
+// eval's questions into the agent's request history, where the next review would
+// read them back as things a human had asked.
+func (c *Config) EvalDir(runID int64) string {
+	return filepath.Join(c.WorkspaceRoot, "evals", strconv.FormatInt(runID, 10))
+}
+func (c *Config) EvalClaudeHome(runID int64) string {
+	return filepath.Join(c.EvalDir(runID), "claude-home")
+}
+func (c *Config) EvalDBPath(runID int64) string {
+	return filepath.Join(c.EvalDir(runID), "state.db")
 }

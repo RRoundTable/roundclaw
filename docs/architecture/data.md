@@ -75,6 +75,19 @@ workflows(id PK, description, channel_id, steps, enabled, created_at, updated_at
 tools(id PK, description, host_path, env, instructions, created_at, updated_at)
 
 skills(id PK, description, host_path, created_at, updated_at)
+
+agent_versions(agent_id, version, definition, persona, note, author, created_at,
+               PK(agent_id, version))          -- deliberately no FK; see below
+
+eval_sets(id PK, agent_id, description, cases, full_grants, enabled, ...)
+eval_runs(id PK AUTOINCREMENT, eval_set_id, agent_id, version, status, score,
+          passed, total, cost_usd, error, notify_agent, notify_conversation, ...)
+eval_results(run_id, case_name, output, score, passed, reason, cost_usd,
+             duration_ms, PK(run_id, case_name))
+
+proposals(id PK AUTOINCREMENT, kind, target, payload, rationale, evidence,
+          status, created_by, created_at, decided_by, decided_at, decision,
+          applied_version)
 ```
 
 `channel_id` is the primary key of the binding table, so one Discord channel can
@@ -151,6 +164,39 @@ workflow step's `model` plays the same role for a step
 List columns (`allowed_tools`, `additional_dirs`, `deny_paths`, `group_add`) are
 JSON arrays in a TEXT column. They are read as a unit and never queried into, so
 a join table would cost more than it explains.
+
+**`agent_versions` has no foreign key, on purpose.** Deleting an agent keeps its
+workspace and session so that recreating the ID resumes it; a cascade would take
+the history on the same delete, destroying the record of what the agent was
+exactly when somebody needs to put it back. Numbering continues across a delete
+and recreate, so v1 keeps meaning the first thing that ID ever was.
+
+A version captures the definition **and** the persona together, because they are
+one artefact in practice: an agent whose `CLAUDE.md` was rewritten is a different
+agent even though every column is unchanged. The persona is a file in the
+workspace, which the registry does not own — so it is read through an injected
+`PersonaSource` (`registry.PersonaFromWorkspace(cfg.WorkDir)`, set by both
+binaries at startup) rather than by teaching the registry the workspace layout.
+Snapshots happen inside the same transaction as the definition write; a version
+that could be lost in between would leave a hole in the history, which reads as
+"nothing changed then".
+
+A write whose content matches the current version records nothing. Toggling an
+agent off and on, or a client PUTting back what it just read, would otherwise
+mint versions that say nothing, and a list where most rows are noise is one
+nobody scrolls through to find the row that matters.
+
+**`eval_runs.version` pins what was measured.** A run asked for version 0 ("live")
+resolves it to a concrete number when it starts: a run that cannot say what it
+measured is worthless the moment the agent changes again. Results are written per
+case as each finishes, so a run that lost a worker halfway still shows what it
+learned, and the aggregate is computed from the rows rather than carried through
+the workflow.
+
+**`proposals.applied_version`** records the version an approval produced, which is
+what makes the undo hint (`roundclaw version rollback <target> <n-1>`) possible.
+`DecideProposal` compare-and-sets on `status = 'pending'`, so two people pressing
+Approve at the same moment cannot apply the same change twice.
 
 ## Migrations
 

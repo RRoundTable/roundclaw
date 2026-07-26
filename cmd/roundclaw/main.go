@@ -45,6 +45,14 @@ func run(args []string) int {
 		return cmdStatus(rest)
 	case "turn":
 		return cmdTurn(rest)
+	case "history":
+		return cmdHistory(rest)
+	case "version":
+		return cmdVersion(rest)
+	case "eval":
+		return cmdEval(rest)
+	case "proposal":
+		return cmdProposal(rest)
 	case "secret":
 		return cmdSecret(rest)
 	case "tool":
@@ -79,6 +87,24 @@ Commands:
                                --to <agent> to speak in the conversation that delegated to you
   status <agent>               what an agent is doing right now
   turn <agent> <turn-id>       a turn's state and result
+
+  history <agent>              what has been asked of it, newest first
+      --limit N (max 200), --since 72h (or an RFC3339 instant),
+      --status running|done|stopped|error, --conversation C, --full
+  version ls <agent>           its definition+persona history, newest first
+  version show <agent> <n>     one version in full
+  version rollback <agent> <n> apply an old version as a NEW version (--note why)
+
+  eval set <id> --agent <a> --cases <file|->   define what "good" means
+  eval run <set> [--version N]                 measure a version (--notify to be woken)
+  eval compare <base-run> <candidate-run>      what regressed, what improved
+      also: eval ls, eval show <set>, eval rm <set>, eval runs, eval result <run>
+      run "roundclaw eval" alone for the full set of flags
+
+  proposal new --kind K --target T --why TEXT   write a change down, do not make it
+  proposal ls [--status pending]                what is waiting on a person
+  proposal approve <id> | reject <id>           decide (also: /proposals in Discord)
+      run "roundclaw proposal" alone for the payload shapes
 
   secret set <name> [value]    store a secret (value from stdin if omitted)
   secret ls                    list secret names (never values)
@@ -158,6 +184,12 @@ func newClient(base, token string) *client {
 // do sends a request and decodes the JSON response into out (may be nil). A
 // non-2xx status becomes an error carrying the server's message.
 func (c *client) do(method, path string, body, out any) error {
+	return c.doWithNote(method, path, "", body, out)
+}
+
+// doWithNote is do with a changelog line attached, recorded on any agent version
+// the request mints. Empty note records nothing.
+func (c *client) doWithNote(method, path, note string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -175,6 +207,16 @@ func (c *client) do(method, path string, body, out any) error {
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Inside an agent container ROUNDCLAW_AGENT_ID is already set, so an agent
+	// that changes another agent signs the version it creates without being asked
+	// to. It is a changelog rather than an audit trail — the header is unverified
+	// — but "who edited dev last week" is otherwise unanswerable.
+	if id := os.Getenv("ROUNDCLAW_AGENT_ID"); id != "" {
+		req.Header.Set("X-Roundclaw-Author", "agent:"+id)
+	}
+	if note != "" {
+		req.Header.Set("X-Roundclaw-Note", note)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

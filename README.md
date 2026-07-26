@@ -75,6 +75,7 @@ constraints that are easy to break — is in [docs/architecture/](docs/architect
 | `internal/temporal` | Workflow and activities |
 | `container/` | Production agent image |
 | `container/fake/` | Scripted `claude` stand-in for end-to-end tests |
+| `skills/` | Claude Code skills roundclaw ships: how to manage and review a fleet |
 
 ## Running it
 
@@ -224,6 +225,49 @@ Three behaviours worth knowing:
 Each firing is keyed by its scheduled time, so a Temporal retry of the enqueue
 cannot queue the same run twice.
 
+## Reviewing and improving agents
+
+An agent is a configuration, and configurations drift. roundclaw records enough
+to notice, measure and reverse that drift.
+
+```bash
+roundclaw history dev --since 168h --status error   # what has been going wrong
+roundclaw version ls dev                            # what changed about it, and when
+roundclaw eval run dev-basic --version 7            # measure that version
+roundclaw eval compare 12 13                        # did the change help
+roundclaw proposal ls --status pending              # what is waiting on you
+```
+
+**Versions.** Every definition or persona write snapshots both together — they
+are one artefact, since an agent whose `CLAUDE.md` was rewritten is a different
+agent even though every column is unchanged. Writes that change nothing record
+nothing, so every row is a real change. `version rollback` applies an old
+snapshot as a *new* version, keeping the change it undid on the record.
+
+**Evals.** A set of cases against one pinned version: a prompt, an optional
+rubric marked by a judge model, and exact `must_contain` rules checked in code
+before any judge runs. Cases run in a throwaway workspace shaped like the agent's
+real one, with its tools and skills mounted but its **secrets and groups
+withheld** — an eval that can push, deploy or post is not a test. Opt in per set
+with `full_grants` when a case genuinely needs credentials.
+
+**Comparison is arithmetic.** `eval compare` decides what counts as a regression
+— a case that passed before and fails now — and derives the verdict from those
+counts, not from reading the outputs. That matters most when the thing doing the
+reviewing is itself a model: forming an impression from outputs is exactly how a
+regression gets talked away.
+
+**Proposals.** A change written down but not made, with its rationale and the
+evidence behind it. `/proposals` in Discord shows what is pending with Approve
+and Reject buttons; approving applies it through the ordinary registry calls, so
+it mints a version and the response tells you the command that undoes it.
+
+This is what makes an unattended fleet review safe enough to schedule: a curator
+agent reads history, runs evals, compares, and files proposals — and stops. See
+[docs/usage.md](docs/usage.md#reviewing-the-fleet--the-curator-agent), and
+`skills/roundclaw-curator/` for the recipe, which is a Claude Code skill you can
+read yourself or grant to the agent.
+
 ## File input
 
 Attach a file to `/ask`, or post one in a bound channel, or send it with an API
@@ -345,6 +389,8 @@ The flows end to end, with sequence diagrams:
 /schedule pause  schedule:<id>
 /schedule resume schedule:<id>
 /schedule delete schedule:<id>
+
+/proposals                           changes waiting on a person, with Approve/Reject
 ```
 
 Full CRUD without leaving Discord. Create and edit open a modal rather than

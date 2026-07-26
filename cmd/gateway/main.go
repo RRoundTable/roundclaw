@@ -75,6 +75,12 @@ func run(configPath string, log *slog.Logger) error {
 		log.Info("secret store disabled; master key unset", "key_env", cfg.Container.SecretsKeyEnv)
 	}
 
+	// Version snapshots capture the persona alongside the definition, and the
+	// persona is a file in the agent's workspace rather than a registry column.
+	// Set before seeding, so a seeded agent's first version carries the CLAUDE.md
+	// that was already sitting in its workspace.
+	reg.UsePersonaSource(registry.PersonaFromWorkspace(cfg.WorkDir))
+
 	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
 	if err != nil {
 		return err
@@ -82,6 +88,15 @@ func run(configPath string, log *slog.Logger) error {
 	if seeded > 0 {
 		log.Info("seeded the agent registry from the config file; the YAML agents list is now ignored",
 			"agents", seeded)
+	}
+
+	// Agents that predate version history get a version 1 describing what they
+	// are now, so their next edit is recorded as a change to something rather
+	// than as the beginning of everything.
+	if backfilled, err := reg.BackfillVersions(context.Background()); err != nil {
+		return err
+	} else if backfilled > 0 {
+		log.Info("recorded a first version for agents that had no history", "agents", backfilled)
 	}
 
 	tc, err := dialTemporal(cfg, log)

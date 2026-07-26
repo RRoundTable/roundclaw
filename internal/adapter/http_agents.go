@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/roundtable/roundclaw/internal/registry"
 )
@@ -47,16 +45,12 @@ func (h *HTTP) getAgentPersona(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, err)
 		return
 	}
-	data, err := os.ReadFile(h.personaPath(id))
-	if errors.Is(err, os.ErrNotExist) {
-		writeJSON(w, http.StatusOK, map[string]string{"agent_id": id, "persona": ""})
-		return
-	}
+	persona, err := h.disp.ReadPersona(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"agent_id": id, "persona": string(data)})
+	writeJSON(w, http.StatusOK, map[string]string{"agent_id": id, "persona": persona})
 }
 
 func (h *HTTP) putAgentPersona(w http.ResponseWriter, r *http.Request) {
@@ -74,20 +68,37 @@ func (h *HTTP) putAgentPersona(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.log.Info("agent persona updated via API", "agent", id, "bytes", len(body.Persona))
-	writeJSON(w, http.StatusOK, map[string]any{"agent_id": id, "bytes": len(body.Persona), "status": "set"})
-}
 
-func (h *HTTP) personaPath(agentID string) string {
-	return filepath.Join(h.disp.Config().WorkDir(agentID), "CLAUDE.md")
-}
-
-func (h *HTTP) writePersona(agentID, content string) error {
-	dir := h.disp.Config().WorkDir(agentID)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return err
+	// A persona change never reaches registry.Update — it is a file, not a
+	// column — so this is the one write that has to mint its own version. Without
+	// it the most consequential edit an agent can receive would leave no trace.
+	c := changeFrom(r)
+	if c.Note == "" {
+		c.Note = personaVersionNote
 	}
-	return os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(content), 0o640)
+	version, err := h.disp.Registry().Snapshot(r.Context(), id, c)
+	if err != nil {
+		// The persona is already written and the agent will use it. Report the
+		// missing snapshot rather than a failure, so nobody re-PUTs a persona that
+		// is in fact live.
+		h.log.Error("persona written but not versioned", "agent", id, "error", err)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"agent_id": id, "bytes": len(body.Persona), "status": "set",
+			"warning": "persona saved, but no version was recorded: " + err.Error(),
+		})
+		return
+	}
+
+	h.log.Info("agent persona updated via API", "agent", id, "bytes", len(body.Persona), "version", version.Version)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": id, "bytes": len(body.Persona), "status": "set", "version": version.Version,
+	})
+}
+
+// writePersona is the dispatcher's, so that a rollback, an approved proposal and
+// a hand-written PUT all put the file in the same place with the same mode.
+func (h *HTTP) writePersona(agentID, content string) error {
+	return h.disp.WritePersona(agentID, content)
 }
 
 func (h *HTTP) listAgents(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +123,7 @@ func (h *HTTP) createAgent(w http.ResponseWriter, r *http.Request) {
 		agent.Enabled = true
 	}
 
-	created, err := h.disp.Registry().Create(r.Context(), agent)
+	created, err := h.disp.Registry().Create(r.Context(), agent, changeFrom(r))
 	if err != nil {
 		writeAgentError(w, err)
 		return
@@ -139,7 +150,7 @@ func (h *HTTP) putAgentDefinition(w http.ResponseWriter, r *http.Request) {
 	// out from under its workspace and Claude session.
 	agent.ID = r.PathValue("agent")
 
-	updated, err := h.disp.Registry().Update(r.Context(), agent)
+	updated, err := h.disp.Registry().Update(r.Context(), agent, changeFrom(r))
 	if err != nil {
 		writeAgentError(w, err)
 		return

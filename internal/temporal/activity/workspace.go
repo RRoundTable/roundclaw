@@ -22,13 +22,21 @@ import (
 // How depends on what the agent's workspace is:
 //
 //   - the managed directory — a conversation gets its own directory under it.
-//     It starts empty anyway, so there is nothing to branch from.
+//     It starts empty, so there is nothing to branch from.
 //   - a git repository — a conversation gets a `git worktree`, which is the
 //     cheap way to have a second checkout of the same history.
 //   - a directory that is not a repository — there is no cheap isolation to
 //     give, so the agent must say what it wants. Sharing silently is the one
 //     option not on offer, because the conflicts would surface as an agent
 //     mysteriously undoing another's work.
+//
+// share_workspace overrides all three: it says the agent wants one directory,
+// and it is answered first. Both of the isolated cases have a way to surprise
+// the operator who reaches for it. A managed directory only *starts* empty — an
+// agent that has spent weeks cloning into it wants its checkouts, not a fresh
+// empty directory per thread. And a repository can be isolated, but an operator
+// who set the flag anyway asked for the shared checkout, not for worktrees to
+// accumulate one per thread.
 //
 // The default conversation always uses the agent's workspace directly. It is
 // the one that /ask, schedules and webhooks share, and it is what existed
@@ -44,6 +52,16 @@ func conversationDir(cfg *config.Config, agentID, conversationID string) string 
 func (a *Activities) resolveWorkspace(ctx context.Context, agent registry.Agent, conversationID string) (string, error) {
 	base := workDirFor(a.cfg, agent)
 	if conversationID == "" {
+		return base, nil
+	}
+
+	// Answered before anything else, including any workspace an earlier turn
+	// left behind. The flag says every conversation works in the one directory,
+	// and an agent that ran threads before it was set has stale per-thread
+	// directories sitting there; letting those win would keep the old threads
+	// isolated forever, which is the state the operator set the flag to leave.
+	// The operator has accepted that parallel conversations may collide.
+	if agent.ShareWorkspace {
 		return base, nil
 	}
 
@@ -74,11 +92,6 @@ func (a *Activities) resolveWorkspace(ctx context.Context, agent registry.Agent,
 		return dir, nil
 	}
 
-	if agent.ShareWorkspace {
-		// Opted into explicitly: the operator has accepted that parallel
-		// conversations may collide in this directory.
-		return base, nil
-	}
 	return "", newNonRetryable(fmt.Errorf(
 		"agent %s works in %s, which is not a git repository, so a thread cannot be "+
 			"given an isolated workspace; set share_workspace on the agent to accept "+
@@ -98,12 +111,41 @@ func seedClaudeMD(base, dir string) {
 	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), data, 0o640)
 }
 
+// isGitRepo reports whether dir is itself the root of a working tree.
+//
+// Asking git whether dir is *in* a repository is the wrong question: git walks
+// up through the parents, so a plain directory that happens to sit inside a
+// checkout answers yes. Agent workspaces live under the roundclaw checkout, so
+// that mistake is the common case, not the corner case — and it is expensive,
+// because the caller responds by grafting a worktree of the *enclosing*
+// repository onto the agent. Compare the working tree's root against dir and
+// only accept an exact match.
+//
+// Both paths go through EvalSymlinks first: git reports the resolved path, so a
+// dir reached through a symlink would otherwise never match itself.
 func isGitRepo(ctx context.Context, dir string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-dir")
-	return cmd.Run() == nil
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	top := strings.TrimSpace(string(out))
+	if top == "" {
+		return false // a bare repository has no working tree to check out from
+	}
+
+	top, err = filepath.EvalSymlinks(top)
+	if err != nil {
+		return false
+	}
+	self, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	return top == self
 }
 
 // addWorktree creates a detached worktree of base at dir.

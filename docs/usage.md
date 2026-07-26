@@ -274,8 +274,13 @@ need no arguments to know where they are.
 agent — its own session, queue and workspace, so two delegations run in parallel.
 Mind the workspace: a managed workspace starts a new conversation **empty** (only
 CLAUDE.md is seeded), so an agent asked to fix a checkout it has never cloned
-lands in an empty directory. Give that agent a git `work_dir` first — then each
-conversation gets a worktree with the files already there.
+lands in an empty directory. Two ways out. Give that agent a git `work_dir` —
+then each conversation gets a worktree with the files already there, isolated.
+Or set `share_workspace` on it, and every conversation uses the agent's own
+workspace, checkouts and all; that is the answer for an agent that has
+accumulated work in a managed workspace, at the cost of parallel conversations
+being able to collide in it. `share_workspace` wins over both of the isolated
+arrangements, so an agent that has it set never gets a per-thread directory.
 
 ### A note on permissions
 

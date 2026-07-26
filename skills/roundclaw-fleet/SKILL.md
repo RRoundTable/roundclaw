@@ -75,6 +75,10 @@ Fields worth understanding before you set them:
   managed empty one. If it is a git repository, each conversation gets its own
   worktree; if it is not, parallel conversations have no isolation and you must
   set `share_workspace` to accept that.
+- **`share_workspace`** — let every conversation use the one directory. Needed
+  for a non-repo `work_dir`, and for a managed workspace the agent has filled
+  with checkouts: without it each thread gets a fresh empty directory and the
+  agent cannot see its own work.
 - **`image`** — a per-agent container image, for an agent that needs a tool the
   fleet image lacks.
 - **`group_add`** — supplementary groups for the container process. The only real

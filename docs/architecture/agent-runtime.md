@@ -143,9 +143,24 @@ they cannot share a working tree.
 
 | Agent's workspace | A conversation gets |
 |-------------------|---------------------|
-| managed directory (`work_dir` empty) | its own subdirectory — it starts empty anyway |
+| any, with `share_workspace` set | the agent's workspace itself |
+| managed directory (`work_dir` empty) | its own subdirectory, seeded with CLAUDE.md |
 | a git repository | `git worktree add --detach` |
-| a non-repo `work_dir` | refused, unless `share_workspace` is set on the agent |
+| a non-repo `work_dir` | refused |
+
+`share_workspace` is answered **first**, ahead of the workspace's own kind and
+ahead of any directory an earlier turn left behind. It covers a managed
+directory as much as a `work_dir`, because a managed directory only *starts*
+empty: an agent that has been cloning into it for weeks wants its checkouts, not
+a fresh empty directory per thread. And a stale per-thread directory from before
+the flag was set must not win, or the threads it was set for stay isolated
+forever.
+
+"Is this a git repository" means *this directory is a working tree root*, not
+"this directory is somewhere inside one". `git rev-parse` walks up to the
+parents, and agent workspaces live under the roundclaw checkout, so the loose
+question answers yes for every one of them — and the answer is acted on by
+grafting a worktree of roundclaw's own source onto the agent.
 
 The worktree is **detached** on purpose: a worktree checked out on a branch
 locks that branch, so two conversations — or a person working in the original

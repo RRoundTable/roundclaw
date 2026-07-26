@@ -159,6 +159,44 @@ The **default conversation** always uses the agent's workspace directly. It is
 what `/ask`, schedules and webhooks share, and it is what existed before
 conversations did.
 
+### Eval cases run here too — with three things removed
+
+`internal/temporal/activity/eval.go`. An eval case is an ordinary container run
+built from a *pinned agent version* rather than the live definition, and it
+reuses `resolveWorkspace` with a throwaway conversation name
+(`eval-<run>-<case>`). That reuse is the point: a repo-backed agent's case gets a
+real worktree, a managed agent's gets a fresh directory, and neither touches the
+agent's own working tree. The version's persona is then written into that
+workspace as `CLAUDE.md` — evaluating v3's definition against v7's instructions
+would measure a configuration that never existed.
+
+Three things a real turn gets are withheld unless the eval set sets
+`full_grants`:
+
+| Withheld | Why |
+|---|---|
+| registered secrets | a scheduled test that can push, deploy or call a paid API is not a test |
+| `group_add` | its one use is the docker socket, which is host root in that container |
+| identity env (`ROUNDCLAW_AGENT_ID`, the API token) | without them a case cannot `say`, delegate, or be mistaken for the agent doing real work |
+
+Tools and skills **are** mounted either way, because an agent stripped of its
+capabilities is not the agent anyone wants measured. The half-measure is
+deliberate: the capability is present, the credentials are not, so a tool needing
+a secret fails rather than acting.
+
+Two more differences from a turn, both about not polluting the agent:
+
+- The session is fresh (`Resume: false`) and named per case, so cases never see
+  each other and a retried activity reattaches rather than opening a second one.
+- The turn record and `~/.claude` go to `workspace/evals/<run-id>/`, not the
+  agent's. Writing eval turns into the agent's own `state.db` would put the
+  eval's questions into its request history, where the next review would read
+  them back as things a human had asked.
+
+`permission_mode` is forced to `bypassPermissions` when the agent's own mode
+would prompt: an eval has nobody to answer a permission prompt, and a case that
+blocks on one is a case that times out rather than fails honestly.
+
 ## Authentication
 
 `container.oauth_token_env` (from `claude setup-token`) wins over

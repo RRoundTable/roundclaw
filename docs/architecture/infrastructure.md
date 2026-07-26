@@ -146,6 +146,40 @@ adapters serve concurrent HTTP requests against shared SQLite handles.
 argument order. Without that check the fake could drift into accepting an argv
 the real `claude` rejects, and every test using it would quietly test nothing.
 
+## Deploying a new build
+
+Agent images redeploy by retagging (above); roundclaw's own binaries do not. The
+worker and the gateway are the compose service image, so a change to either
+needs a rebuild and restart:
+
+```bash
+docker compose build worker gateway && docker compose up -d worker gateway
+```
+
+Two things to know about what that restart does.
+
+**A new workflow type must reach the worker before anything starts it.** The
+worker registers workflow types at boot (`w.RegisterWorkflow`), so an execution
+started against a worker that predates the type sits on the task queue with
+nothing to pick it up — Temporal keeps it, but it does not run. Deploy the worker
+first, or together; never the gateway alone.
+
+**Startup migrations run on open, and some of them backfill.** The registry
+applies its schema and `ALTER TABLE`s every time either process opens it, which
+is a no-op on a database that has them. Backfills are different: they write. On
+first start after version history was added, the gateway gives every agent that
+has none a version 1 describing what it is right now, and says so:
+
+```
+recorded a first version for agents that had no history  agents=6
+```
+
+Without it the first ordinary edit would be recorded as version 1, quietly
+claiming the original settings were that edit's doing. It runs after the persona
+source is installed, so the backfilled row carries the agent's `CLAUDE.md` too,
+and it is idempotent — an agent that already has a version is skipped, so a
+restart loop does not mint rows.
+
 ## Operational notes
 
 - **One Temporal namespace per environment.** Workflow IDs encode the agent and
@@ -154,3 +188,10 @@ the real `claude` rejects, and every test using it would quietly test nothing.
   queue no longer has a worker.
 - **Restart before deleting a workspace.** A process holding an open SQLite
   handle keeps serving the deleted inode; see [data.md](data.md).
+- **Eval runs leave directories behind.** `workspace/evals/<run-id>/` holds each
+  run's session and its own `state.db`, and is not pruned by retention — turn
+  retention covers agent databases, not these. The per-case *workspaces* are
+  cleaned up by the run itself (`CleanEvalWorkspaces`, best-effort: a leftover
+  directory costs disk, while a cleanup that failed the run would throw away
+  results that are already correct), so what accumulates is the small per-run
+  tree. Sweep it on whatever schedule the disk needs.

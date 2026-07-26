@@ -1,0 +1,24 @@
+# The build stage does `COPY . .` and then `go build`, so anything here that is
+# not Go source is dead weight sent to the daemon on every build.
+#
+# /workspace is the one that matters. It holds every agent's working tree, and
+# agents clone into theirs — a single conversation that checked out a Go
+# toolchain took the build context past 7G. It is bind-mounted at run time from
+# the host anyway, so the image never wanted it.
+
+# Per-agent workspaces, databases and session transcripts.
+/workspace/
+
+# Secrets — the runtime gets these through env_file, not the image.
+.env
+.env.*
+!.env.example
+
+# Local config, bind-mounted at run time.
+roundclaw.yaml
+
+# Built binaries — the image builds its own.
+/worker
+/gateway
+
+.git/

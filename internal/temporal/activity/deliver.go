@@ -23,7 +23,7 @@ import (
 )
 
 // DiscordMaxMessage is Discord's hard per-message character limit.
-const DiscordMaxMessage = 2000
+const DiscordMaxMessage = core.DiscordMaxMessage
 
 // DeliverInput is one response delivery.
 type DeliverInput struct {
@@ -332,27 +332,11 @@ var callbackClient = &http.Client{
 	},
 }
 
-// chunkForDiscord splits text into messages Discord will accept, preferring
-// line boundaries so code blocks and lists survive the split.
+// chunkForDiscord splits text into messages Discord will accept.
+//
+// Shared with the gateway, which also sends messages: the limit counts
+// characters rather than bytes, and a cut has to land on a rune boundary or a
+// Korean reply carries a broken character at every seam.
 func chunkForDiscord(s string) []string {
-	if len(s) <= DiscordMaxMessage {
-		return []string{s}
-	}
-
-	var chunks []string
-	for len(s) > DiscordMaxMessage {
-		cut := bytes.LastIndexByte([]byte(s[:DiscordMaxMessage]), '\n')
-		if cut <= 0 {
-			cut = DiscordMaxMessage
-		}
-		chunks = append(chunks, s[:cut])
-		s = s[cut:]
-		for len(s) > 0 && s[0] == '\n' {
-			s = s[1:]
-		}
-	}
-	if s != "" {
-		chunks = append(chunks, s)
-	}
-	return chunks
+	return core.ChunkForDiscord(s, DiscordMaxMessage)
 }

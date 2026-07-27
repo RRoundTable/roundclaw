@@ -928,26 +928,12 @@ func (d *Discord) reply(channelID, content string) {
 	}
 }
 
-// chunk splits s into pieces of at most n bytes, preferring to break on a
-// newline so a code block or list is not cut mid-line where avoidable.
-func chunk(s string, n int) []string {
-	if len(s) <= n {
-		return []string{s}
-	}
-	var out []string
-	for len(s) > n {
-		cut := strings.LastIndexByte(s[:n], '\n')
-		if cut <= 0 {
-			cut = n
-		}
-		out = append(out, s[:cut])
-		s = strings.TrimPrefix(s[cut:], "\n")
-	}
-	if s != "" {
-		out = append(out, s)
-	}
-	return out
-}
+// chunk splits s into messages Discord will accept. n is in characters.
+//
+// The worker sends messages too, so the rule lives in core: the cut has to land
+// on a rune boundary, and Discord's limit counts characters rather than bytes.
+// Both are easy to get subtly wrong in one copy and not the other.
+func chunk(s string, n int) []string { return core.ChunkForDiscord(s, n) }
 
 func (d *Discord) respondNow(i *discordgo.InteractionCreate, content string) {
 	err := d.session.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

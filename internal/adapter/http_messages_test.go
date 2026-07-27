@@ -20,9 +20,10 @@ import (
 
 // fakeSender records what an agent said instead of sending it to Discord.
 type fakeSender struct {
-	mu   sync.Mutex
-	sent []string // "channel: text"
-	err  error
+	mu    sync.Mutex
+	sent  []string // "channel: text"
+	files []string // names of everything attached
+	err   error
 }
 
 func (f *fakeSender) ChannelMessageSend(channelID, text string) error {
@@ -35,10 +36,32 @@ func (f *fakeSender) ChannelMessageSend(channelID, text string) error {
 	return nil
 }
 
+// Mirrors the real sender's contract: it owns the readers and closes them
+// whether or not the send succeeds.
+func (f *fakeSender) ChannelFileSend(channelID, text string, files []OutFile) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, file := range files {
+		file.Body.Close()
+		f.files = append(f.files, file.Name)
+	}
+	if f.err != nil {
+		return f.err
+	}
+	f.sent = append(f.sent, channelID+": "+text)
+	return nil
+}
+
 func (f *fakeSender) messages() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sent...)
+}
+
+func (f *fakeSender) attachments() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.files...)
 }
 
 const delegateToken = "delegate-token-value"

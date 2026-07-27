@@ -24,6 +24,7 @@ import (
 	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/registry"
 	"github.com/roundtable/roundclaw/internal/store"
+	"github.com/roundtable/roundclaw/internal/workspace"
 )
 
 // heartbeatInterval is how often the activity reports progress.
@@ -637,10 +638,7 @@ func (a *Activities) AbandonTurns(ctx context.Context, in AbandonInput) error {
 // stays the default because pointing an agent at a real repository hands it
 // everything in that repository.
 func workDirFor(cfg *config.Config, agent registry.Agent) string {
-	if agent.WorkDir != "" {
-		return agent.WorkDir
-	}
-	return cfg.WorkDir(agent.ID)
+	return workspace.Base(cfg, agent)
 }
 
 // identityEnv is what the container is told about the turn it is running.

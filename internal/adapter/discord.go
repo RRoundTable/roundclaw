@@ -47,6 +47,23 @@ func (s discordSender) ChannelMessageSend(channelID, text string) error {
 	return err
 }
 
+// ChannelFileSend posts text with files attached.
+//
+// The readers are handed to discordgo rather than read into memory first, so a
+// 10MB attachment is streamed onto the wire. They are closed here whatever
+// happens: this is where ownership ends, and a failed send would otherwise leak
+// a descriptor per attempt.
+func (s discordSender) ChannelFileSend(channelID, text string, files []OutFile) error {
+	defer closeOutbound(files)
+
+	send := &discordgo.MessageSend{Content: text}
+	for _, f := range files {
+		send.Files = append(send.Files, &discordgo.File{Name: f.Name, Reader: f.Body})
+	}
+	_, err := s.d.session.ChannelMessageSendComplex(channelID, send)
+	return err
+}
+
 // NewDiscord builds the adapter. token is the bot token; guildID scopes slash
 // command registration (empty registers globally, which Discord propagates
 // slowly).

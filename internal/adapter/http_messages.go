@@ -11,6 +11,7 @@ import (
 
 	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/store"
+	"github.com/roundtable/roundclaw/internal/workspace"
 )
 
 // This is the only way an agent speaks outside its own turn.
@@ -45,6 +46,14 @@ type messageBody struct {
 	// stranger's thread instead. Zero means "infer", which is what a person
 	// running the CLI by hand gets.
 	TurnID int64 `json:"turn_id,omitempty"`
+	// Files names things the agent wrote into outbox/ in its workspace, to send
+	// as attachments. Names are relative to that directory and reach nowhere
+	// else; see outbox.go for what that does and does not protect.
+	//
+	// This is how a large result leaves. Sent as text, a long report is twenty
+	// Discord messages and it stays in the session context to be re-sent on every
+	// later turn of the conversation; sent as a file it costs one path.
+	Files []string `json:"files,omitempty"`
 }
 
 type messageResponse struct {
@@ -53,12 +62,17 @@ type messageResponse struct {
 	Delivered    bool   `json:"delivered"`
 	// Target is where it went, for a caller that wants to log it.
 	Target string `json:"target,omitempty"`
+	// Files is how many attachments went with it.
+	Files int `json:"files,omitempty"`
 }
 
 // MessageSender posts a message to a Discord channel. The gateway already owns a
 // session for receiving, so speaking costs no new connection.
 type MessageSender interface {
 	ChannelMessageSend(channelID, text string) error
+	// ChannelFileSend posts text with files attached. The sender closes every
+	// reader, including when the send fails.
+	ChannelFileSend(channelID, text string, files []OutFile) error
 }
 
 // SetMessageSender installs the sender used by POST /v1/agents/{id}/messages.
@@ -77,12 +91,15 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.Text = strings.TrimSpace(body.Text)
-	if body.Text == "" {
+	// A file needs no words with it — "here is the report" is what the file is —
+	// so only a message carrying neither is empty.
+	if body.Text == "" && len(body.Files) == 0 {
 		writeError(w, http.StatusBadRequest, "text is empty")
 		return
 	}
 
-	if _, err := h.disp.requireAgent(r.Context(), agentID); err != nil {
+	agent, err := h.disp.requireAgent(r.Context(), agentID)
+	if err != nil {
 		h.writeLookupError(w, err)
 		return
 	}
@@ -98,19 +115,46 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolved against the workspace this conversation actually runs in — the
+	// same directory the worker mounts, named by the same function, so an agent
+	// that wrote a file in its thread finds it here rather than in some other
+	// thread's outbox.
+	files, err := openOutbound(workspace.Dir(h.disp.Config(), agent, body.Conversation), body.Files)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Chunked the same way a turn's result is: Discord rejects anything over its
-	// per-message limit, and a progress note can still carry a diff.
-	for _, part := range chunk(body.Text, 1990) {
+	// per-message limit, and a progress note can still carry a diff. Attachments
+	// ride on the last part so a short note and its file arrive as one message.
+	parts := chunk(body.Text, 1990)
+	for _, part := range parts[:len(parts)-1] {
 		if err := h.sender.ChannelMessageSend(target, part); err != nil {
+			closeOutbound(files)
 			writeError(w, http.StatusBadGateway, "send failed: "+err.Error())
 			return
 		}
 	}
 
+	last := parts[len(parts)-1]
+	if len(files) > 0 {
+		// The sender closes the readers either way.
+		err = h.sender.ChannelFileSend(target, last, files)
+	} else {
+		err = h.sender.ChannelMessageSend(target, last)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "send failed: "+err.Error())
+		return
+	}
+
 	h.log.Info("agent spoke out of band",
-		"agent", agentID, "conversation", body.Conversation, "channel", target, "bytes", len(body.Text))
+		"agent", agentID, "conversation", body.Conversation, "channel", target,
+		"bytes", len(body.Text), "files", len(files))
 	writeJSON(w, http.StatusOK, messageResponse{
-		AgentID: agentID, Conversation: body.Conversation, Delivered: true, Target: target,
+		AgentID: agentID, Conversation: body.Conversation, Delivered: true,
+		Target: target, Files: len(files),
 	})
 }
 

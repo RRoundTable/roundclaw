@@ -518,6 +518,15 @@ func pollTurn(c *client, agent string, turnID int64, timeout time.Duration) (tur
 // tests can shrink it; in production the turn takes far longer than this.
 var pollInterval = 2 * time.Second
 
+// fileList collects a repeatable --file flag.
+type fileList []string
+
+func (f *fileList) String() string { return strings.Join(*f, ", ") }
+func (f *fileList) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
 // cmdSay speaks in a conversation without running a turn.
 //
 // It exists for the middle of a long job. A turn's result is the agent's only
@@ -530,12 +539,16 @@ func cmdSay(args []string) int {
 	base, token := commonFlags(fs)
 	to := fs.String("to", "", "agent whose conversation to speak in (default: my own)")
 	conversation := fs.String("conversation", "", "conversation to speak in (default: inferred from where I am)")
+	var files fileList
+	fs.Var(&files, "file", "a file in outbox/ to attach (repeatable)")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return 2
 	}
-	if len(pos) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: roundclaw say <text> [--to <agent>] [--conversation C]")
+	// A file says enough on its own; only a message carrying neither is empty.
+	if len(pos) < 1 && len(files) == 0 {
+		fmt.Fprintln(os.Stderr,
+			"usage: roundclaw say <text> [--file outbox/report.pdf] [--to <agent>] [--conversation C]")
 		return 2
 	}
 	text := strings.Join(pos, " ")
@@ -561,6 +574,9 @@ func cmdSay(args []string) int {
 	if conv != "" {
 		body["conversation"] = conv
 	}
+	if len(files) > 0 {
+		body["files"] = []string(files)
+	}
 	// Speaking where I am: name the turn I am running, so the server reads my
 	// audience off that row rather than inferring one from the conversation's
 	// recent history. A delegated turn has no history of its own to infer from —
@@ -577,6 +593,7 @@ func cmdSay(args []string) int {
 	var out struct {
 		Delivered bool   `json:"delivered"`
 		Target    string `json:"target"`
+		Files     int    `json:"files"`
 	}
 	if err := c.do(http.MethodPost, "/v1/agents/"+agent+"/messages", body, &out); err != nil {
 		return fail(err)
@@ -584,7 +601,11 @@ func cmdSay(args []string) int {
 	if !out.Delivered {
 		return fail(fmt.Errorf("not delivered"))
 	}
-	fmt.Printf("said it in %s (channel %s)\n", agent, out.Target)
+	attached := ""
+	if out.Files > 0 {
+		attached = fmt.Sprintf(", %d file(s) attached", out.Files)
+	}
+	fmt.Printf("said it in %s (channel %s%s)\n", agent, out.Target, attached)
 	return 0
 }
 

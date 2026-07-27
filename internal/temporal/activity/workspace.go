@@ -11,6 +11,7 @@ import (
 
 	"github.com/roundtable/roundclaw/internal/config"
 	"github.com/roundtable/roundclaw/internal/registry"
+	"github.com/roundtable/roundclaw/internal/workspace"
 )
 
 // Per-conversation workspaces.
@@ -44,28 +45,33 @@ import (
 
 // conversationDir is where a conversation's workspace lives.
 func conversationDir(cfg *config.Config, agentID, conversationID string) string {
-	return filepath.Join(cfg.AgentDir(agentID), "conversations", conversationID)
+	return workspace.ConversationDir(cfg, agentID, conversationID)
 }
 
 // resolveWorkspace returns the host directory to mount at /workspace for one
 // conversation, creating it if needed.
+//
+// Which directory is workspace.Dir's answer, not this function's. The gateway
+// asks the same question — to find an agent's outbox — and must get the same
+// answer without creating anything, so the naming is shared and only the
+// creating lives here.
 func (a *Activities) resolveWorkspace(ctx context.Context, agent registry.Agent, conversationID string) (string, error) {
-	base := workDirFor(a.cfg, agent)
-	if conversationID == "" {
-		return base, nil
+	base := workspace.Base(a.cfg, agent)
+	dir := workspace.Dir(a.cfg, agent, conversationID)
+
+	// The default conversation, and share_workspace, both resolve to the agent's
+	// own workspace. There is nothing to prepare: it is the directory that
+	// existed before conversations did.
+	//
+	// share_workspace is answered before any per-thread directory an earlier turn
+	// left behind. An agent that ran threads before the flag was set has stale
+	// ones sitting there; letting those win would keep the old threads isolated
+	// forever, which is the state the operator set the flag to leave. The
+	// operator has accepted that parallel conversations may collide.
+	if dir == base {
+		return dir, nil
 	}
 
-	// Answered before anything else, including any workspace an earlier turn
-	// left behind. The flag says every conversation works in the one directory,
-	// and an agent that ran threads before it was set has stale per-thread
-	// directories sitting there; letting those win would keep the old threads
-	// isolated forever, which is the state the operator set the flag to leave.
-	// The operator has accepted that parallel conversations may collide.
-	if agent.ShareWorkspace {
-		return base, nil
-	}
-
-	dir := conversationDir(a.cfg, agent.ID, conversationID)
 	if _, err := os.Stat(dir); err == nil {
 		return dir, nil // already prepared by an earlier turn
 	}

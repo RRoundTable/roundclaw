@@ -238,9 +238,22 @@ databases from fresh ones.
 
 - `live_logs` older than `retention.transcript_days`
 - finished `turns` older than `retention.turn_days`
+- staged uploads in `inbox-staging/` older than `retention.upload_days`
 
 Live logs are the bulk of the data and the least valuable after the fact — they
 exist to answer "what is it doing *right now*".
+
+The upload sweep touches roundclaw's own copy, not the agent's. An attachment is
+hard-linked into the workspace when its turn runs
+([adapters.md](adapters.md#discord-discordgo)), so while that link lives the
+staged entry shares the inode and removing it frees nothing — it is kept so a
+retried activity can still find its files. It earns its keep once a
+conversation's workspace is torn down and the staged entry becomes the last link
+holding the bytes.
+
+The agent's own `inbox/` and `outbox/` are never swept. Those are documents
+someone sent it and work it produced, sitting in its working directory; deleting
+them on a timer is not roundclaw's call to make.
 
 ## Operational note
 

@@ -121,7 +121,7 @@ Postgres.
 | `discord` | `token_env`, `guild_id`, `command_permission`, `allowed_roles`, `allowed_users` |
 | `http` | `addr`, `tokens_env`, `delegate_tokens_env`, `wait_timeout`, `max_sse_per_agent`, `callback_secret_env`, `webhook_secret_env` |
 | `limits` | `max_concurrent_turns` |
-| `retention` | `transcript_days`, `turn_days`, `interval` |
+| `retention` | `transcript_days`, `turn_days`, `upload_days`, `interval` |
 | `router` | `enabled`, `model`, `timeout`, `channels` (v2 routing; not on by default) |
 
 **Every secret is referenced by the name of the environment variable holding

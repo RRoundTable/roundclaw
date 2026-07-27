@@ -146,10 +146,16 @@ rule. It never reads SQLite: a query handler runs in workflow context and cannot
 do I/O.
 
 **Continue-As-New** fires at `maxTurnsPerRun = 100` or when
-`GetContinueAsNewSuggested()` is true. The queue, turn count, `sessionReady`
-and `sessionLost` all cross the boundary — dropping any of them would either
-lose a request or make the next turn try to create a session that already
-exists.
+`GetContinueAsNewSuggested()` is true. The queue, `sessionReady` and
+`sessionLost` cross the boundary — dropping any of them would either lose a
+request or make the next turn try to create a session that already exists.
+
+The turn count deliberately does **not**. It bounds one run's history, and the
+continued run starts with none. Carrying it forward made the limit true again on
+the continued run's first loop, so an agent that reached the seam with anything
+queued continued as new about once a second, forever, and never ran the turn that
+was waiting — the only escape, an empty queue, was the one condition the loop
+never got far enough to reach. The cumulative count lives in SQLite.
 
 **Cancellation cleanup** runs in a `workflow.NewDisconnectedContext`; a
 cancelled context cannot start the activity that closes out the turn row.

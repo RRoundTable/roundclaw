@@ -8,6 +8,7 @@ import (
 	"github.com/roundtable/roundclaw/internal/config"
 	"github.com/roundtable/roundclaw/internal/registry"
 	"github.com/roundtable/roundclaw/internal/store"
+	"github.com/roundtable/roundclaw/internal/workspace"
 )
 
 // runRetention sweeps old history until ctx is cancelled.
@@ -24,6 +25,7 @@ func runRetention(ctx context.Context, cfg *config.Config, reg *registry.Store,
 	log.Info("history retention enabled",
 		"transcript_days", cfg.Retention.TranscriptDays,
 		"turn_days", cfg.Retention.TurnDays,
+		"upload_days", cfg.Retention.UploadDays,
 		"interval", cfg.Retention.Interval)
 
 	// Once at startup, so a long-running deployment does not wait a full
@@ -61,9 +63,22 @@ func pruneOnce(ctx context.Context, cfg *config.Config, reg *registry.Store,
 	if cfg.Retention.TurnDays == 0 {
 		turnsBefore = time.Unix(0, 0)
 	}
+	uploadsBefore := now.AddDate(0, 0, -cfg.Retention.UploadDays)
 
 	var total store.Pruned
+	var uploads int64
 	for _, a := range agents {
+		// Staged uploads are files, not rows, and an agent that has never run
+		// still has a staging directory if someone sent it something — so this
+		// runs whether or not the store opens.
+		if cfg.Retention.UploadDays > 0 {
+			n, err := workspace.PruneStaging(cfg, a.ID, uploadsBefore)
+			if err != nil {
+				log.Warn("could not sweep staged uploads", "agent", a.ID, "error", err)
+			}
+			uploads += int64(n)
+		}
+
 		st, err := stores.Get(a.ID)
 		if err != nil {
 			continue // never run, nothing to prune
@@ -78,8 +93,9 @@ func pruneOnce(ctx context.Context, cfg *config.Config, reg *registry.Store,
 		total.Keys += p.Keys
 	}
 
-	if total.Logs+total.Turns+total.Keys > 0 {
+	if total.Logs+total.Turns+total.Keys+uploads > 0 {
 		log.Info("pruned history",
-			"transcript_rows", total.Logs, "turns", total.Turns, "idempotency_keys", total.Keys)
+			"transcript_rows", total.Logs, "turns", total.Turns,
+			"idempotency_keys", total.Keys, "staged_uploads", uploads)
 	}
 }

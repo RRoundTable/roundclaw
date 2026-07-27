@@ -116,10 +116,20 @@ limits:
 # on purpose: a turn row is the small, durable audit trail; its transcript is
 # bulky and only interesting while the work is recent.
 #
+# upload_days sweeps roundclaw's own staged copy of an attachment, not the
+# agent's. An upload is hard-linked into the workspace when its turn runs, so
+# while that link lives the staged entry costs nothing — it is kept so a retried
+# turn can still find its files. It matters once a conversation's workspace is
+# torn down and the staged entry becomes the last link holding the bytes.
+#
+# The agent's own inbox/ and outbox/ are never swept: those are documents someone
+# sent it and work it produced, sitting in its working directory.
+#
 # 0 keeps that dimension forever. A turn still running is never pruned.
 retention:
   transcript_days: 14
   turn_days: 180
+  upload_days: 30
   interval: 6h
 
 # Recurring work is not configured here — schedules live in the runtime

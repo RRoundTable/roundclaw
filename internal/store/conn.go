@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS turns (
     origin       TEXT NOT NULL,
     error        TEXT,
     conversation TEXT NOT NULL DEFAULT '',
+    attachments  TEXT NOT NULL DEFAULT '[]',
     queued_at    INTEGER NOT NULL,
     finished_at  INTEGER
 );
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS idempotency (
 // append; see the registry package for why.
 var migrations = []string{
 	`ALTER TABLE turns ADD COLUMN conversation TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE turns ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'`,
 }
 
 // Store is one agent's database handle.

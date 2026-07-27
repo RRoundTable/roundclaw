@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -103,6 +104,14 @@ type NewTurn struct {
 	Conversation string
 	// IdempotencyKey may be empty for sources that dedupe by other means.
 	IdempotencyKey string
+	// Attachments are host paths of uploads staged for this turn, waiting to be
+	// placed in whichever workspace the turn ends up running in.
+	//
+	// They live on the row rather than travelling in the Temporal signal because
+	// the worker is what places them, and it must be able to find them after a
+	// retry on a different worker — or after a restart that lost the signal's
+	// in-memory context. The row is the only thing both processes share.
+	Attachments []string
 }
 
 // CreateTurn records a queued turn and returns its ID.
@@ -134,11 +143,23 @@ func (s *Store) CreateTurn(ctx context.Context, t NewTurn) (turnID int64, existe
 		}
 	}
 
+	// Marshalled here rather than defaulted to "null": the column is NOT NULL,
+	// and a turn with no uploads must read back as an empty list, not as a value
+	// the placement step has to special-case.
+	attachments := t.Attachments
+	if attachments == nil {
+		attachments = []string{}
+	}
+	encodedAttachments, err := json.Marshal(attachments)
+	if err != nil {
+		return 0, false, fmt.Errorf("encode attachments: %w", err)
+	}
+
 	now := time.Now().UnixMilli()
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO turns (request, status, origin, conversation, queued_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		request, string(core.TurnRunning), encodedOrigin, t.Conversation, now)
+		INSERT INTO turns (request, status, origin, conversation, attachments, queued_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		request, string(core.TurnRunning), encodedOrigin, t.Conversation, string(encodedAttachments), now)
 	if err != nil {
 		return 0, false, fmt.Errorf("insert turn: %w", err)
 	}
@@ -159,6 +180,32 @@ func (s *Store) CreateTurn(ctx context.Context, t NewTurn) (turnID int64, existe
 		return 0, false, fmt.Errorf("commit create turn: %w", err)
 	}
 	return turnID, false, nil
+}
+
+// TurnAttachments lists the staged uploads a turn is waiting on.
+//
+// Narrow on purpose: the worker asks this once per turn, and widening Turn to
+// carry it would put the paths — which are host paths, not the container paths
+// the agent was told about — into every history and SSE response that reads a
+// turn.
+func (s *Store) TurnAttachments(ctx context.Context, turnID int64) ([]string, error) {
+	var encoded string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT attachments FROM turns WHERE id = ?`, turnID).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: turn %d", ErrNotFound, turnID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read attachments for turn %d: %w", turnID, err)
+	}
+	if encoded == "" {
+		return nil, nil
+	}
+	var paths []string
+	if err := json.Unmarshal([]byte(encoded), &paths); err != nil {
+		return nil, fmt.Errorf("decode attachments for turn %d: %w", turnID, err)
+	}
+	return paths, nil
 }
 
 // FinishTurn closes out a turn. It is safe to call more than once; a turn that

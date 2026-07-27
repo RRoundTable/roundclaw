@@ -102,7 +102,7 @@ type Submission struct {
 // a durable handle, even if the signal or the worker fails immediately
 // afterwards.
 func (d *Dispatcher) Submit(ctx context.Context, agentID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
-	return d.SubmitIn(ctx, agentID, "", text, origin, idempotencyKey)
+	return d.SubmitIn(ctx, agentID, "", text, origin, idempotencyKey, nil)
 }
 
 // SubmitIn queues a request in a named conversation.
@@ -111,24 +111,28 @@ func (d *Dispatcher) Submit(ctx context.Context, agentID, text string, origin co
 // run in parallel without sharing any of the three. Empty means the agent's
 // default conversation, which is what /ask, schedules and webhooks use — none
 // of them arrive with a thread.
-func (d *Dispatcher) SubmitIn(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
-	return d.submit(ctx, agentID, conversationID, text, origin, idempotencyKey, rcworkflow.SignalEnqueue)
+//
+// staged carries the host paths of any uploads written by StageAttachments. They
+// go onto the turn row, because the workspace they belong in is chosen by the
+// worker and does not exist yet here.
+func (d *Dispatcher) SubmitIn(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey string, staged []string) (Submission, error) {
+	return d.submit(ctx, agentID, conversationID, text, origin, idempotencyKey, staged, rcworkflow.SignalEnqueue)
 }
 
 // Steer cancels whatever the agent is doing and puts this request at the front
 // of its queue. The Claude session is preserved, so the new turn keeps the
 // conversation's context; only the interrupted turn's unfinished work is lost.
 func (d *Dispatcher) Steer(ctx context.Context, agentID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
-	return d.SteerIn(ctx, agentID, "", text, origin, idempotencyKey)
+	return d.SteerIn(ctx, agentID, "", text, origin, idempotencyKey, nil)
 }
 
 // SteerIn interrupts one conversation. A steer is scoped to its conversation:
 // interrupting a thread must not disturb what another thread is doing.
-func (d *Dispatcher) SteerIn(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey string) (Submission, error) {
-	return d.submit(ctx, agentID, conversationID, text, origin, idempotencyKey, rcworkflow.SignalSteer)
+func (d *Dispatcher) SteerIn(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey string, staged []string) (Submission, error) {
+	return d.submit(ctx, agentID, conversationID, text, origin, idempotencyKey, staged, rcworkflow.SignalSteer)
 }
 
-func (d *Dispatcher) submit(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey, signal string) (Submission, error) {
+func (d *Dispatcher) submit(ctx context.Context, agentID, conversationID, text string, origin core.Origin, idempotencyKey string, staged []string, signal string) (Submission, error) {
 	if _, err := d.requireAgent(ctx, agentID); err != nil {
 		return Submission{}, err
 	}
@@ -151,6 +155,7 @@ func (d *Dispatcher) submit(ctx context.Context, agentID, conversationID, text s
 	turnID, existed, err := st.CreateTurn(ctx, store.NewTurn{
 		Request: text, Origin: origin,
 		Conversation: conversationID, IdempotencyKey: idempotencyKey,
+		Attachments: staged,
 	})
 	if err != nil {
 		return Submission{}, err

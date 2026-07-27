@@ -145,6 +145,23 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		return core.TurnResult{}, err
 	}
 
+	// Uploads were staged at admission, before this workspace was known or even
+	// created. Now that it is, they go where the prompt already told the agent to
+	// look — and a failure fails the turn, because answering a question about a
+	// document nobody managed to deliver is worse than saying so.
+	staged, err := st.TurnAttachments(ctx, in.TurnID)
+	if err != nil {
+		return core.TurnResult{}, err
+	}
+	if err := placeAttachments(workspace, staged); err != nil {
+		return core.TurnResult{}, err
+	}
+	if len(staged) > 0 {
+		log.Info("placed uploads in the conversation's workspace",
+			"agent", in.AgentID, "conversation", in.ConversationID,
+			"workspace", workspace, "files", len(staged))
+	}
+
 	// Registered secrets to inject as container env vars. Nil when no master key
 	// is configured, so an agent that uses none is unaffected. The credential is
 	// injected separately and must win, so a same-named secret is dropped rather

@@ -348,7 +348,7 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	prompt, err := d.attachFiles(ctx, agent.ID, text, m.Attachments)
+	prompt, staged, err := d.attachFiles(ctx, agent.ID, text, m.Attachments)
 	if err != nil {
 		d.reply(m.ChannelID, "⚠️ "+err.Error())
 		return
@@ -367,7 +367,7 @@ func (d *Discord) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	// The Discord message ID is a natural idempotency key: a gateway
 	// reconnection can redeliver the same message, and this makes that a no-op.
-	sub, submitErr := d.disp.SubmitIn(ctx, agent.ID, conversationID, prompt, core.DiscordOrigin(replyChannel, m.ID), "discord:"+m.ID)
+	sub, submitErr := d.disp.SubmitIn(ctx, agent.ID, conversationID, prompt, core.DiscordOrigin(replyChannel, m.ID), "discord:"+m.ID, staged)
 	err = submitErr
 	if err != nil {
 		d.log.Error("failed to queue discord message", "channel", m.ChannelID, "error", err)
@@ -804,7 +804,7 @@ func (d *Discord) handleAsk(i *discordgo.InteractionCreate, agentID, prompt stri
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	prompt, err := d.attachFiles(ctx, agentID, prompt, files)
+	prompt, staged, err := d.attachFiles(ctx, agentID, prompt, files)
 	if err != nil {
 		d.followUp(i, "⚠️ "+err.Error())
 		return
@@ -812,8 +812,8 @@ func (d *Discord) handleAsk(i *discordgo.InteractionCreate, agentID, prompt stri
 
 	// The interaction ID is a natural idempotency key: Discord can redeliver an
 	// interaction, and this makes that a no-op instead of a second agent run.
-	sub, err := d.disp.Submit(ctx, agentID, prompt,
-		core.DiscordOrigin(i.ChannelID, i.ID), "discord-ask:"+i.ID)
+	sub, err := d.disp.SubmitIn(ctx, agentID, "", prompt,
+		core.DiscordOrigin(i.ChannelID, i.ID), "discord-ask:"+i.ID, staged)
 	if err != nil {
 		d.followUp(i, "⚠️ Could not queue that: "+err.Error())
 		return
@@ -877,7 +877,7 @@ func (d *Discord) handleSteer(i *discordgo.InteractionCreate, agentID, conversat
 	// A steer is a distinct turn, keyed by interaction ID so a Discord retry
 	// cannot interrupt the agent twice.
 	sub, err := d.disp.SteerIn(ctx, agentID, conversationID, instruction,
-		core.DiscordOrigin(i.ChannelID, i.ID), "discord-steer:"+i.ID)
+		core.DiscordOrigin(i.ChannelID, i.ID), "discord-steer:"+i.ID, nil)
 	if err != nil {
 		d.followUp(i, "⚠️ Could not steer: "+err.Error())
 		return

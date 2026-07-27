@@ -200,13 +200,14 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prompt := body.Text
+	var staged Staged
 	if len(files) > 0 {
-		paths, err := h.disp.SaveAttachments(agentID, files)
+		staged, err = h.disp.StageAttachments(agentID, files)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		prompt = PromptWithAttachments(prompt, paths)
+		prompt = PromptWithAttachments(prompt, staged.ContainerPaths)
 	}
 
 	submit := h.disp.SubmitIn
@@ -214,7 +215,7 @@ func (h *HTTP) postRequest(w http.ResponseWriter, r *http.Request) {
 		submit = h.disp.SteerIn
 	}
 
-	sub, err := submit(r.Context(), agentID, body.ConversationID, prompt, origin, idempotencyKey)
+	sub, err := submit(r.Context(), agentID, body.ConversationID, prompt, origin, idempotencyKey, staged.HostPaths)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUnknownAgent):

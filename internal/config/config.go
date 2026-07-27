@@ -488,6 +488,17 @@ func (c *Config) WorkDir(agentID string) string {
 	return filepath.Join(c.AgentDir(agentID), "work")
 }
 
+// InboxStagingDir holds uploads between admission and the turn that reads them.
+//
+// It sits beside the workspaces rather than inside one because at admission time
+// nobody knows which workspace the turn will run in: a conversation's workspace
+// is chosen — and for a git-backed agent, created — by the worker. The gateway
+// must not create it, because resolveWorkspace treats an existing directory as
+// "already prepared" and would skip the worktree and the CLAUDE.md seed.
+func (c *Config) InboxStagingDir(agentID string) string {
+	return filepath.Join(c.AgentDir(agentID), "inbox-staging")
+}
+
 // ClaudeHomeDir is mounted at the container's ~/.claude. It must survive
 // container removal or `claude --resume` cannot find the session transcript.
 func (c *Config) ClaudeHomeDir(agentID string) string {

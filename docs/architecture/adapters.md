@@ -83,10 +83,23 @@ Notable behaviour:
   the bot. Without it, every message in the channel is a billable request.
 - **3-second ack.** `/status` answers inline because it is a DB read; `/stop`
   and `/steer` defer and follow up.
-- **File attachments** are downloaded by `discord_files.go`, saved through
-  `SaveAttachments` into the agent's `work/inbox/`, and referenced by path in
-  the prompt (`PromptWithAttachments`). Names are sanitised and randomised, and
-  size is capped while streaming, not after.
+- **File attachments** are downloaded by `discord_files.go` and referenced by
+  path in the prompt (`PromptWithAttachments`), never inlined into it. Names are
+  sanitised and randomised, and size is capped while streaming, not after.
+
+  Admission stages, the worker places. `StageAttachments` writes the bytes to
+  `inbox-staging/` beside the workspaces and returns both the host paths — which
+  go onto the turn row — and the `/workspace/inbox/…` paths the prompt promises.
+  The worker links them into the workspace it mounts, once `resolveWorkspace`
+  has chosen one (see [orchestration.md](orchestration.md)).
+
+  The split is not incidental. At admission nobody knows which workspace will
+  read the file: a conversation gets its own directory or git worktree, and only
+  the worker creates it. Writing into `work/inbox/` directly — as this once did —
+  put every threaded upload at a path the container had no mount for, and the
+  turn ran and was billed regardless. Writing into the conversation directory
+  early would be worse: `resolveWorkspace` reads an existing directory as one an
+  earlier turn prepared, so it would skip the worktree and the CLAUDE.md seed.
 
 ## HTTP (`http*.go`)
 

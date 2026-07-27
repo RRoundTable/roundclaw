@@ -20,8 +20,21 @@ import (
 // path lets it decide how much of a file to pull in, and keeps a 20MB PDF out
 // of the request text that gets stored, logged and replayed.
 //
-// Everything lands under inbox/ inside the agent's own work directory, so one
-// agent can never read another's uploads.
+// Everything lands under inbox/ inside the workspace the turn runs in, and every
+// workspace belongs to one agent, so one agent can never read another's uploads.
+//
+// Admission stages, the worker places. An upload arrives before anyone knows
+// which workspace will read it — a conversation gets its own directory or git
+// worktree, and only the worker running the turn resolves and creates it. So the
+// gateway writes the bytes to a staging directory beside the workspaces and
+// records the paths on the turn row; the worker links them into the workspace it
+// actually mounts. The container path in the prompt is therefore a promise the
+// worker keeps, not a guess about where the file already is.
+//
+// Writing straight into a conversation directory from here would be worse than
+// simply wrong: resolveWorkspace treats an existing directory as one an earlier
+// turn already prepared, so creating it early would silently skip the worktree
+// and the CLAUDE.md seed for the first message in a thread.
 
 const (
 	// MaxAttachmentBytes caps a single upload. Discord's own limit is 25MB for
@@ -44,39 +57,51 @@ type Attachment struct {
 	Size int64
 }
 
-// SaveAttachments writes uploads into an agent's workspace and returns the
-// paths as the container will see them.
-func (d *Dispatcher) SaveAttachments(agentID string, files []Attachment) ([]string, error) {
+// Staged is one request's uploads, written to disk and waiting for a turn.
+type Staged struct {
+	// HostPaths is where the bytes are now. Recorded on the turn row so the
+	// worker can find them however many times the activity is retried.
+	HostPaths []string
+	// ContainerPaths is what the agent is told, and what the worker must make
+	// true before the container starts.
+	ContainerPaths []string
+}
+
+// StageAttachments writes uploads to the agent's staging directory and returns
+// both where they are and where the container will see them.
+func (d *Dispatcher) StageAttachments(agentID string, files []Attachment) (Staged, error) {
 	if len(files) == 0 {
-		return nil, nil
+		return Staged{}, nil
 	}
 	if len(files) > MaxAttachments {
-		return nil, fmt.Errorf("too many files: %d, limit is %d", len(files), MaxAttachments)
+		return Staged{}, fmt.Errorf("too many files: %d, limit is %d", len(files), MaxAttachments)
 	}
 
-	hostDir := filepath.Join(d.cfg.WorkDir(agentID), inboxDir)
-	if err := os.MkdirAll(hostDir, 0o750); err != nil {
-		return nil, fmt.Errorf("create inbox: %w", err)
+	stagingDir := d.cfg.InboxStagingDir(agentID)
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		return Staged{}, fmt.Errorf("create inbox staging: %w", err)
 	}
 
 	// One prefix per request, so files that arrive together stay together and
-	// two uploads of "report.pdf" cannot overwrite each other.
+	// two uploads of "report.pdf" cannot overwrite each other. It also makes the
+	// staged name and the workspace name identical, so placement is a link with
+	// no bookkeeping of its own.
 	batch, err := randomToken()
 	if err != nil {
-		return nil, err
+		return Staged{}, err
 	}
 
-	var paths []string
+	var staged Staged
 	for _, f := range files {
 		name := batch + "-" + sanitizeFilename(f.Name)
-		hostPath := filepath.Join(hostDir, name)
 
-		if err := writeCapped(hostPath, f.Body); err != nil {
-			return nil, fmt.Errorf("save %s: %w", f.Name, err)
+		if err := writeCapped(filepath.Join(stagingDir, name), f.Body); err != nil {
+			return Staged{}, fmt.Errorf("save %s: %w", f.Name, err)
 		}
-		paths = append(paths, filepath.Join(claude.ContainerWorkspace, inboxDir, name))
+		staged.HostPaths = append(staged.HostPaths, filepath.Join(stagingDir, name))
+		staged.ContainerPaths = append(staged.ContainerPaths, filepath.Join(claude.ContainerWorkspace, inboxDir, name))
 	}
-	return paths, nil
+	return staged, nil
 }
 
 // writeCapped copies at most MaxAttachmentBytes and removes the partial file if

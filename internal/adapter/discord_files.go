@@ -13,18 +13,19 @@ import (
 // default client so a slow download cannot hold a connection open forever.
 var attachmentClient = &http.Client{Timeout: 60 * time.Second}
 
-// attachFiles downloads a message's or command's attachments into the agent's
-// workspace and returns the prompt with their paths prepended.
+// attachFiles downloads a message's or command's attachments to the agent's
+// staging directory and returns the prompt with their container paths prepended,
+// alongside the staged host paths for the turn row.
 //
 // A download failure fails the whole request rather than proceeding without the
 // file. Silently answering a question about a document nobody managed to
 // deliver is worse than saying so.
-func (d *Discord) attachFiles(ctx context.Context, agentID, text string, attachments []*discordgo.MessageAttachment) (string, error) {
+func (d *Discord) attachFiles(ctx context.Context, agentID, text string, attachments []*discordgo.MessageAttachment) (string, []string, error) {
 	if len(attachments) == 0 {
-		return text, nil
+		return text, nil, nil
 	}
 	if len(attachments) > MaxAttachments {
-		return "", fmt.Errorf("too many files: %d, limit is %d", len(attachments), MaxAttachments)
+		return "", nil, fmt.Errorf("too many files: %d, limit is %d", len(attachments), MaxAttachments)
 	}
 
 	var files []Attachment
@@ -38,32 +39,32 @@ func (d *Discord) attachFiles(ctx context.Context, agentID, text string, attachm
 	for _, a := range attachments {
 		// Checked before downloading so an oversized file costs nothing.
 		if int64(a.Size) > MaxAttachmentBytes {
-			return "", fmt.Errorf("%s is %.1fMB; the limit is %dMB",
+			return "", nil, fmt.Errorf("%s is %.1fMB; the limit is %dMB",
 				a.Filename, float64(a.Size)/(1<<20), MaxAttachmentBytes>>20)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
 		if err != nil {
-			return "", fmt.Errorf("fetch %s: %w", a.Filename, err)
+			return "", nil, fmt.Errorf("fetch %s: %w", a.Filename, err)
 		}
 		resp, err := attachmentClient.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("fetch %s: %w", a.Filename, err)
+			return "", nil, fmt.Errorf("fetch %s: %w", a.Filename, err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return "", fmt.Errorf("fetch %s: discord returned %s", a.Filename, resp.Status)
+			return "", nil, fmt.Errorf("fetch %s: discord returned %s", a.Filename, resp.Status)
 		}
 		bodies = append(bodies, resp.Body)
 		files = append(files, Attachment{Name: a.Filename, Body: resp.Body, Size: int64(a.Size)})
 	}
 
-	paths, err := d.disp.SaveAttachments(agentID, files)
+	staged, err := d.disp.StageAttachments(agentID, files)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	d.log.Info("saved attachments", "agent", agentID, "files", len(paths))
-	return PromptWithAttachments(text, paths), nil
+	d.log.Info("staged attachments", "agent", agentID, "files", len(staged.HostPaths))
+	return PromptWithAttachments(text, staged.ContainerPaths), staged.HostPaths, nil
 }
 
 // discordAttachments pulls resolved attachments out of a slash command. The

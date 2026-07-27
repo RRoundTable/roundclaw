@@ -246,11 +246,15 @@ does not.
 
 1. Resolve the agent definition and the conversation's workspace
    ([agent-runtime.md](agent-runtime.md)).
-2. Build argv and `docker run` the agent container.
-3. Decode stream-json line by line into `live_logs`.
-4. **Heartbeat every second.**
-5. On cancellation: `SIGINT`, wait `container.stop_grace`, then `SIGKILL`.
-6. Write the result, cost and status to the `turns` row.
+2. Link the turn's staged uploads into that workspace's `inbox/`
+   ([adapters.md](adapters.md)) — the prompt already named those paths, and this
+   is what makes them true. A hard link, so a 25MB upload is not copied, and the
+   staged entry stays behind so a retried activity finds its files.
+3. Build argv and `docker run` the agent container.
+4. Decode stream-json line by line into `live_logs`.
+5. **Heartbeat every second.**
+6. On cancellation: `SIGINT`, wait `container.stop_grace`, then `SIGKILL`.
+7. Write the result, cost and status to the `turns` row.
 
 Heartbeating is not optional. An activity only learns it was cancelled through
 the response to a heartbeat, so `/stop` and `/steer` are exactly as responsive

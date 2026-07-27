@@ -326,6 +326,38 @@ func (s *Store) RecentTurnsIn(ctx context.Context, conversation string, limit in
 	return scanTurns(rows)
 }
 
+// AudienceIn is where a conversation is watched from, read out of its own
+// turns.
+//
+// This is the one answer to that question. Admission calls it to stamp a
+// delegated turn with the address its delegator answers to, and speaking calls
+// it to find a channel — two callers that used to search separately, with
+// different rules about what counted, and disagree.
+//
+// Reading it from the conversation's own history is also the whole
+// authorisation model for speaking: an agent can only be heard where it has
+// already been spoken to, because that is the only thing this can return. Note
+// what it is not — "where does this turn's result go" is a different question
+// with a different answer, since a delegated result goes back one hop to its
+// delegator rather than out to the person at the root.
+func (s *Store) AudienceIn(ctx context.Context, conversation string, limit int) (core.Origin, bool, error) {
+	turns, err := s.RecentTurnsIn(ctx, conversation, limit)
+	if err != nil {
+		return core.Origin{}, false, err
+	}
+	for _, t := range turns {
+		if a, ok := t.Origin.Listening(); ok {
+			return a, true, nil
+		}
+	}
+	return core.Origin{}, false, nil
+}
+
+// AudienceLookback bounds that search. A conversation can accumulate several
+// notification turns in a row — one per delegated task — and the turn that
+// started it all sits behind them.
+const AudienceLookback = 20
+
 // Conversations returns every conversation this agent has ever run a turn for,
 // including the default one (reported as the empty string). It is the source of
 // truth for "which conversations does this agent have", read straight from the

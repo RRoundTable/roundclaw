@@ -61,7 +61,9 @@ Details that are load-bearing rather than stylistic:
   neither set the flag is absent and the CLI picks — which means the image's
   version, not an operator, decides.
 - **Identity is injected, not inferred.** The CLI inside the container reads
-  `ROUNDCLAW_AGENT_ID` / `ROUNDCLAW_CONVERSATION_ID` to know where it is, and
+  `ROUNDCLAW_AGENT_ID` / `ROUNDCLAW_CONVERSATION_ID` to know where it is,
+  `ROUNDCLAW_TURN_ID` to name the turn it is running (which is how `say` finds
+  the audience stamped on that row rather than inferring one from history), and
   `ROUNDCLAW_REPLY_TO` (present only on a delegated turn, read from the turn's
   `agent` origin) to know who is waiting. Without these, `say` and
   `send --notify-me` would need the model to guess IDs out of its prompt. They are

@@ -172,7 +172,7 @@ cases need no flags:
 
 | Command | Speaks as | In which conversation | Source |
 |---|---|---|---|
-| `say "..."` | me | the one I am running in | `ROUNDCLAW_AGENT_ID` + `ROUNDCLAW_CONVERSATION_ID` |
+| `say "..."` | me | the one I am running in | `ROUNDCLAW_AGENT_ID` + `ROUNDCLAW_CONVERSATION_ID`, plus `ROUNDCLAW_TURN_ID` |
 | `say "..." --to pm` *(pm delegated to me)* | pm | the conversation pm is waiting in | matches `ROUNDCLAW_REPLY_TO` → `ROUNDCLAW_REPLY_TO_CONVERSATION` |
 | `say "..." --to director` *(no delegation)* | director | its **default** conversation | no conversation sent; the server resolves the default |
 | `say "..." --conversation X` | as given | X | flags, verbatim |
@@ -180,11 +180,44 @@ cases need no flags:
 `--to` is a `say` flag only. `send`'s target is its positional agent, and its
 `--conversation` says where on that agent's side to run.
 
+Speaking **where I am** also sends `ROUNDCLAW_TURN_ID`, so the audience is read
+off that one row instead of inferred from the conversation. Speaking into someone
+else's conversation deliberately does not: their audience is theirs to resolve.
+See "The audience" below for why the row knows.
+
+### The audience
+
+A delegated turn runs in a conversation that holds nothing but the delegation, so
+there is no history to infer a channel from — an argument-less `say` inside one
+used to fail with `no discord audience`, and `--to <delegator>` only worked while
+the delegator was itself talking to a person.
+
+The address is therefore **carried across the hop, at admission**. `resolveNotify`
+resolves the delegator's own audience while it is exactly one hop away and writes
+it onto the delegated turn as `Origin.Audience` (`withDelegatorAudience`):
+
+```
+pm's turn      origin=discord:T                        ← is its own audience
+dev's turn     origin=agent:pm      audience=discord:T ← stamped at admission
+qa's turn      origin=agent:dev     audience=discord:T ← inherited from dev's row
+```
+
+That makes it inductive rather than a search: each hop only reads the row the
+previous hop already stamped, so depth costs nothing and nothing walks a chain.
+Note what stays separate — `Origin` still says the *result* goes back to pm one
+hop at a time; `Audience` says where the person waiting on the whole tree is.
+Two different questions, which is why `replyOriginFor` (delivery) and
+`AudienceIn` (speaking) are still two functions.
+
+`Audience` is empty when nobody is watching — an API-driven delegator — and a
+progress note is then refused rather than sent to the last address anyone
+happened to use.
+
 ### The authorisation model
 
-The request names an **agent and a conversation — never a channel.** The channel
-is resolved server-side from that conversation's own history
-(`conversationChannel`), so:
+The request names an **agent and a conversation, or a turn — never a channel.**
+The channel is resolved server-side from that turn's row or that conversation's
+own history (`conversationChannel`), so:
 
 - there is no field in which to name an arbitrary channel;
 - a conversation with no Discord audience (API-driven, or notifications only) is

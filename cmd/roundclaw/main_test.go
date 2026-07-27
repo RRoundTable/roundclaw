@@ -246,6 +246,54 @@ func TestSayUsesInjectedIdentity(t *testing.T) {
 	}
 }
 
+// Speaking where I am names the turn I am running, so the server reads my
+// audience off that row. A delegated turn has no conversation history to infer
+// one from — before this, an argument-less say inside one failed outright.
+func TestSayNamesTheTurnItIsRunning(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "")
+	t.Setenv("ROUNDCLAW_TURN_ID", "41")
+	t.Setenv("ROUNDCLAW_REPLY_TO", "pm")
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeTestJSON(w, http.StatusOK, map[string]any{"delivered": true, "target": "chan-1"})
+	}))
+	defer srv.Close()
+
+	if code := cmdSay([]string{"--url", srv.URL, "--token", "t", "빌드 중"}); code != 0 {
+		t.Fatalf("cmdSay exit = %d, want 0", code)
+	}
+	if got["turn_id"] != float64(41) {
+		t.Errorf("turn_id = %v, want 41", got["turn_id"])
+	}
+}
+
+// Speaking into someone else's conversation must not carry my turn id: their
+// audience is theirs to resolve, and mine names a thread that is not theirs.
+func TestSayToAnotherAgentDoesNotNameMyTurn(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "")
+	t.Setenv("ROUNDCLAW_TURN_ID", "41")
+	t.Setenv("ROUNDCLAW_REPLY_TO", "pm")
+	t.Setenv("ROUNDCLAW_REPLY_TO_CONVERSATION", "thread-1")
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeTestJSON(w, http.StatusOK, map[string]any{"delivered": true, "target": "chan-1"})
+	}))
+	defer srv.Close()
+
+	if code := cmdSay([]string{"--url", srv.URL, "--token", "t", "PRD와 다른 부분", "--to", "pm"}); code != 0 {
+		t.Fatalf("cmdSay exit = %d, want 0", code)
+	}
+	if _, ok := got["turn_id"]; ok {
+		t.Errorf("turn_id = %v, want none when speaking in another agent's conversation", got["turn_id"])
+	}
+}
+
 // --to the delegator resolves that agent's waiting conversation, not this one.
 func TestSayToDelegatorUsesReplyToConversation(t *testing.T) {
 	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")

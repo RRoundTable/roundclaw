@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -559,6 +560,17 @@ func cmdSay(args []string) int {
 	body := map[string]any{"text": text}
 	if conv != "" {
 		body["conversation"] = conv
+	}
+	// Speaking where I am: name the turn I am running, so the server reads my
+	// audience off that row rather than inferring one from the conversation's
+	// recent history. A delegated turn has no history of its own to infer from —
+	// the address it needs was written on the row when the turn was admitted.
+	// Speaking into someone else's conversation deliberately does not send it:
+	// their audience is theirs to resolve, not mine to assert.
+	if agent == os.Getenv("ROUNDCLAW_AGENT_ID") && conv == os.Getenv("ROUNDCLAW_CONVERSATION_ID") {
+		if id, err := strconv.ParseInt(os.Getenv("ROUNDCLAW_TURN_ID"), 10, 64); err == nil && id > 0 {
+			body["turn_id"] = id
+		}
 	}
 
 	c := newClient(*base, *token)

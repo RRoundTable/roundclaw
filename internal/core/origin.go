@@ -58,6 +58,65 @@ type Origin struct {
 	// conversation, which is by definition where the conversation answers.
 	Agent        string `json:"agent,omitempty"`
 	Conversation string `json:"conversation,omitempty"`
+
+	// Audience is where the person waiting on this turn is watching — the thread
+	// at the root of the delegation chain, not the delegator one hop up.
+	//
+	// It exists because delegation drops that address on the way down. A
+	// delegated turn's origin names its delegator and nothing else, which is all
+	// the *result* needs: it travels back one hop at a time, and each hop reads
+	// the next address out of its own conversation. But an agent that wants to
+	// speak while it is still working has to reach the person, and one edge of
+	// the tree does not say where the person is. Resolving that at admission,
+	// where the delegator is exactly one hop away and its own turns already
+	// carry the answer, and then writing it on the row makes it a read instead
+	// of a search — at any depth, because the delegator's row was stamped the
+	// same way.
+	//
+	// Only ever a terminal address, never another OriginAgent: the chain is
+	// already collapsed when this is set, so reading it is one hop and not a
+	// walk. Empty is normal and means nobody is listening — an API caller
+	// collecting a result is not an audience.
+	Audience *Origin `json:"audience,omitempty"`
+}
+
+// WithAudience records where the turn's work is being watched from.
+//
+// An address that cannot be spoken to is ignored rather than stored: the
+// audience is a shortcut past searching for one, so a bad value has to degrade
+// into that search instead of breaking routing.
+func (o Origin) WithAudience(a Origin) Origin {
+	switch a.Type {
+	case OriginDiscord, OriginHTTPCallback:
+	default:
+		return o
+	}
+	if a.Validate() != nil {
+		return o
+	}
+	// Already the root, so nesting would only make the row bigger.
+	a.Audience = nil
+	o.Audience = &a
+	return o
+}
+
+// Listening is the address this turn's progress can be spoken to, and whether
+// there is one at all.
+//
+// A turn that arrived from Discord is its own audience; a delegated one carries
+// the root's address. Everything else has nobody watching, and saying so plainly
+// is what keeps a progress note out of an unrelated channel — the failure this
+// answer used to have was reporting the last address it could find rather than
+// the right one.
+func (o Origin) Listening() (Origin, bool) {
+	if o.Audience != nil {
+		return *o.Audience, true
+	}
+	switch o.Type {
+	case OriginDiscord, OriginHTTPCallback:
+		return o, true
+	}
+	return Origin{}, false
 }
 
 // DiscordOrigin builds an Origin that replies in a Discord channel.
@@ -85,6 +144,19 @@ func AgentOrigin(agentID, conversationID string) Origin {
 // this at the adapter boundary: an Origin that fails here would otherwise be
 // discovered only after the agent turn has already burned tokens.
 func (o Origin) Validate() error {
+	// A nested audience is checked first so a malformed one is caught at the
+	// same boundary as the origin carrying it, rather than at the moment
+	// something tries to speak into it — which is mid-turn, inside a container,
+	// where nothing can be done about it.
+	if o.Audience != nil {
+		if o.Audience.Type == OriginAgent {
+			return fmt.Errorf("origin: audience must be a terminal address, not another agent")
+		}
+		if err := o.Audience.Validate(); err != nil {
+			return fmt.Errorf("origin audience: %w", err)
+		}
+	}
+
 	switch o.Type {
 	case OriginDiscord:
 		if o.ChannelID == "" {
@@ -130,10 +202,17 @@ func (o Origin) String() string {
 	case OriginDiscord:
 		return "discord:" + o.ChannelID
 	case OriginAgent:
-		if o.Conversation == "" {
-			return "agent:" + o.Agent
+		s := "agent:" + o.Agent
+		if o.Conversation != "" {
+			s += "/" + o.Conversation
 		}
-		return "agent:" + o.Agent + "/" + o.Conversation
+		// Worth the noise in a log line: "the result goes to pm, the person is
+		// in this thread" is exactly the pair being debugged when delegation
+		// delivers somewhere unexpected.
+		if o.Audience != nil {
+			s += "→" + o.Audience.String()
+		}
+		return s
 	case OriginHTTPCallback:
 		if u, err := url.Parse(o.URL); err == nil {
 			return "http_callback:" + u.Scheme + "://" + u.Host + u.Path

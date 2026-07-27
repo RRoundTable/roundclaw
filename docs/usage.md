@@ -266,9 +266,10 @@ must never travel this way.
 | cost | one extra turn | none |
 | use for | final results and failures | progress |
 
-Inside a container the CLI reads `ROUNDCLAW_AGENT_ID`, `ROUNDCLAW_CONVERSATION_ID`
-and `ROUNDCLAW_REPLY_TO`, so `roundclaw say "..."` and `send dev "..." --notify-me`
-need no arguments to know where they are.
+Inside a container the CLI reads `ROUNDCLAW_AGENT_ID`, `ROUNDCLAW_CONVERSATION_ID`,
+`ROUNDCLAW_TURN_ID` and `ROUNDCLAW_REPLY_TO`, so `roundclaw say "..."` and
+`send dev "..." --notify-me` need no arguments to know where they are — including
+on a delegated turn, which reports into the thread the work was asked for in.
 
 `--conversation` puts the delegated turn in a named conversation of the target
 agent — its own session, queue and workspace, so two delegations run in parallel.
@@ -772,8 +773,9 @@ printf %s "$DELEGATE_TOKEN" | roundclaw secret set ROUNDCLAW_API_TOKEN --agent p
 ```
 
 The CLI needs no arguments to know where it is: the worker injects
-`ROUNDCLAW_AGENT_ID`, `ROUNDCLAW_CONVERSATION_ID` and — on a delegated turn —
-`ROUNDCLAW_REPLY_TO`, so `--notify-me` and `say` fill themselves in.
+`ROUNDCLAW_AGENT_ID`, `ROUNDCLAW_CONVERSATION_ID`, `ROUNDCLAW_TURN_ID` and — on a
+delegated turn — `ROUNDCLAW_REPLY_TO`, so `--notify-me` and `say` fill themselves
+in.
 
 ### Guard rails and limits
 

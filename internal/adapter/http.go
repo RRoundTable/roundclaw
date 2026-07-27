@@ -280,7 +280,43 @@ func (h *HTTP) resolveNotify(ctx context.Context, targetAgent, targetConversatio
 	if _, err := h.disp.requireAgent(ctx, n.Agent); err != nil {
 		return core.Origin{}, err
 	}
-	return origin, nil
+	return h.withDelegatorAudience(ctx, origin), nil
+}
+
+// withDelegatorAudience carries the thread across the hop of delegation.
+//
+// The origin already says "return this to pm", which is all the result needs.
+// It is not enough for anything the delegate wants to say while it is still
+// working: that has to reach the person, and one edge of the tree does not say
+// where the person is — a delegated turn's own conversation is usually empty of
+// anyone to answer, which is why an argument-less `say` used to fail outright
+// inside one. Here the delegator is exactly one hop away and its conversation
+// already holds the answer, so resolving it once and putting it on the turn
+// makes it inductive: pm's row carries the thread, so dev's does, and so does
+// anything dev delegates onward.
+//
+// A failure is not worth refusing the delegation over. Without an audience the
+// delegate simply cannot speak mid-turn, which is how every delegated turn
+// behaved before this existed.
+func (h *HTTP) withDelegatorAudience(ctx context.Context, origin core.Origin) core.Origin {
+	st, err := h.disp.Store(ctx, origin.Agent)
+	if err != nil {
+		h.log.Warn("could not open the delegator's store to find its audience",
+			"agent", origin.Agent, "error", err)
+		return origin
+	}
+	audience, ok, err := st.AudienceIn(ctx, origin.Conversation, store.AudienceLookback)
+	if err != nil {
+		h.log.Warn("could not read the delegator's audience",
+			"agent", origin.Agent, "conversation", origin.Conversation, "error", err)
+		return origin
+	}
+	if !ok {
+		// Normal: an API-driven delegator has nobody watching, so there is
+		// nothing to inherit.
+		return origin
+	}
+	return origin.WithAudience(audience)
 }
 
 // waitForTurn polls until the turn reaches a terminal state, the client goes

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/roundtable/roundclaw/internal/core"
+	"github.com/roundtable/roundclaw/internal/store"
 )
 
 // This is the only way an agent speaks outside its own turn.
@@ -35,6 +36,15 @@ type messageBody struct {
 	// agent may only be heard where it is already spoken to, so an injected
 	// prompt cannot turn one agent into a fleet-wide megaphone.
 	Conversation string `json:"conversation,omitempty"`
+	// TurnID names the turn the speaker is running, so its audience is read off
+	// that one row instead of inferred from the conversation's recent history.
+	//
+	// It matters for a delegated turn, where the audience lives on the row and
+	// nowhere else: a second delegation arriving while this one works would be
+	// the newer row in the same conversation, and searching would find that
+	// stranger's thread instead. Zero means "infer", which is what a person
+	// running the CLI by hand gets.
+	TurnID int64 `json:"turn_id,omitempty"`
 }
 
 type messageResponse struct {
@@ -82,7 +92,7 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, err := h.conversationChannel(r.Context(), agentID, body.Conversation)
+	target, err := h.conversationChannel(r.Context(), agentID, body.Conversation, body.TurnID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -104,26 +114,51 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// conversationChannel resolves which channel a conversation is heard in, by
-// reading the address its own turns answered to.
+// conversationChannel resolves which channel the speaker is heard in.
 //
-// This is the whole authorisation model for speaking: the answer comes from the
-// conversation's history, so an agent can only reach an audience it already has.
-// There is no way to name an arbitrary channel, which is what keeps a
-// prompt-injected agent from broadcasting.
-func (h *HTTP) conversationChannel(ctx context.Context, agentID, conversation string) (string, error) {
+// Naming the turn is the exact answer and the one an agent always has: its
+// audience was resolved when it was admitted and written on the row, so a
+// delegated turn knows the thread its work is being waited on in even though its
+// own conversation holds nothing but delegations. Without a turn the address is
+// inferred from the conversation's recent history, which is what a person
+// running the CLI by hand gets and what speaking into someone else's
+// conversation has to fall back on.
+//
+// Either way the answer comes from turns roundclaw itself recorded, never from
+// the request. That is the whole authorisation model for speaking: an agent can
+// only reach an audience it already has, so there is no way to name an arbitrary
+// channel and no way for a prompt-injected agent to broadcast.
+func (h *HTTP) conversationChannel(ctx context.Context, agentID, conversation string, turnID int64) (string, error) {
 	st, err := h.disp.Store(ctx, agentID)
 	if err != nil {
 		return "", err
 	}
-	turns, err := st.RecentTurnsIn(ctx, conversation, messageLookback)
+
+	if turnID > 0 {
+		t, err := st.GetTurn(ctx, turnID)
+		if err != nil {
+			return "", fmt.Errorf("read turn %d of agent %s: %w", turnID, agentID, err)
+		}
+		audience, ok := t.Origin.Listening()
+		if !ok {
+			return "", fmt.Errorf(
+				"turn %d of agent %s has nobody listening; it was driven by the API, "+
+					"so its caller reads the result rather than being told it", turnID, agentID)
+		}
+		return audienceChannel(audience, fmt.Sprintf("turn %d of agent %s", turnID, agentID))
+	}
+
+	audience, ok, err := st.AudienceIn(ctx, conversation, store.AudienceLookback)
 	if err != nil {
 		return "", err
 	}
-	for _, t := range turns {
-		if t.Origin.Type == core.OriginDiscord && t.Origin.ChannelID != "" {
-			return t.Origin.ChannelID, nil
-		}
+	if ok {
+		return audienceChannel(audience, fmt.Sprintf("conversation %q of agent %s", conversation, agentID))
+	}
+
+	turns, err := st.RecentTurnsIn(ctx, conversation, 1)
+	if err != nil {
+		return "", err
 	}
 	if len(turns) == 0 {
 		return "", fmt.Errorf("agent %s has no conversation %q to speak into", agentID, conversation)
@@ -133,9 +168,17 @@ func (h *HTTP) conversationChannel(ctx context.Context, agentID, conversation st
 			"so its caller reads results rather than being told them", conversation, agentID)
 }
 
-// messageLookback bounds the search for the conversation's audience. A run of
-// notification turns can sit between now and the last human-facing turn.
-const messageLookback = 20
+// audienceChannel narrows a resolved audience to something this endpoint can
+// actually post to. A callback URL is a real audience for a *result* and no use
+// here: there is no channel behind it, and answering as though a progress note
+// had been delivered is the failure this whole path exists to avoid.
+func audienceChannel(audience core.Origin, who string) (string, error) {
+	if audience.Type != core.OriginDiscord || audience.ChannelID == "" {
+		return "", fmt.Errorf("%s answers to %s, which is not a channel that can be spoken into",
+			who, audience.String())
+	}
+	return audience.ChannelID, nil
+}
 
 // maxMessageBytes caps an out-of-band message. Generous next to Discord's 2000
 // characters per message, small enough that this endpoint cannot be used to move

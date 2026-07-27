@@ -296,7 +296,11 @@ Switches on `turns.origin`:
   (`notify:<agent>:<turn>`), because this activity is retried and a second signal
   would wake the delegator twice for one result. The delegator's own reply address
   is read from the last human-facing turn of that conversation rather than carried
-  along, since a conversation has exactly one audience.
+  along, since a conversation has exactly one audience. Note this is the opposite
+  choice from `origin.audience`, and deliberately so: a *result* only ever needs
+  the next hop up, which the delegator's own conversation already holds, while
+  speaking mid-turn needs the root of the chain and so must carry it down
+  ([delegation.md](delegation.md#the-audience)).
 
 The `agent` case is drawn end to end in [delegation.md](delegation.md), with what
 is written where at each step.

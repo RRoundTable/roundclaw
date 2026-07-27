@@ -101,6 +101,26 @@ Notable behaviour:
   early would be worse: `resolveWorkspace` reads an existing directory as one an
   earlier turn prepared, so it would skip the worktree and the CLAUDE.md seed.
 
+- **Files going out** are the mirror of that (`outbox.go`). An agent writes into
+  `outbox/` in its workspace and names the file when it speaks; the gateway opens
+  it and hands the reader to Discord, so nothing is buffered and a 10MB
+  attachment never sits in memory.
+
+  This exists because the message text was the only way out. A long report sent
+  as text is twenty Discord messages, and it stays in the session context to be
+  re-sent on every later turn of that conversation — the agent pays for it again
+  each time. As a file it costs one path.
+
+  `outbox/` is **not** a boundary against a compromised agent: one with Bash can
+  copy anything into it. What it stops is an accident — a workspace `.env` or a
+  stray source file going out because a path was slightly wrong — and a
+  prompt-injected agent that reached only the message API naming an arbitrary
+  path. Symlinks are resolved before the containment check, since the agent has
+  Write and `ln -s /etc/shadow outbox/notes.txt` passes every purely lexical
+  test. The outbox is resolved against the workspace the *conversation* runs in,
+  by the same function the worker mounts with, so a file written in one thread is
+  not visible from another.
+
 ## HTTP (`http*.go`)
 
 `net/http` `ServeMux` with Go 1.22 method+pattern routing. Bearer auth from
@@ -126,6 +146,9 @@ POST   /v1/agents/{agent}/requests        202 {turn_id, conversation, queue_posi
                                           body: notify {agent, conversation} = return address,
                                                 conversation_id = which conversation to run in
 POST   /v1/agents/{agent}/messages        200 — say one thing, no turn created
+                                          body: turn_id = the turn I am running, so the
+                                                audience is read off that row not inferred;
+                                                files = names in the conversation's outbox/
 GET    /v1/agents/{agent}/turns/{turn}    turn state and result
 GET    /v1/agents/{agent}/turns/{turn}/stream   SSE tail of live_logs
 GET    /v1/agents/{agent}                 status

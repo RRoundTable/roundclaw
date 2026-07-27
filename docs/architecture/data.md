@@ -37,7 +37,7 @@ live_logs(id PK, turn_id, kind, content, created_at)
   INDEX (turn_id, id)
 
 turns(id PK, request, result, status, cost_usd, origin, error,
-      conversation, queued_at, finished_at)
+      conversation, attachments, queued_at, finished_at)
   INDEX (status, id), (conversation, id)
 
 idempotency(key PK, turn_id, created_at)
@@ -46,6 +46,16 @@ idempotency(key PK, turn_id, created_at)
 - `origin` is a JSON discriminated union (`core.Origin`) and is the single
   source of truth for where a reply goes. A new event source adds a type here
   and a case in `DeliverResponse`, nothing more.
+- `origin.audience` rides inside that JSON — no column of its own, so no
+  migration — and answers a different question: not "where does the result go"
+  but "who is watching this work". They diverge only under delegation, where the
+  result goes one hop back to the delegator while the person is at the root of
+  the chain. It is stamped at admission and inherited hop by hop, which is what
+  lets an agent three delegations deep report progress into the thread the work
+  was actually asked in ([delegation.md](delegation.md#the-audience)).
+- `attachments` is the JSON list of host paths for a turn's uploads, written at
+  admission and read by the worker once it has chosen the workspace to link them
+  into. See [adapters.md](adapters.md#discord-discordgo).
 - `conversation` is empty for the agent's default conversation and the Discord
   thread ID otherwise. `RecentTurnsIn` scopes the recap window to one
   conversation — recapping a thread with another thread's history would hand the
@@ -103,6 +113,12 @@ delivered even if the caller, its shell and the worker have all died in between
 ([orchestration.md](orchestration.md)). Because it *queues* rather than just
 delivers, admission refuses the one shape that cannot end — an agent naming itself
 in the conversation it is already running in.
+
+That address is one edge of the delegation tree, which is all a *result* needs —
+it travels back a hop at a time, each hop reading the next address out of its own
+conversation. It is not enough to speak mid-turn, which has to reach the person
+at the root; that is what `origin.audience` carries, resolved once at admission
+rather than searched for later.
 
 **`secrets` holds values, encrypted.** `scope` is an agent ID, or `''` for a
 global secret every agent sees; a per-agent row of the same name overrides the

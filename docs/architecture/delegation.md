@@ -150,16 +150,20 @@ Per-agent tokens would let the server fill the field in instead of believing it.
 sequenceDiagram
     participant DEV as dev container (turn 71)
     participant GW as gateway (HTTP)
-    participant DB as pm/state.db
+    participant DB as dev/state.db
     participant U as User (Discord thread)
 
-    DEV->>GW: POST /v1/agents/pm/messages<br/>{text, conversation: [thread]}
-    GW->>GW: requireAgent(pm) · sender configured?
-    GW->>DB: RecentTurnsIn([thread], 20)
-    DB-->>GW: last discord origin → channel
+    DEV->>GW: POST /v1/agents/dev/messages<br/>{text, turn_id: 71}
+    GW->>GW: requireAgent(dev) · sender configured?
+    GW->>DB: GetTurn(71)
+    DB-->>GW: origin agent:pm → audience discord:T
     GW->>U: ChannelMessageSend (chunked at 1990)
     GW-->>DEV: 200 {delivered, target}
 ```
+
+Without a `turn_id` — a person at a terminal, or `--to` someone else's
+conversation — the same answer is inferred instead, by scanning that
+conversation's recent turns for one with an audience (`AudienceIn`).
 
 No turn, no session, no container, no model call, nothing scheduled. It is one
 REST call from inside the agent's own container to the gateway that is already
@@ -179,6 +183,13 @@ cases need no flags:
 
 `--to` is a `say` flag only. `send`'s target is its positional agent, and its
 `--conversation` says where on that agent's side to run.
+
+`--file <name>` attaches something the agent wrote into `outbox/` in its
+workspace — repeatable, up to Discord's ten per message. That is where a long
+result belongs: as text it is twenty messages and it stays in the session
+context, re-sent on every later turn of the conversation. See
+[adapters.md](adapters.md#discord-discordgo) for what `outbox/` does and does not
+protect.
 
 Speaking **where I am** also sends `ROUNDCLAW_TURN_ID`, so the audience is read
 off that one row instead of inferred from the conversation. Speaking into someone

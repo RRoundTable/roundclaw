@@ -250,6 +250,19 @@ type RetentionConfig struct {
 	TranscriptDays int `yaml:"transcript_days"`
 	// TurnDays keeps turn rows this long. Should exceed TranscriptDays.
 	TurnDays int `yaml:"turn_days"`
+	// UploadDays keeps staged uploads this long.
+	//
+	// This is roundclaw's own copy in inbox-staging/, not the agent's. An upload
+	// is hard-linked into the workspace when its turn runs, so while that link
+	// lives the staged entry costs nothing and removing it frees nothing — it is
+	// kept so a retried activity finds its files. It matters once a conversation's
+	// workspace is torn down and the staged entry becomes the last link holding
+	// the bytes.
+	//
+	// The agent's own inbox/ and outbox/ are never swept. Those are documents
+	// someone sent it and work it produced, sitting in its working directory;
+	// deleting them on a timer is not roundclaw's call.
+	UploadDays int `yaml:"upload_days"`
 	// Interval is how often the sweep runs.
 	Interval time.Duration `yaml:"interval"`
 }
@@ -257,7 +270,7 @@ type RetentionConfig struct {
 // Enabled reports whether pruning is configured. Zero means keep everything,
 // so deleting history is always something an operator asked for.
 func (r RetentionConfig) Enabled() bool {
-	return r.TranscriptDays > 0 || r.TurnDays > 0
+	return r.TranscriptDays > 0 || r.TurnDays > 0 || r.UploadDays > 0
 }
 
 // AgentConfig is one persistent agent: an identity, a Claude Code agent

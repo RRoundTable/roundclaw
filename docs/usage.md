@@ -515,6 +515,7 @@ roundclaw send pr-reviewer "..." --wait          # block for the result (default
 roundclaw send pr-reviewer "..." --notify-me     # don't block; the result comes
                                                  # back as a new turn for me
 roundclaw say "진행 중입니다"                      # speak without running a turn
+roundclaw say "보고서 첨부" --file report.pdf      # send a file from the workspace's outbox/
 roundclaw send pr-reviewer "..." --steer         # interrupt and redirect
 roundclaw send pr-reviewer "..." --key deploy-42 # idempotent retry
 roundclaw turn pr-reviewer 123         # a turn's state and result
@@ -708,8 +709,14 @@ own HTTP API. It is a special case of a tool: the `team` tool mounts the
 roundclaw send dev "QA 버튼 만들어줘" --notify-me    # 위임하고 손 떼기 (권장)
 roundclaw send dev "짧은 확인 하나"                  # 끝날 때까지 대기 (동기)
 roundclaw say "빌드 중, 5분쯤 더"                    # 진행 보고 (턴 없음, 무료)
+roundclaw say "결과 첨부" --file report.md          # outbox/ 에 쓴 파일을 첨부해서
 roundclaw turn dev 71                              # 위임한 턴 직접 조회
 ```
+
+A long result belongs in a file, not in the message. Write it into `outbox/` in
+the workspace and name it with `--file`: sent as text it is twenty Discord
+messages *and* it stays in the session context to be re-sent on every later turn
+of that conversation, which the agent pays for each time.
 
 **`--notify-me` is the one to reach for.** It writes a return address onto the
 delegated turn, so when that turn finishes the result is queued as a new turn for

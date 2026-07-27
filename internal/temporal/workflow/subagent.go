@@ -105,9 +105,15 @@ func SubAgent(ctx workflow.Context, in Input) error {
 		if state.shouldContinue(ctx) && !hasBuffered(enqueueCh, steerCh, stopCh) {
 			log.Info("continuing as new", "turn_count", state.turnCount, "queued", len(state.queue))
 			return workflow.NewContinueAsNewError(ctx, SubAgent, Input{
-				AgentID:   state.agentID,
-				Queue:     state.queue,
-				TurnCount: state.turnCount,
+				AgentID: state.agentID,
+				Queue:   state.queue,
+				// Reset, not carried. The count bounds one run's history, and the
+				// continued run starts with none — carrying it forward made
+				// shouldContinue true again on the first loop, so an agent that
+				// reached the limit with anything queued continued as new about
+				// once a second and never ran the turn. The cumulative count lives
+				// in SQLite; this is only the seam counter.
+				TurnCount: 0,
 				// Carried across, or the agent would try to create a session
 				// that already exists after every history truncation.
 				SessionReady: state.sessionReady,

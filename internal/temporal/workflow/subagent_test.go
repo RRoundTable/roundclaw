@@ -2,12 +2,15 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/temporal/activity"
@@ -368,4 +371,48 @@ func TestStatusQueryReportsQueueDepth(t *testing.T) {
 	env.RegisterDelayedCallback(env.CancelWorkflow, time.Minute)
 
 	env.ExecuteWorkflow(SubAgent, Input{AgentID: "test-agent"})
+}
+
+// The seam counter bounds one run's history, so the continued run — which starts
+// with no history at all — must be handed a reset one.
+//
+// Carrying it forward made shouldContinue true again on the continued run's very
+// first loop. An agent that reached the limit with anything queued therefore
+// continued as new about once a second, forever, and never ran the turn that was
+// waiting. It was found in production doing exactly that: a pm thread had a
+// delegation result queued behind a counter stuck at the limit.
+func TestContinueAsNewResetsTheSeamCounter(t *testing.T) {
+	env := newEnv(t)
+
+	env.OnActivity("RunClaudeTurn", mock.Anything, mock.Anything).
+		Return(core.TurnResult{TurnID: 1, Status: core.TurnDone}, nil)
+	env.OnActivity("DeliverResponse", mock.Anything, mock.Anything).Return(nil)
+
+	// At the limit with work waiting: the exact state that span.
+	env.ExecuteWorkflow(SubAgent, Input{
+		AgentID:   "test-agent",
+		TurnCount: maxTurnsPerRun,
+		Queue:     []core.Request{request(1, "waiting")},
+	})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not finish")
+	}
+
+	var can *workflow.ContinueAsNewError
+	if !errors.As(env.GetWorkflowError(), &can) {
+		t.Fatalf("workflow did not continue as new: %v", env.GetWorkflowError())
+	}
+
+	var next Input
+	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil {
+		t.Fatalf("decode continue-as-new input: %v", err)
+	}
+	if next.TurnCount != 0 {
+		t.Errorf("continued run starts at turn_count %d; it would continue as new "+
+			"again immediately and spin without ever running the queued turn", next.TurnCount)
+	}
+	if len(next.Queue) != 1 || next.Queue[0].TurnID != 1 {
+		t.Errorf("the queued request was lost across the seam: %+v", next.Queue)
+	}
 }

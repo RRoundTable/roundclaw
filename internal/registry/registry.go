@@ -94,10 +94,22 @@ var migrations = []string{
 
 // Agent is a runtime agent definition.
 type Agent struct {
-	ID             string   `json:"id"`
-	Description    string   `json:"description"`
-	AgentName      string   `json:"agent_name"`
-	PermissionMode string   `json:"permission_mode"`
+	ID             string `json:"id"`
+	Description    string `json:"description"`
+	AgentName      string `json:"agent_name"`
+	PermissionMode string `json:"permission_mode"`
+	// AllowedTools pre-approves tools so they run without asking. It does not
+	// restrict: a tool left off the list is not withheld, it is merely not
+	// approved in advance — and every agent here runs headless, where nothing
+	// asks. Measured against the image, an agent whose list names four tools is
+	// offered all twenty-nine, and one that names none is offered all
+	// twenty-nine too.
+	//
+	// So a narrow list is documentation of intent, not a limit. What actually
+	// withholds a tool is a deny rule; the eval containers build one (see
+	// activity.evalDeniedTools), and there is deliberately no per-agent field
+	// for it yet, because handing every existing agent a real restriction is a
+	// change to make on purpose rather than by filling in a form.
 	AllowedTools   []string `json:"allowed_tools"`
 	AdditionalDirs []string `json:"additional_dirs"`
 	// WorkDir points the agent's /workspace at an existing host directory,

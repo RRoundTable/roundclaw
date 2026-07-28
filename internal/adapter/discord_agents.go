@@ -111,8 +111,12 @@ func (d *Discord) openAgentForm(i *discordgo.InteractionCreate, customID, title 
 			MaxLength:   40,
 		}),
 		row(discordgo.TextInput{
-			CustomID:    fieldTools,
-			Label:       "Allowed tools (comma separated)",
+			CustomID: fieldTools,
+			// Not "allowed tools": the field pre-approves rather than restricts,
+			// and agents run headless where nothing asks, so a short list here
+			// withholds nothing. Saying "auto-approve" in the one place an
+			// operator types it is cheaper than correcting the belief later.
+			Label:       "Auto-approve tools (does not restrict)",
 			Style:       discordgo.TextInputParagraph,
 			Placeholder: "Read, Grep, Glob, Bash, Edit, Write",
 			Value:       strings.Join(prefill.AllowedTools, ", "),

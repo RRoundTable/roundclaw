@@ -246,3 +246,11 @@ it covers versions, evals and the approval queue.
 - **A managed workspace starts empty in a new conversation.** An agent asked to
   fix a checkout it has never cloned lands in an empty directory. Give it a git
   `work_dir` first.
+- **`allowed_tools` does not restrict anything.** It pre-approves tools so they
+  run without a prompt, and agents run headless, where nothing prompts. An agent
+  whose list names four tools is offered all twenty-nine the CLI has; so is one
+  whose list is empty. This has been measured against the image, under every
+  permission mode, including `acceptEdits`. Write the list to record what an
+  agent is *for* if you like, but do not read it as a limit, and do not answer
+  "can this agent run arbitrary shell commands?" from it — the answer is yes.
+  What withholds a tool is a deny rule, which no agent field exposes yet.

@@ -58,6 +58,52 @@ func TestJudgeDeniesEveryToolTheImageOffers(t *testing.T) {
 	}
 }
 
+// An eval case keeps the tools it works with and loses the ones that reach past
+// its container. Both halves matter: denying too little leaves a run able to
+// reschedule the fleet, and denying too much measures a crippled agent.
+func TestEvalCaseKeepsItsToolsAndLosesFleetControl(t *testing.T) {
+	image := os.Getenv("ROUNDCLAW_IMAGE_TEST")
+	if image == "" {
+		t.Skip("set ROUNDCLAW_IMAGE_TEST to the agent image to run this against a real container")
+	}
+	credEnv := ""
+	for _, name := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"} {
+		if os.Getenv(name) != "" {
+			credEnv = name
+			break
+		}
+	}
+	if credEnv == "" {
+		t.Skip("no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in the environment")
+	}
+
+	// What should survive is derived from the image rather than listed here: a
+	// name written down would only say what some CLI version happened to offer
+	// the day it was written, and asserting on a tool the image never had is a
+	// failure about the test, not about the deny list.
+	offered := toolsOffered(t, image, credEnv, nil)
+	denied := make(map[string]bool, len(evalDeniedTools))
+	for _, name := range evalDeniedTools {
+		denied[name] = true
+	}
+
+	left := toolsOffered(t, image, credEnv, evalDeniedTools)
+	has := make(map[string]bool, len(left))
+	for _, name := range left {
+		has[name] = true
+	}
+
+	for _, name := range offered {
+		switch {
+		case denied[name] && has[name]:
+			t.Errorf("%s reaches past the case's container and is still offered", name)
+		case !denied[name] && !has[name]:
+			t.Errorf("%s went missing; a case needs the agent's own tools to measure it", name)
+		}
+	}
+	t.Logf("case keeps %d of %d tools: %v", len(left), len(offered), left)
+}
+
 // toolsOffered reads the tool list out of the CLI's init event, which names
 // every tool the model is shown before it does anything.
 func toolsOffered(t *testing.T, image, credEnv string, deny []string) []string {

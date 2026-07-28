@@ -117,6 +117,36 @@ type CaseOutcome struct {
 	AssertionFailure string `json:"assertion_failure,omitempty"`
 }
 
+// evalDeniedTools names what a case may not reach, whatever the agent is
+// otherwise granted.
+//
+// The line is the container, not read-versus-write. A case writing files is not
+// a side effect: it works in a throwaway directory, its extra mounts are
+// read-only, and producing files is half of what several agents are for —
+// stripping that would measure a crippled agent, which is the thing this
+// package says elsewhere it will not do. What must not happen is a case
+// reaching *out* of that directory and changing the fleet it belongs to: a run
+// that schedules work, wakes another agent, or moves the real repository's
+// worktrees has stopped being a measurement.
+//
+// The same reasoning as judgeDeniedTools applies to why this is a deny list and
+// not an allow list. The agent's own AllowedTools travels with the spec, but it
+// approves rather than restricts, so under bypassPermissions it withholds
+// nothing — pm and dev grant it nothing at all and would still be handed every
+// tool the CLI has.
+//
+// Unconditional, including under full_grants. That flag says a case needs real
+// credentials, not that it may reschedule the fleet.
+var evalDeniedTools = []string{
+	// Fleet control: scheduling, delegation, and waking other agents.
+	"CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
+	"Workflow", "Task", "TaskCreate", "TaskGet",
+	"TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
+	"SendMessage", "PushNotification", "RemoteTrigger", "Monitor",
+	// The real repository, rather than the copy the case was given.
+	"EnterWorktree", "ExitWorktree",
+}
+
 // evalWorkspace prepares the throwaway directory one case runs in.
 //
 // It clears share_workspace before asking. That flag means "every conversation
@@ -245,12 +275,15 @@ func (a *Activities) RunEvalCase(ctx context.Context, in RunCaseInput) (CaseOutc
 		AgentName:      in.Agent.AgentName,
 		PermissionMode: permission,
 		AllowedTools:   in.Agent.AllowedTools,
-		Model:          model,
-		Network:        a.cfg.Container.Network,
-		GroupAdd:       groupAdd,
-		Secrets:        secrets,
-		Skills:         skills,
-		Prompt:         toolNote + in.Case.Prompt,
+		// The agent's grant says what may run without asking; this says what may
+		// not run at all. See evalDeniedTools.
+		DisallowedTools: evalDeniedTools,
+		Model:           model,
+		Network:         a.cfg.Container.Network,
+		GroupAdd:        groupAdd,
+		Secrets:         secrets,
+		Skills:          skills,
+		Prompt:          toolNote + in.Case.Prompt,
 	}
 
 	turnID, _, err := st.CreateTurn(ctx, store.NewTurn{

@@ -197,6 +197,45 @@ execution — so the caller has something to poll immediately, the execution ID 
 derived from the run ID (`roundclaw-eval-<id>`, retry-safe), and a start that
 fails marks the row failed rather than leaving it at "running" forever.
 
+```mermaid
+flowchart TB
+    START["Dispatcher.StartEvalRun<br/>writes the eval_runs row first"]
+    START --> PLAN["LoadEvalPlan<br/>set · the pinned version's definition + persona"]
+    PLAN --> ON{"set enabled?"}
+    ON -->|no| FIN
+
+    subgraph loop["one case at a time"]
+        RUN["RunEvalCase<br/>throwaway workspace · secrets withheld"]
+        RUN --> E{"activity or container error?"}
+        E -->|yes| ZERO["zero, with the reason"]
+        E -->|no| A{"must_contain / must_not_contain broken?"}
+        A -->|yes| ZERO
+        A -->|no| R{"rubric set?"}
+        R -->|no| SMOKE["1 · it answered at all"]
+        R -->|yes| JUDGE["JudgeEvalCase<br/>small model · no tools"]
+        JUDGE --> JOK{"judge returned a verdict?"}
+        JOK -->|no| UNMARKED["unmarked — not zero"]
+        JOK -->|yes| MARK["score · passed · reason"]
+        ZERO --> REC
+        SMOKE --> REC
+        UNMARKED --> REC
+        MARK --> REC
+        REC["RecordEvalCase<br/>written now, not at the end"]
+    end
+
+    ON -->|yes| RUN
+    REC -.->|next case| RUN
+    REC --> CLEAN["CleanEvalWorkspaces<br/>best effort"]
+    CLEAN --> FIN["FinishEvalRun<br/>totals the recorded rows"]
+    FIN --> NOTIFY["NotifyEvalRun<br/>wakes whoever asked"]
+```
+
+Every path down the middle of that loop ends at the same place, which is the
+point: a case that errored, a case that broke an exact rule and a case a judge
+never saw all leave a row behind. The only exit that skips it is a *failure to
+write* one — losing a result would leave the aggregate describing cases it
+cannot see, so that one does stop the run.
+
 - `LoadEvalPlan` reads the set and the pinned version's definition **and**
   persona. Version 0 means "whatever is live" and is resolved to a concrete
   number here, because a comparison needs both sides pinned.

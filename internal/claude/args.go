@@ -89,7 +89,17 @@ type RunSpec struct {
 
 	AgentName      string
 	PermissionMode string
-	AllowedTools   []string
+	// AllowedTools is an auto-approval list, not a restriction. It says which
+	// tools may run without asking; it cannot say that nothing may run.
+	AllowedTools []string
+	// DisallowedTools are refused outright, whatever the permission mode says.
+	//
+	// It exists because AllowedTools cannot express "no tools at all". An empty
+	// allow list approves nothing in advance, which under bypassPermissions —
+	// the mode every unattended container here runs in, because there is nobody
+	// to answer a prompt — means everything is approved anyway. Denying by name
+	// is the only rule that still binds once prompting is switched off.
+	DisallowedTools []string
 	// Model overrides the CLI's default model for this run. Empty uses the
 	// default. Workflow steps set it to run a cheap or a strong model per step.
 	Model string
@@ -261,6 +271,9 @@ func (s RunSpec) Args() ([]string, error) {
 	}
 	if len(s.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(s.AllowedTools, ","))
+	}
+	if len(s.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(s.DisallowedTools, ","))
 	}
 	for _, d := range addDirs {
 		args = append(args, "--add-dir", d)

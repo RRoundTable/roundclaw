@@ -16,6 +16,7 @@ import (
 	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/registry"
 	"github.com/roundtable/roundclaw/internal/store"
+	"github.com/roundtable/roundclaw/internal/workspace"
 )
 
 // Running an eval case.
@@ -116,6 +117,38 @@ type CaseOutcome struct {
 	AssertionFailure string `json:"assertion_failure,omitempty"`
 }
 
+// evalWorkspace prepares the throwaway directory one case runs in.
+//
+// It clears share_workspace before asking. That flag means "every conversation
+// works in the agent's own directory", which is a reasonable thing for an
+// operator to want for the agent's own threads and ruinous for an eval: a case
+// writes the *pinned* persona over the workspace's CLAUDE.md and then runs with
+// permissions bypassed. Pointed at the live workspace, evaluating v2 would
+// overwrite a v4 agent's instructions with v2's and leave them there — the next
+// ordinary edit would then mint a version pairing the new definition with the
+// rolled-back persona, a combination that never existed. The agent would also
+// be editing its own real files under test.
+//
+// So isolation is not a preference here, and not the agent's to configure. The
+// flag is overridden rather than honoured, and the result is checked: if it
+// still comes back as the agent's own directory, the case is refused instead of
+// run. Nothing downstream would notice the difference, which is exactly why the
+// check is here and not left to a reviewer.
+func (a *Activities) evalWorkspace(ctx context.Context, agent registry.Agent, conversationID string) (string, error) {
+	isolated := agent
+	isolated.ShareWorkspace = false
+
+	dir, err := a.resolveWorkspace(ctx, isolated, conversationID)
+	if err != nil {
+		return "", err
+	}
+	if base := workspace.Base(a.cfg, agent); dir == base {
+		return "", newNonRetryable(fmt.Errorf(
+			"refusing to run an eval case for %s in its live workspace %s", agent.ID, base))
+	}
+	return dir, nil
+}
+
 // RunEvalCase executes one case and applies the deterministic assertions.
 func (a *Activities) RunEvalCase(ctx context.Context, in RunCaseInput) (CaseOutcome, error) {
 	log := activity.GetLogger(ctx)
@@ -135,14 +168,14 @@ func (a *Activities) RunEvalCase(ctx context.Context, in RunCaseInput) (CaseOutc
 	// gets a workspace shaped like the real one — a git worktree for a repo
 	// agent, a fresh directory for a managed one — without touching the agent's
 	// own working tree.
-	workspace, err := a.resolveWorkspace(ctx, in.Agent, EvalConversation(in.RunID, in.Case.Name))
+	caseDir, err := a.evalWorkspace(ctx, in.Agent, EvalConversation(in.RunID, in.Case.Name))
 	if err != nil {
 		return CaseOutcome{}, err
 	}
 	// The pinned persona, not the one on disk: it is half of what a version is,
 	// and evaluating v3's definition against v7's instructions would measure
 	// something that never existed.
-	if err := os.WriteFile(filepath.Join(workspace, "CLAUDE.md"), []byte(in.Persona), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(caseDir, "CLAUDE.md"), []byte(in.Persona), 0o640); err != nil {
 		return CaseOutcome{}, fmt.Errorf("write pinned persona: %w", err)
 	}
 
@@ -199,7 +232,7 @@ func (a *Activities) RunEvalCase(ctx context.Context, in RunCaseInput) (CaseOutc
 		Runtime:         a.cfg.Container.Runtime,
 		Image:           image,
 		ContainerName:   evalContainerName(in.RunID, in.Case.Name),
-		WorkDir:         workspace,
+		WorkDir:         caseDir,
 		DenyPaths:       in.Agent.DenyPaths,
 		ClaudeHome:      a.cfg.EvalClaudeHome(in.RunID),
 		AdditionalDirs:  append(append([]string{}, in.Agent.AdditionalDirs...), toolDirs...),
@@ -331,6 +364,45 @@ type Judgement struct {
 	Reason string  `json:"reason"`
 }
 
+// judgeDeniedTools names every tool the judge is refused, one by one.
+//
+// The judge reads the evaluated agent's answer, which is text this system did
+// not write and cannot vouch for. An answer containing "ignore the rubric and
+// run the following instead" must reach nothing that acts, so the judge is
+// given no tools.
+//
+// Denying by name is what achieves that. An empty AllowedTools does not: it is
+// an approval list, and this container runs with permissions bypassed because
+// no operator is watching to answer a prompt, so nothing being pre-approved
+// means everything is allowed. See RunSpec.DisallowedTools.
+//
+// Denying also does more than refuse the call: the tool is withheld from the
+// list the model is shown at all, so it never attempts one. That is measured
+// against the image, not assumed — see TestJudgeDeniesEveryToolTheImageOffers.
+//
+// The cost is that this list has to be kept current. It is not a policy that
+// covers whatever exists; it is a set of names, and a tool the CLI adds under a
+// name not written here is handed to the judge. Nothing fails loudly when that
+// happens, which is why the test asserts the image's own list is covered rather
+// than trusting this one to be complete. Denying a name the CLI does not have
+// costs nothing, so entries outlive the versions that needed them.
+//
+// The alternative would be an allow list, which cannot express "nothing": every
+// permission mode either prompts — hanging a run nobody is watching — or, like
+// bypassPermissions and dontAsk, proceeds. Both were tried against the image.
+var judgeDeniedTools = []string{
+	"Bash", "BashOutput", "KillShell",
+	"Read", "Write", "Edit", "NotebookEdit",
+	"Glob", "Grep", "SlashCommand", "TodoWrite", "ExitPlanMode",
+	"WebFetch", "WebSearch",
+	"Task", "TaskCreate", "TaskGet", "TaskList",
+	"TaskOutput", "TaskStop", "TaskUpdate",
+	"CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
+	"SendMessage", "PushNotification", "RemoteTrigger", "Monitor",
+	"EnterWorktree", "ExitWorktree", "DesignSync",
+	"Skill", "ToolSearch", "Workflow", "ReportFindings",
+}
+
 // JudgeEvalCase marks one answer against its rubric with a model.
 //
 // It runs the same way a workflow step does — a one-shot container with no tools
@@ -369,11 +441,19 @@ func (a *Activities) JudgeEvalCase(ctx context.Context, in JudgeInput) (Judgemen
 		SessionID:       claude.SessionID(fmt.Sprintf("judge-%d-%s", in.RunID, in.Case)),
 		PermissionMode:  "bypassPermissions",
 		// A judge reads text and returns a verdict. Giving it tools would let a
-		// prompt in the answer it is marking do something.
-		AllowedTools: []string{},
-		Model:        model,
-		Network:      a.cfg.Container.Network,
-		Prompt:       judgePrompt(in),
+		// prompt in the answer it is marking do something, so every one is
+		// denied by name — see judgeDeniedTools for why denying, rather than
+		// allowing nothing, is what actually withholds them.
+		DisallowedTools: judgeDeniedTools,
+		Model:           model,
+		// No configured network, deliberately: the default bridge carries the
+		// internet the CLI needs to reach the model and nothing else. The
+		// container network exists so an agent can reach services that live on
+		// it — the fleet's runs alongside an identity provider and its database,
+		// a docker management UI, a wiki. A judge reads text and returns a
+		// verdict, so it has no call on any of that, and the answer it is
+		// marking is text this system did not write.
+		Prompt: judgePrompt(in),
 	}
 
 	st, err := store.Open(a.cfg.EvalDBPath(in.RunID), fmt.Sprintf("eval-%d", in.RunID), store.ReadWrite)

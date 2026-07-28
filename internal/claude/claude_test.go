@@ -189,6 +189,41 @@ func TestArgsNoGroupAddByDefault(t *testing.T) {
 	}
 }
 
+// An empty AllowedTools must not be mistaken for "no tools": the flag is an
+// approval list, so emitting nothing is correct here — withholding tools is
+// DisallowedTools' job, and this is the pair of tests that says so.
+func TestArgsEmptyAllowedToolsEmitsNoFlag(t *testing.T) {
+	s := baseSpec()
+	s.AllowedTools = []string{}
+	args, err := s.Args()
+	if err != nil {
+		t.Fatalf("args: %v", err)
+	}
+	if indexOf(args, "--allowedTools") >= 0 {
+		t.Errorf("an empty allow list should emit no --allowedTools flag, got %v", args)
+	}
+}
+
+func TestArgsDisallowedToolsAreDenied(t *testing.T) {
+	args, err := baseSpec().Args()
+	if err != nil {
+		t.Fatalf("args: %v", err)
+	}
+	if indexOf(args, "--disallowedTools") >= 0 {
+		t.Errorf("no denied tools should emit no --disallowedTools flag, got %v", args)
+	}
+
+	s := baseSpec()
+	s.DisallowedTools = []string{"Bash", "Write"}
+	args, err = s.Args()
+	if err != nil {
+		t.Fatalf("args with denied tools: %v", err)
+	}
+	if !hasPair(args, "--disallowedTools", "Bash,Write") {
+		t.Errorf("--disallowedTools Bash,Write missing from %v", args)
+	}
+}
+
 func TestArgsModelIsOptional(t *testing.T) {
 	args, err := baseSpec().Args()
 	if err != nil {

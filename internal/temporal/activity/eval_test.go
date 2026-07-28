@@ -1,6 +1,9 @@
 package activity
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -126,5 +129,64 @@ func TestEvalConversationIsStablePerCase(t *testing.T) {
 	}
 	if a == EvalConversation(8, "basic recall") {
 		t.Error("two runs share a conversation name; their workspaces would collide")
+	}
+}
+
+// share_workspace means the agent's threads all work in its real directory. An
+// eval case must not: it writes the pinned persona over the workspace's
+// CLAUDE.md and runs with permissions bypassed, so honouring the flag would
+// roll a live agent's instructions back to whatever version was under test and
+// leave the case editing the files the agent actually works in.
+func TestEvalWorkspaceIsolatesDespiteShareWorkspace(t *testing.T) {
+	a, _, _ := notifyHarness(t)
+
+	agent := registry.Agent{ID: "gameart", Enabled: true, ShareWorkspace: true}
+	base := workDirFor(a.cfg, agent)
+	if err := os.MkdirAll(base, 0o750); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "CLAUDE.md"), []byte("live persona"), 0o600); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
+
+	dir, err := a.evalWorkspace(context.Background(), agent, EvalConversation(7, "some case"))
+	if err != nil {
+		t.Fatalf("evalWorkspace: %v", err)
+	}
+	if dir == base {
+		t.Fatalf("an eval case would run in the live workspace %s", base)
+	}
+
+	// The live persona has to survive a case that overwrites the one in its own
+	// workspace — that overwrite is what would otherwise roll the agent back.
+	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("pinned persona"), 0o600); err != nil {
+		t.Fatalf("write pinned persona: %v", err)
+	}
+	live, err := os.ReadFile(filepath.Join(base, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read live CLAUDE.md: %v", err)
+	}
+	if string(live) != "live persona" {
+		t.Errorf("the live persona is now %q; an eval case overwrote it", live)
+	}
+}
+
+// The ordinary agent path is untouched: a case for an agent without the flag
+// still gets its own directory, as it always did.
+func TestEvalWorkspaceIsolatesWithoutShareWorkspace(t *testing.T) {
+	a, _, _ := notifyHarness(t)
+
+	agent := registry.Agent{ID: "pm", Enabled: true}
+	base := workDirFor(a.cfg, agent)
+	if err := os.MkdirAll(base, 0o750); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+
+	dir, err := a.evalWorkspace(context.Background(), agent, EvalConversation(7, "some case"))
+	if err != nil {
+		t.Fatalf("evalWorkspace: %v", err)
+	}
+	if dir == base {
+		t.Fatalf("an eval case would run in the live workspace %s", base)
 	}
 }

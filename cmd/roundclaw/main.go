@@ -658,7 +658,11 @@ func cmdSecret(args []string) int {
 	base, token := commonFlags(fs)
 	agent := fs.String("agent", "", "scope the secret to one agent (default: global)")
 	value := fs.String("value", "", "secret value (set only; omit to read from stdin)")
-	if err := fs.Parse(rest); err != nil {
+	// parseFlags, not fs.Parse: `secret set NAME --agent gameart` is how anyone
+	// writes it, and a plain Parse stops at NAME and never sees --agent — storing
+	// a credential globally, readable by every agent, while reporting success.
+	pos, err := parseFlags(fs, rest)
+	if err != nil {
 		return 2
 	}
 	c := newClient(*base, *token)
@@ -687,14 +691,14 @@ func cmdSecret(args []string) int {
 		}
 		return 0
 	case "set":
-		if fs.NArg() < 1 {
+		if len(pos) < 1 {
 			fmt.Fprintln(os.Stderr, "usage: roundclaw secret set <name> [value] [--agent id]")
 			return 2
 		}
-		name := fs.Arg(0)
+		name := pos[0]
 		val := *value
-		if val == "" && fs.NArg() >= 2 {
-			val = fs.Arg(1)
+		if val == "" && len(pos) >= 2 {
+			val = pos[1]
 		}
 		if val == "" {
 			// Read from stdin, so the value never lands in shell history or the
@@ -714,11 +718,11 @@ func cmdSecret(args []string) int {
 		fmt.Printf("set %s%s\n", name, scopeSuffix(*agent))
 		return 0
 	case "rm":
-		if fs.NArg() < 1 {
+		if len(pos) < 1 {
 			fmt.Fprintln(os.Stderr, "usage: roundclaw secret rm <name> [--agent id]")
 			return 2
 		}
-		name := fs.Arg(0)
+		name := pos[0]
 		if err := c.do(http.MethodDelete, prefix+"/"+name, nil, nil); err != nil {
 			return fail(err)
 		}

@@ -320,3 +320,49 @@ func TestSayToDelegatorUsesReplyToConversation(t *testing.T) {
 		t.Errorf("conversation = %v, want thread-1 (the delegator's, not mine)", got["conversation"])
 	}
 }
+
+// --agent written after the secret's name must still scope it. Losing that flag
+// does not fail — it stores the credential globally, where every agent in the
+// fleet reads it, and prints success either way. This is the one flag whose
+// silent loss is a leak rather than an inconvenience.
+func TestSecretSetAcceptsAgentAfterPositionals(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		writeTestJSON(w, http.StatusOK, map[string]any{})
+	}))
+	defer srv.Close()
+
+	code := cmdSecret([]string{
+		"set", "GEMINI_API_KEY", "sk-test", // positionals first, as anyone would write it
+		"--agent", "gameart", "--url", srv.URL, "--token", "t",
+	})
+	if code != 0 {
+		t.Fatalf("cmdSecret exit = %d, want 0", code)
+	}
+	if path != "/v1/agents/gameart/secrets/GEMINI_API_KEY" {
+		t.Errorf("path = %q; the secret was stored globally, not scoped to gameart", path)
+	}
+}
+
+// rm reaches the same scope set does, so a secret can be removed from where it
+// was put rather than silently deleting a global one that was never there.
+func TestSecretRmAcceptsAgentAfterPositionals(t *testing.T) {
+	var path, method string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, method = r.URL.Path, r.Method
+		writeTestJSON(w, http.StatusOK, map[string]any{})
+	}))
+	defer srv.Close()
+
+	code := cmdSecret([]string{
+		"rm", "GEMINI_API_KEY", "--agent", "gameart",
+		"--url", srv.URL, "--token", "t",
+	})
+	if code != 0 {
+		t.Fatalf("cmdSecret exit = %d, want 0", code)
+	}
+	if method != http.MethodDelete || path != "/v1/agents/gameart/secrets/GEMINI_API_KEY" {
+		t.Errorf("%s %s, want DELETE /v1/agents/gameart/secrets/GEMINI_API_KEY", method, path)
+	}
+}

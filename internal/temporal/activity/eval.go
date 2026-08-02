@@ -298,7 +298,7 @@ func (a *Activities) RunEvalCase(ctx context.Context, in RunCaseInput) (CaseOutc
 	}
 
 	a.removeOrphan(ctx, spec)
-	result, streamErr := a.stream(ctx, st, spec, args, RunTurnInput{TurnID: turnID})
+	result, _, streamErr := a.stream(ctx, st, spec, args, RunTurnInput{TurnID: turnID})
 	_ = st.FinishTurn(context.WithoutCancel(ctx), turnID, result)
 	if streamErr != nil {
 		return CaseOutcome{}, streamErr
@@ -506,7 +506,7 @@ func (a *Activities) JudgeEvalCase(ctx context.Context, in JudgeInput) (Judgemen
 		return Judgement{}, newNonRetryable(err)
 	}
 	a.removeOrphan(ctx, spec)
-	result, streamErr := a.stream(ctx, st, spec, args, RunTurnInput{TurnID: turnID})
+	result, _, streamErr := a.stream(ctx, st, spec, args, RunTurnInput{TurnID: turnID})
 	_ = st.FinishTurn(context.WithoutCancel(ctx), turnID, result)
 	if streamErr != nil {
 		return Judgement{}, streamErr

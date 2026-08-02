@@ -223,37 +223,9 @@ func TestRunClaudeTurnRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
-// The first turn creates the session; later turns resume it. The fake runtime
-// records argv, so this checks the flags that actually reach the CLI.
-func TestRunClaudeTurnPassesSessionFlags(t *testing.T) {
-	dir := t.TempDir()
-	a, st, _ := newActivities(t, fakeRuntime(t, dir, false))
-
-	for i, resume := range []bool{false, true} {
-		turnID, _, err := st.CreateTurn(t.Context(), store.NewTurn{Request: "hi", Origin: core.HTTPPollOrigin(), IdempotencyKey: ""})
-		if err != nil {
-			t.Fatalf("create turn %d: %v", i, err)
-		}
-		if _, err := runTurn(t, a, RunTurnInput{
-			AgentID: "tester", TurnID: turnID, WorkflowID: "roundclaw-tester-default",
-			Prompt: "hi", Resume: resume,
-		}); err != nil {
-			t.Fatalf("turn %d: %v", i, err)
-		}
-	}
-
-	calls, err := os.ReadFile(filepath.Join(dir, "calls.log"))
-	if err != nil {
-		t.Fatalf("read runtime calls: %v", err)
-	}
-	text := string(calls)
-	if !strings.Contains(text, "--session-id") {
-		t.Error("the first turn did not create a session")
-	}
-	if !strings.Contains(text, "--resume") {
-		t.Error("the second turn did not resume the session")
-	}
-}
+// Which session flag reaches the CLI, and what happens when it is the wrong one,
+// live in session_test.go — the decision is made from the transcript on disk
+// rather than from anything this input carries.
 
 // A model reaches the CLI only if the activity threads it from the definition
 // into the argv, so this asserts on the runtime's recorded command rather than

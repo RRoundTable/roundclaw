@@ -12,6 +12,12 @@
 #
 # It records its own argv to /workspace/last-args so tests can assert that
 # roundclaw passed --session-id on the first turn and --resume afterwards.
+#
+# It also keeps a transcript per session, in the same place and with the same
+# refusals as the real CLI: --session-id for a session that exists is an error,
+# and so is --resume for one that does not. Modelling only the happy path is why
+# a fleet-wide wedge — every turn refused for a session it had itself created —
+# went unnoticed by a suite that otherwise covered these flags closely.
 
 set -e
 
@@ -43,7 +49,29 @@ done
 
 printf '%s %s\n' "$MODE" "$SESSION" >> /workspace/last-args
 
-emit() { printf '%s\n' "$1"; }
+# The transcript, where the real CLI keeps it: a project directory named after
+# the working directory, holding one file per session.
+TRANSCRIPTS="$HOME/.claude/projects/$(printf '%s' "$PWD" | tr '/' '-')"
+TRANSCRIPT="$TRANSCRIPTS/$SESSION.jsonl"
+
+case "$MODE" in
+    create)
+        if [ -f "$TRANSCRIPT" ]; then
+            echo "Error: Session ID $SESSION is already in use." >&2
+            exit 1
+        fi
+        mkdir -p "$TRANSCRIPTS"
+        : > "$TRANSCRIPT"
+        ;;
+    resume)
+        if [ ! -f "$TRANSCRIPT" ]; then
+            echo "Error: No conversation found with session ID: $SESSION" >&2
+            exit 1
+        fi
+        ;;
+esac
+
+emit() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$TRANSCRIPT"; }
 
 emit "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$SESSION\",\"model\":\"fake\"}"
 emit "{\"type\":\"assistant\",\"session_id\":\"$SESSION\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"working on it\"}]}}"

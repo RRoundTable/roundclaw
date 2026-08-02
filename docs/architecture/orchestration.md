@@ -123,12 +123,20 @@ State held in the workflow:
 | `turnCount` | cumulative, reported by the status query |
 | `currentTurnID` | the turn being executed |
 | `lifecycle` | idle / running / stopping |
-| `sessionReady` | some turn actually opened the Claude session |
-| `sessionLost` | a recap is owed to the next turn |
 
 The queue is a slice, not a "messages arrived" flag. Three requests during one
 long turn produce three turns and three replies — that regression is the reason
 roundclaw exists.
+
+Nothing about the Claude session is in that table, and nothing about the world
+outside the workflow belongs there. The workflow held whether the session was
+open until a turn that failed before the container started was read as the
+session being gone; every later turn then tried to create one that already
+existed, for good. Replay rebuilt the wrong value as faithfully as it would have
+rebuilt the right one, and Continue-As-New carried it across. The test is whether
+the workflow can check the thing it is holding: it owns its queue, and it cannot
+see the filesystem, which is the signal that the session was never its decision
+to make.
 
 **Signals**
 
@@ -146,9 +154,8 @@ rule. It never reads SQLite: a query handler runs in workflow context and cannot
 do I/O.
 
 **Continue-As-New** fires at `maxTurnsPerRun = 100` or when
-`GetContinueAsNewSuggested()` is true. The queue, `sessionReady` and
-`sessionLost` cross the boundary — dropping any of them would either lose a
-request or make the next turn try to create a session that already exists.
+`GetContinueAsNewSuggested()` is true. The queue crosses the boundary, because
+dropping it would lose a request. Nothing else does.
 
 The turn count deliberately does **not**. It bounds one run's history, and the
 continued run starts with none. Carrying it forward made the limit true again on
@@ -308,11 +315,19 @@ as the heartbeat interval — and the SDK throttles outbound heartbeats to ~80% 
 `MaxHeartbeatThrottleInterval: 1s` alongside `HeartbeatTimeout: 10s`.
 
 **Session-loss recovery.** Transcripts are cleaned up after
-`cleanupPeriodDays`, and a volume can be lost. When the session is gone, the
-activity builds a recap from the last N turns of the *same conversation*
-(`store.RecentTurnsIn`) and starts a fresh session with it. This is the only
-place the turn window is fed back into a prompt — the live session already holds
-the context, so replaying it every turn would just be duplication.
+`cleanupPeriodDays`, and a volume can be lost — both behind the system's back,
+which is why nothing may cache whether a session exists. Any turn that opens a
+session rather than continuing one builds a recap from the last N turns of the
+*same conversation* (`store.RecentTurnsIn`) and starts with it. That covers a
+conversation whose transcript has gone as well as one that never had a session,
+because the recap is empty when there is no history to recap. Recovery costs no
+turn of its own: the loss is seen before the run when the transcript is missing,
+and inside the run when the CLI refuses the resume.
+
+This is the only place the turn window is fed back into a prompt — a live session
+already holds the context, so replaying it every turn would just be duplication.
+A turn that continues a session therefore carries no recap, including the second
+attempt after a refused create.
 
 ### `LoadWorkflow`, `RunWorkflowStep`
 

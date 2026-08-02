@@ -129,7 +129,7 @@ func (a *Activities) RunWorkflowStep(ctx context.Context, in RunStepInput) (Step
 	}
 
 	a.removeOrphan(ctx, spec)
-	result, streamErr := a.stream(ctx, st, spec, args, RunTurnInput{TurnID: turnID})
+	result, _, streamErr := a.stream(ctx, st, spec, args, RunTurnInput{TurnID: turnID})
 	_ = st.FinishTurn(context.WithoutCancel(ctx), turnID, result)
 	if streamErr != nil {
 		return StepResult{}, streamErr

@@ -125,14 +125,4 @@ type TurnResult struct {
 	// ErrorMessage is set when Status is TurnError. It is delivered to the
 	// caller, so it must stay free of credentials and absolute host paths.
 	ErrorMessage string `json:"error_message,omitempty"`
-
-	// SessionEstablished reports that the CLI actually opened a session this
-	// turn — it emitted an init event.
-	//
-	// The workflow decides --session-id versus --resume from this rather than
-	// from a turn counter. Counting turns looked equivalent until a turn failed
-	// before the CLI ever started: the count advanced anyway, every later turn
-	// tried to resume a session that was never created, and the agent was
-	// permanently wedged by one early failure.
-	SessionEstablished bool `json:"session_established,omitempty"`
 }

@@ -24,10 +24,20 @@ Consequences:
   purpose, accepting that one-time loss — `roundclaw-<agentID>-<conv>` for every
   conversation, with a `default` sentinel for the default one — and must not
   drift again.
-- Whether to pass `--session-id` (create) or `--resume` (continue) is decided by
-  `sessionReady` — *observed* session establishment, not turn count. An early
-  failure once wedged an agent permanently because `turnCount > 0` claimed a
-  session existed that never had.
+- Whether to pass `--session-id` (create) or `--resume` (continue) is decided in
+  the activity, per turn, by looking for the transcript at
+  `claude.TranscriptPath`. Nothing about the session is remembered between turns.
+- A deterministic ID is only safe if the operation using it is idempotent, and
+  `--session-id` is not: the CLI refuses an ID it already holds. So the activity
+  runs the turn again with the other flag when the first attempt is refused
+  (`sessionFlagWrong`). Without that, a worker lost between creating the session
+  and reporting the turn complete leaves Temporal to retry with the same input,
+  against a session that now exists — and the conversation never starts.
+- Only positive evidence moves that decision: an init event, a transcript on
+  disk, or the CLI's own refusal. A bare failure is not evidence. Two wedges have
+  come from reading one as though it were — first `turnCount > 0` claiming a
+  session that never existed, then a workflow flag claiming a live session was
+  gone because a turn failed before the container started.
 
 ## Container invocation
 

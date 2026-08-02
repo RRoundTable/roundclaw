@@ -75,17 +75,6 @@ type RunTurnInput struct {
 	// ID, which already encodes it.
 	ConversationID string `json:"conversation_id,omitempty"`
 	Prompt         string `json:"prompt"`
-	// Resume is false only for an agent's very first turn. It selects
-	// --resume over --session-id.
-	Resume bool `json:"resume"`
-
-	// RebuildContext asks for a recap of recent turns to be prepended, because
-	// the previous Claude session was lost and this turn starts a new one.
-	//
-	// Set by the workflow, which is the only thing that knows a resume failed:
-	// that fact spans turns and has to survive worker restarts, which is
-	// precisely what it is kept in workflow state for.
-	RebuildContext bool `json:"rebuild_context,omitempty"`
 }
 
 // recapTurns is how many past turns are summarised when a session is lost.
@@ -230,7 +219,6 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		CredentialEnv:   cred.EnvName,
 		CredentialValue: cred.Value,
 		SessionID:       claude.SessionID(in.WorkflowID),
-		Resume:          in.Resume,
 		AgentName:       agentCfg.AgentName,
 		PermissionMode:  agentCfg.PermissionMode,
 		AllowedTools:    agentCfg.AllowedTools,
@@ -242,34 +230,23 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 		Prompt:          toolNote + in.Prompt,
 	}
 
-	if in.RebuildContext {
-		// The conversation itself is gone; this is a reconstruction from the
-		// turn record, and it is labelled as one so the agent does not treat a
-		// summary as though it remembered the exchange.
-		recap, err := buildRecap(ctx, st, in.ConversationID)
-		if err != nil {
-			log.Warn("could not rebuild context after a lost session",
-				"agent", in.AgentID, "error", err)
-		} else if recap != "" {
-			spec.Prompt = recap + spec.Prompt
-			log.Info("rebuilt context from the turn history after a lost session",
-				"agent", in.AgentID, "turn_id", in.TurnID)
-		}
-	}
-
-	args, err := spec.Args()
+	// Whether this turn continues the session or opens one is read off the disk
+	// the CLI writes to, every turn, rather than remembered between turns. The
+	// workflow used to carry it, and a belief nothing ever re-checked is exactly
+	// what got stuck: one turn that failed before the container started left it
+	// claiming a live session was gone, permanently.
+	exists, err := claude.SessionExists(spec.ClaudeHome, spec.SessionID)
 	if err != nil {
-		return core.TurnResult{}, newNonRetryable(err)
+		// Proceeding as though there were no session is safe — the run corrects
+		// a wrong guess — but an unreadable claude-home is worth saying out loud.
+		log.Warn("could not check for an existing session; assuming there is none",
+			"agent", in.AgentID, "error", err)
 	}
+	spec.Resume = exists
 
 	_ = st.SetRuntime(ctx, core.AgentRunning, in.TurnID, spec.SessionID)
 
-	// A worker that died mid-turn leaves the container running under the same
-	// deterministic name. Clearing it is what makes the name safe to reuse on
-	// retry, and it is also how a crashed turn's orphan gets reaped.
-	a.removeOrphan(ctx, spec)
-
-	result, err := a.stream(ctx, st, spec, args, in)
+	result, err := a.runTurn(ctx, st, spec, in)
 
 	// Persistence must survive cancellation, so it runs on a context that the
 	// cancellation does not reach.
@@ -286,15 +263,154 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 	return result, err
 }
 
+// runTurn runs the container, and runs it once more with the other session flag
+// if the first attempt failed because the flag was wrong.
+//
+// This is what makes the activity safe under Temporal's at-least-once execution.
+// A turn that opens the session and then loses its worker before reporting
+// completion is retried with the same input; the session now exists, so
+// --session-id is refused — and every later turn was refused with it, because
+// nothing ever revisited the decision. removeOrphan already makes the
+// deterministic container name reusable across exactly that retry. The
+// deterministic session ID needs the same treatment, and this is it.
+//
+// It also collapses session-loss recovery into one turn. A transcript cleaned up
+// underneath a conversation used to cost the turn that discovered it; now that
+// turn resumes, finds nothing, and opens a new session with a recap instead.
+func (a *Activities) runTurn(
+	ctx context.Context,
+	st *store.Store,
+	spec claude.RunSpec,
+	in RunTurnInput,
+) (core.TurnResult, error) {
+	log := activity.GetLogger(ctx)
+	base := spec.Prompt
+
+	spec.Prompt = a.sessionPrompt(ctx, st, base, spec.Resume, in)
+	result, sawInit, err := a.attempt(ctx, st, spec, in)
+	if err != nil {
+		return result, err
+	}
+	if !a.sessionFlagWrong(ctx, spec, in, result, sawInit) {
+		return result, nil
+	}
+
+	spec.Resume = !spec.Resume
+	log.Info("the session flag disagreed with what is on disk; running the turn again with the other one",
+		"agent", in.AgentID, "turn_id", in.TurnID, "resume", spec.Resume)
+
+	spec.Prompt = a.sessionPrompt(ctx, st, base, spec.Resume, in)
+	result, _, err = a.attempt(ctx, st, spec, in)
+	return result, err
+}
+
+// attempt runs the container once and reports whether the CLI got as far as
+// opening a session — the only positive evidence that the flag it was given was
+// the right one.
+func (a *Activities) attempt(
+	ctx context.Context,
+	st *store.Store,
+	spec claude.RunSpec,
+	in RunTurnInput,
+) (core.TurnResult, bool, error) {
+	args, err := spec.Args()
+	if err != nil {
+		// A terminal result, not a bare error: this return reaches FinishTurn,
+		// and a turn closed out with the zero value would leave a row with no
+		// status at all — neither running, nor done, nor failed.
+		return errorResult(in.TurnID, err), false, newNonRetryable(err)
+	}
+
+	// A worker that died mid-turn leaves the container running under the same
+	// deterministic name. Clearing it is what makes the name safe to reuse on
+	// retry, and it is also how a crashed turn's orphan gets reaped.
+	a.removeOrphan(ctx, spec)
+
+	return a.stream(ctx, st, spec, args, in)
+}
+
+// sessionPrompt composes the prompt for one attempt.
+//
+// A turn that opens a session is owed the record of what came before it; a turn
+// that continues one is not, because the session still holds it. The recap is
+// empty for a conversation with no history, which is what makes this right for
+// an agent's very first turn as well as for one whose session went missing.
+func (a *Activities) sessionPrompt(
+	ctx context.Context,
+	st *store.Store,
+	base string,
+	resume bool,
+	in RunTurnInput,
+) string {
+	if resume {
+		return base
+	}
+
+	// The conversation itself is gone; this is a reconstruction from the turn
+	// record, and it is labelled as one so the agent does not treat a summary as
+	// though it remembered the exchange.
+	recap, err := buildRecap(ctx, st, in.ConversationID)
+	if err != nil {
+		// Worth a turn without context rather than no turn at all.
+		activity.GetLogger(ctx).Warn("could not rebuild context for a new session",
+			"agent", in.AgentID, "error", err)
+		return base
+	}
+	if recap == "" {
+		return base
+	}
+	activity.GetLogger(ctx).Info("rebuilt context from the turn history for a new session",
+		"agent", in.AgentID, "turn_id", in.TurnID)
+	return recap + base
+}
+
+// sessionFlagWrong reports whether a failed turn failed over the session flag it
+// was given rather than over the work it was asked to do.
+//
+// Every condition here is positive evidence, on purpose. A bare failure means
+// nothing about the session: the container can fail to start, the credential can
+// expire, the agent can exhaust its quota, and none of that says whether the
+// session exists. Reading an uninformative failure as "the session is gone" is
+// the mistake this path exists to stop making — it is how one oversized prompt
+// took a conversation out for good.
+func (a *Activities) sessionFlagWrong(
+	ctx context.Context,
+	spec claude.RunSpec,
+	in RunTurnInput,
+	result core.TurnResult,
+	sawInit bool,
+) bool {
+	// The CLI attached to a session, so the flag was right whatever failed after.
+	if sawInit || result.Status != core.TurnError {
+		return false
+	}
+
+	exists, err := claude.SessionExists(spec.ClaudeHome, spec.SessionID)
+	if err != nil {
+		activity.GetLogger(ctx).Warn("could not check for an existing session after a failed turn",
+			"agent", in.AgentID, "error", err)
+	}
+	// The filesystem and the CLI's own complaint are independent answers to the
+	// same question, and either is enough, so each direction survives one of the
+	// two going wrong.
+	if spec.Resume {
+		// Asked to continue a session that is not there.
+		return !exists || claude.SessionNotFound(result.ErrorMessage)
+	}
+	// Asked to create one that is.
+	return exists || claude.SessionTaken(result.ErrorMessage)
+}
+
 // stream starts the container and pumps its stream-json output into SQLite,
-// heartbeating throughout.
+// heartbeating throughout. It reports whether the CLI emitted its init event,
+// which is what tells the caller the session flag was accepted.
 func (a *Activities) stream(
 	ctx context.Context,
 	st *store.Store,
 	spec claude.RunSpec,
 	args []string,
 	in RunTurnInput,
-) (core.TurnResult, error) {
+) (core.TurnResult, bool, error) {
 	log := activity.GetLogger(ctx)
 	persistCtx := context.WithoutCancel(ctx)
 
@@ -312,13 +428,13 @@ func (a *Activities) stream(
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return errorResult(in.TurnID, fmt.Errorf("stdout pipe: %w", err)), nil
+		return errorResult(in.TurnID, fmt.Errorf("stdout pipe: %w", err)), false, nil
 	}
 	var stderr lockedBuffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return errorResult(in.TurnID, fmt.Errorf("start container: %w", err)), nil
+		return errorResult(in.TurnID, fmt.Errorf("start container: %w", err)), false, nil
 	}
 
 	var (
@@ -387,8 +503,7 @@ func (a *Activities) stream(
 			mu.Lock()
 			defer mu.Unlock()
 			result := a.finish(in.TurnID, final, sawFinal, scanErr, waitErr, stderr.String())
-			result.SessionEstablished = sawInit
-			return result, nil
+			return result, sawInit, nil
 
 		case <-ctx.Done():
 			// Cancellation arrives only because a heartbeat carried it back,
@@ -399,14 +514,13 @@ func (a *Activities) stream(
 			_ = cmd.Wait()
 			mu.Lock()
 			stopped := core.TurnResult{
-				TurnID:             in.TurnID,
-				Status:             core.TurnStopped,
-				Text:               final.Text,
-				CostUSD:            final.CostUSD,
-				SessionEstablished: sawInit,
+				TurnID:  in.TurnID,
+				Status:  core.TurnStopped,
+				Text:    final.Text,
+				CostUSD: final.CostUSD,
 			}
 			mu.Unlock()
-			return stopped, ctx.Err()
+			return stopped, sawInit, ctx.Err()
 		}
 	}
 }

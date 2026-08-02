@@ -75,16 +75,14 @@ type AgentInput struct {
 	Queue []core.Request `json:"queue,omitempty"`
 
 	// TurnCount is cumulative across Continue-As-New and is reported by the
-	// status query. It does not decide --session-id versus --resume.
+	// status query. It decides nothing.
+	//
+	// Nothing about the Claude session belongs here either. The workflow used to
+	// carry whether the session had been opened, and a turn that failed before
+	// the container started was read as the session being gone — after which
+	// every later turn tried to create one that already existed, for good, since
+	// Continue-As-New carried the mistake forward as faithfully as it would have
+	// carried the truth. Whether to resume is now decided from the transcript on
+	// disk, by the activity that can see it.
 	TurnCount int `json:"turn_count,omitempty"`
-
-	// SessionReady records that some turn actually opened the Claude session.
-	// It must survive Continue-As-New or the agent would try to create an
-	// already-existing session after every history truncation.
-	SessionReady bool `json:"session_ready,omitempty"`
-
-	// SessionLost carries a pending recap across Continue-As-New, so a
-	// truncation landing between the loss and the next turn does not swallow
-	// the one chance to rebuild context.
-	SessionLost bool `json:"session_lost,omitempty"`
 }

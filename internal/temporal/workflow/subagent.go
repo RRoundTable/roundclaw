@@ -65,8 +65,6 @@ func SubAgent(ctx workflow.Context, in Input) error {
 		conversationID: in.ConversationID,
 		queue:          append([]core.Request(nil), in.Queue...),
 		turnCount:      in.TurnCount,
-		sessionReady:   in.SessionReady,
-		sessionLost:    in.SessionLost,
 		lifecycle:      core.AgentIdle,
 	}
 
@@ -114,12 +112,6 @@ func SubAgent(ctx workflow.Context, in Input) error {
 				// once a second and never ran the turn. The cumulative count lives
 				// in SQLite; this is only the seam counter.
 				TurnCount: 0,
-				// Carried across, or the agent would try to create a session
-				// that already exists after every history truncation.
-				SessionReady: state.sessionReady,
-				// Likewise: a truncation landing between a lost session and the
-				// next turn would otherwise swallow the one chance to rebuild.
-				SessionLost: state.sessionLost,
 			})
 		}
 
@@ -136,13 +128,6 @@ type agentState struct {
 	turnCount      int
 	currentTurnID  int64
 	lifecycle      core.AgentStatus
-	// sessionReady is observed, not counted: it is set when a turn reports that
-	// the CLI opened the session, and cleared when a resume attempt fails to.
-	sessionReady bool
-	// sessionLost marks that the next turn is starting over after a resume
-	// found nothing, so it should carry a recap. Cleared once that turn runs —
-	// the recap is for the first turn of the new session, not every turn after.
-	sessionLost bool
 }
 
 func (s *agentState) status() (Status, error) {
@@ -228,8 +213,6 @@ func (s *agentState) runTurn(
 	// A child context so a stop cancels only this turn. The workflow context
 	// itself stays live, which is what lets the next turn start immediately
 	// after a steer.
-	attemptedResume := s.sessionReady
-
 	turnCtx, cancelTurn := workflow.WithCancel(ctx)
 	defer cancelTurn()
 
@@ -263,14 +246,9 @@ func (s *agentState) runTurn(
 		TurnID:         req.TurnID,
 		WorkflowID:     workflow.GetInfo(ctx).WorkflowExecution.ID,
 		Prompt:         req.Text,
-		// Resume only once a turn has actually opened the session. Deriving
-		// this from a turn counter instead meant a turn that failed before the
-		// CLI started still advanced the count, and every later turn tried to
-		// resume a session that was never created.
-		Resume: s.sessionReady,
-		// Set for the turn that follows a lost session: it starts a fresh one,
-		// so the activity prepends a recap built from the turn record.
-		RebuildContext: s.sessionLost,
+		// Nothing here says whether to resume. The workflow cannot see the
+		// session — determinism forbids it the filesystem — so it does not get a
+		// say in a decision it could only ever guess at.
 	})
 
 	var (
@@ -314,24 +292,6 @@ func (s *agentState) runTurn(
 	s.turnCount++
 	s.currentTurnID = 0
 	s.lifecycle = core.AgentIdle
-
-	// Consumed by the turn just run; the recap belongs to the first turn of the
-	// new session, not to every turn that follows it.
-	s.sessionLost = false
-
-	switch {
-	case result.SessionEstablished:
-		s.sessionReady = true
-	case attemptedResume:
-		// A resume that never reached an init event means the session is gone.
-		// Clearing this makes the next turn create a fresh one rather than
-		// retrying a resume that cannot succeed. The conversation is lost, but
-		// the agent recovers instead of failing forever.
-		log.Warn("resume did not open a session; the next turn will start a new one with a recap",
-			"agent", s.agentID, "turn_id", req.TurnID)
-		s.sessionReady = false
-		s.sessionLost = true
-	}
 
 	if actErr != nil {
 		if temporal.IsCanceledError(actErr) {

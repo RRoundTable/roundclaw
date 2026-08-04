@@ -15,6 +15,31 @@ Nothing is required of the delegating agent's behaviour. An agent that simply
 ends its turn still gets the answer. This is what makes "I'll tell you when it's
 done" a promise the system keeps rather than one the agent has to remember.
 
+### Delegated work runs in the line of work that asked for it
+
+**Given** an agent working in one conversation
+**When** it hands work to another agent without naming a conversation
+**Then** the work runs in the delegate's conversation of that same name, so two
+threads handing work to the same agent share no history, no queue and no
+audience.
+
+Left to the delegate's main conversation instead, everything delegated to one
+agent accumulates in a single session: each piece of work reads the others'
+history, and that conversation answers to as many people as have delegated into
+it — which is the invariant below, broken. Naming a conversation explicitly still
+overrides this.
+
+Note what follows from [Conversations](conversations.md): where an agent's work
+area is not shared, delegated work starts in an empty directory.
+
+### A delegator with no line of work of its own hands down none
+
+**Given** an agent working in its main conversation — a schedule, a webhook, or a
+question asked directly of it
+**When** it hands work to another agent
+**Then** the work runs in the delegate's main conversation, because there is no
+separate line of work to continue.
+
 ### The result survives everything dying
 
 **Given** delegated work in progress

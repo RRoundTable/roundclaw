@@ -109,6 +109,11 @@ roundclaw-<agentID>-default          default conversation
 roundclaw-<agentID>-<conversationID> a Discord thread
 ```
 
+A conversation ID is not always a thread the agent itself is talked to in.
+Delegated work carries the *delegator's* conversation ID, so an agent that is
+only ever handed work still has one execution per originating thread — see
+[delegation.md](delegation.md#design-points).
+
 A conversation — not an agent — is the unit that owns a Claude session, a queue
 and a workspace. Every ID has the same three-part shape; the default
 conversation uses the `default` sentinel (`contract.DefaultConversation`) rather

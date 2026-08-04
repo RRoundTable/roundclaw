@@ -46,14 +46,14 @@ sequenceDiagram
     participant U as User (Discord thread)
     participant PM as pm workflow<br/>roundclaw-pm-[thread]
     participant GW as gateway (HTTP)
-    participant DEV as dev workflow<br/>roundclaw-dev-[conv]
+    participant DEV as dev workflow<br/>roundclaw-dev-[thread]
     participant W as worker (activity)
 
     U->>PM: message in thread
     Note over PM: turn 46 · origin=discord(thread)
-    PM->>GW: POST /v1/agents/dev/requests<br/>notify {agent: pm, conversation: [thread]}
+    PM->>GW: POST /v1/agents/dev/requests<br/>conversation_id: [thread]<br/>notify {agent: pm, conversation: [thread]}
     GW->>GW: resolveNotify — agent exists? self-loop?
-    GW->>DEV: turn 71 row + SignalWithStart<br/>origin=agent(pm, [thread])
+    GW->>DEV: turn 71 row + SignalWithStart<br/>conversation=[thread] · origin=agent(pm, [thread])
     GW-->>PM: 202 {turn_id: 71, conversation}
     Note over PM: turn 46 ends — "위임했습니다"<br/>pm's process is gone
     PM-->>U: delegated (one line)
@@ -71,7 +71,7 @@ sequenceDiagram
 | Step | Record |
 |---|---|
 | pm's turn | `pm/state.db` turn 46, `origin=discord(thread)`, `conversation=<thread>` |
-| the delegation | `dev/state.db` turn 71, **`origin=agent(pm,<thread>)`** — the return address, durable |
+| the delegation | `dev/state.db` turn 71, `conversation=<thread>`, **`origin=agent(pm,<thread>)`** — the return address, durable |
 | the return trip | `pm/state.db` turn 47, `origin=discord(thread)`, `conversation=<thread>`, idempotency key `notify:dev:71` |
 | pm's answer | delivered to the thread by the ordinary `discord` case |
 
@@ -80,6 +80,31 @@ connection, the gateway and the worker can all die between the delegation and th
 result; the address on dev's turn row is what makes the return trip happen anyway.
 
 ### Design points
+
+**The work runs in the delegator's conversation.** `send --notify-me` fills
+`conversation_id` from `ROUNDCLAW_CONVERSATION_ID` when no `--conversation` is
+given, so dev's side of a pm thread is a conversation named after that thread.
+Left unset it lands in dev's *default* conversation — the one `/ask`, schedules
+and webhooks share — and everything ever delegated to dev accumulates in one
+Claude session, each piece of work reading the others' history. That conversation
+also ends up answering to one audience per delegating thread, which is the
+"exactly one audience" property `replyOriginFor` and `AudienceIn` both read as
+authoritative.
+
+The delegator's ID is passed through **unchanged** rather than derived from
+(`pm-<thread>`). A thread ID is a Discord snowflake, unique across the fleet, so
+it cannot collide with a conversation the delegate already holds; it does not
+grow as a chain delegates onward (dev → qa reuses the same name); and `/stop`
+typed in that thread resolves to the same ID, which is what keeps a wedged
+delegated turn stoppable from where the person is watching it.
+
+The cost is concurrency. A conversation owns a queue, so delegations that used to
+serialise behind one now run in parallel — and a delegate with `share_workspace`
+set has them sharing one directory. See
+[orchestration.md](orchestration.md#subagent--one-per-conversation) for what a
+conversation owns, and `max_concurrent_turns` in
+[infrastructure.md](infrastructure.md) for the only bound that exists today,
+which is global rather than per agent.
 
 **It queues a turn rather than posting the result.** The delegator knows what the
 human asked; a raw dump of another agent's output is not an answer. pm wakes in
@@ -108,7 +133,7 @@ work:
 
 ```
 [위임 완료] 에이전트 dev · turn 71 · $0.0181
-이어서 시키려면: roundclaw send dev --conversation notify-probe "..."
+이어서 시키려면: roundclaw send dev --conversation 1529396903836651540 "..."
 
 결과:
 chain-ok

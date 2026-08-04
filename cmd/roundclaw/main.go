@@ -54,6 +54,8 @@ func run(args []string) int {
 		return cmdEval(rest)
 	case "proposal":
 		return cmdProposal(rest)
+	case "schedule":
+		return cmdSchedule(rest)
 	case "secret":
 		return cmdSecret(rest)
 	case "tool":
@@ -106,6 +108,16 @@ Commands:
   proposal ls [--status pending]                what is waiting on a person
   proposal approve <id> | reject <id>           decide (also: /proposals in Discord)
       run "roundclaw proposal" alone for the payload shapes
+
+  schedule ls                  my recurring work, with its next run times
+  schedule show <id>
+  schedule set <id> --cron "0 9 * * *" --prompt TEXT
+      --tz Asia/Seoul, --desc TEXT, --channel <id> (must be one I am bound to),
+      --suppress-if TEXT (skip delivery when the result contains it), --paused
+      only the flags you pass change; the rest of the definition is kept
+  schedule rm <id> | schedule pause <id> | schedule resume <id>
+      --agent <id> on any of them to manage another agent's (needs a full token);
+      inside a container it defaults to me, so my own schedules need no flag
 
   secret set <name> [value]    store a secret (value from stdin if omitted)
   secret ls                    list secret names (never values)
@@ -227,12 +239,30 @@ func (c *client) doWithNote(method, path, note string, body, out any) error {
 
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s: %s", resp.Status, serverMessage(raw))
+		return &httpError{code: resp.StatusCode, status: resp.Status, msg: serverMessage(raw)}
 	}
 	if out != nil && len(raw) > 0 {
 		return json.Unmarshal(raw, out)
 	}
 	return nil
+}
+
+// httpError carries the status code so a caller can tell "not there yet" from
+// "the gateway is unhappy". `schedule set` needs the difference: it merges onto
+// the definition it reads back, and taking a failed read for a missing schedule
+// would quietly drop every field the command did not name.
+type httpError struct {
+	code   int
+	status string
+	msg    string
+}
+
+func (e *httpError) Error() string { return e.status + ": " + e.msg }
+
+// notFound reports whether err is a 404 from the gateway.
+func notFound(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.code == http.StatusNotFound
 }
 
 func serverMessage(raw []byte) string {
@@ -749,6 +779,234 @@ func cmdSecret(args []string) int {
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown secret subcommand %q\n", sub)
+		return 2
+	}
+}
+
+// scheduleView is a schedule definition joined with its live trigger state.
+type scheduleView struct {
+	ID          string `json:"id"`
+	AgentID     string `json:"agent_id"`
+	Description string `json:"description"`
+	Cron        string `json:"cron"`
+	Timezone    string `json:"timezone"`
+	Prompt      string `json:"prompt"`
+	ChannelID   string `json:"channel_id"`
+	SuppressIf  string `json:"suppress_if"`
+	Enabled     bool   `json:"enabled"`
+	Paused      bool   `json:"paused"`
+	NextRun     string `json:"next_run"`
+	Unavailable string `json:"unavailable"`
+}
+
+// schedulePrefix is the route an agent's schedules live under. With no agent it
+// falls back to the fleet-wide routes, which a restricted token cannot reach —
+// that is deliberate: the agent-scoped path is what carries the caller's
+// identity, and without one there is nothing to scope to.
+func schedulePrefix(agent string) string {
+	if agent == "" {
+		return "/v1/schedules"
+	}
+	return "/v1/agents/" + agent + "/schedules"
+}
+
+// cmdSchedule manages recurring work. Inside an agent container --agent defaults
+// to the agent itself, so managing one's own schedules takes no flag and cannot
+// accidentally name somebody else.
+func cmdSchedule(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: roundclaw schedule <ls|show|set|rm|pause|resume> [id] [flags]")
+		return 2
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("schedule", flag.ContinueOnError)
+	base, token := commonFlags(fs)
+	agent := fs.String("agent", os.Getenv("ROUNDCLAW_AGENT_ID"), "agent that owns the schedule (default: me)")
+	cron := fs.String("cron", "", "cron expression, e.g. \"0 9 * * *\" (set only)")
+	prompt := fs.String("prompt", "", "what to ask the agent when it fires; - reads stdin (set only)")
+	tz := fs.String("tz", "", "IANA timezone, e.g. Asia/Seoul (default UTC)")
+	desc := fs.String("desc", "", "one-line description")
+	channel := fs.String("channel", "", "channel id to report into; must be one the agent is bound to")
+	suppressIf := fs.String("suppress-if", "", "do not deliver a result containing this text")
+	paused := fs.Bool("paused", false, "save it paused (set only)")
+	pos, err := parseFlags(fs, rest)
+	if err != nil {
+		return 2
+	}
+	// Which flags were actually typed, so `set` can change the time without
+	// wiping the prompt.
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+
+	c := newClient(*base, *token)
+	prefix := schedulePrefix(*agent)
+
+	needID := func() (string, bool) {
+		if len(pos) < 1 {
+			fmt.Fprintf(os.Stderr, "usage: roundclaw schedule %s <id> [--agent id]\n", sub)
+			return "", false
+		}
+		return pos[0], true
+	}
+
+	switch sub {
+	case "ls":
+		var out struct {
+			Schedules []scheduleView `json:"schedules"`
+		}
+		if err := c.do(http.MethodGet, prefix, nil, &out); err != nil {
+			return fail(err)
+		}
+		if len(out.Schedules) == 0 {
+			fmt.Println("no schedules")
+			return 0
+		}
+		for _, s := range out.Schedules {
+			state := "running"
+			switch {
+			case s.Unavailable != "":
+				state = "unknown"
+			case s.Paused || !s.Enabled:
+				state = "paused"
+			}
+			next := s.NextRun
+			if next == "" {
+				next = "-"
+			}
+			fmt.Printf("%-20s %-16s %-14s %-14s %-8s next %s  %s\n",
+				s.ID, s.AgentID, s.Cron, s.Timezone, state, next, s.Description)
+		}
+		return 0
+
+	case "show":
+		id, ok := needID()
+		if !ok {
+			return 2
+		}
+		var out map[string]any
+		if err := c.do(http.MethodGet, prefix+"/"+id, nil, &out); err != nil {
+			return fail(err)
+		}
+		printJSON(out)
+		return 0
+
+	case "set":
+		id, ok := needID()
+		if !ok {
+			return 2
+		}
+		// Read the current definition first and change only what was named. A PUT
+		// replaces the whole row, so `set daily --cron "0 8 * * *"` would otherwise
+		// drop the prompt — and a schedule is refused without one, which at least
+		// fails loudly, but an omitted channel would silently go quiet instead.
+		var cur scheduleView
+		readErr := c.do(http.MethodGet, prefix+"/"+id, nil, &cur)
+		if readErr != nil && !notFound(readErr) {
+			// Anything other than "there is no such schedule yet" leaves us unable
+			// to say what we would be overwriting.
+			return fail(fmt.Errorf("read the current definition: %w", readErr))
+		}
+		exists := readErr == nil
+		body := map[string]any{}
+		if exists {
+			body["description"] = cur.Description
+			body["cron"] = cur.Cron
+			body["timezone"] = cur.Timezone
+			body["prompt"] = cur.Prompt
+			body["channel_id"] = cur.ChannelID
+			body["suppress_if"] = cur.SuppressIf
+		}
+		if given["cron"] {
+			body["cron"] = *cron
+		}
+		if given["tz"] {
+			body["timezone"] = *tz
+		}
+		if given["desc"] {
+			body["description"] = *desc
+		}
+		if given["channel"] {
+			body["channel_id"] = *channel
+		}
+		if given["suppress-if"] {
+			body["suppress_if"] = *suppressIf
+		}
+		if given["prompt"] {
+			text := *prompt
+			if text == "-" {
+				raw, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fail(err)
+				}
+				text = strings.TrimRight(string(raw), "\r\n")
+			}
+			body["prompt"] = text
+		}
+		// Left unsaid, the server keeps whatever state the schedule is already in;
+		// a new one starts running.
+		if given["paused"] {
+			body["enabled"] = !*paused
+		}
+		if *agent == "" {
+			// The fleet-wide route takes the owner from the body, and a new
+			// schedule has none to inherit.
+			if !exists {
+				return fail(errors.New("--agent is required to create a schedule " +
+					"(inside a container it is already set for you)"))
+			}
+			body["agent_id"] = cur.AgentID
+		}
+
+		var out scheduleView
+		if err := c.do(http.MethodPut, prefix+"/"+id, body, &out); err != nil {
+			return fail(err)
+		}
+		state := "running"
+		if out.Paused || !out.Enabled {
+			state = "paused"
+		}
+		fmt.Printf("saved %s for %s: %s %s, %s\n", out.ID, out.AgentID, out.Cron, out.Timezone, state)
+		if out.NextRun != "" {
+			fmt.Printf("next run %s\n", out.NextRun)
+		}
+		if out.ChannelID == "" {
+			fmt.Println("no channel: the result is recorded, not announced anywhere")
+		}
+		return 0
+
+	case "rm":
+		id, ok := needID()
+		if !ok {
+			return 2
+		}
+		if err := c.do(http.MethodDelete, prefix+"/"+id, nil, nil); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("deleted schedule %s\n", id)
+		return 0
+
+	case "pause", "resume":
+		id, ok := needID()
+		if !ok {
+			return 2
+		}
+		var out scheduleView
+		if err := c.do(http.MethodPost, prefix+"/"+id+"/"+sub, nil, &out); err != nil {
+			return fail(err)
+		}
+		if sub == "pause" {
+			fmt.Printf("paused %s; it keeps its definition and fires again when resumed\n", id)
+			return 0
+		}
+		fmt.Printf("resumed %s", id)
+		if out.NextRun != "" {
+			fmt.Printf(", next run %s", out.NextRun)
+		}
+		fmt.Println()
+		return 0
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown schedule subcommand %q\n", sub)
 		return 2
 	}
 }

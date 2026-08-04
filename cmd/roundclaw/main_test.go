@@ -442,3 +442,95 @@ func TestSecretRmAcceptsAgentAfterPositionals(t *testing.T) {
 		t.Errorf("%s %s, want DELETE /v1/agents/gameart/secrets/GEMINI_API_KEY", method, path)
 	}
 }
+
+// Inside a container an agent manages its own schedules without naming itself,
+// through the agent-scoped routes its restricted token can reach.
+func TestScheduleDefaultsToTheCallingAgent(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")
+
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		writeTestJSON(w, http.StatusOK, map[string]any{"schedules": []any{}})
+	}))
+	defer srv.Close()
+
+	if code := cmdSchedule([]string{"ls", "--url", srv.URL, "--token", "t"}); code != 0 {
+		t.Fatalf("cmdSchedule exit = %d, want 0", code)
+	}
+	if path != "/v1/agents/dev/schedules" {
+		t.Errorf("path = %q, want /v1/agents/dev/schedules", path)
+	}
+}
+
+// A PUT replaces the whole definition, so an edit that names only the cron has
+// to carry the rest of the current one back — otherwise "move it an hour later"
+// silently drops the prompt and the channel.
+func TestScheduleSetKeepsWhatWasNotNamed(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")
+
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeTestJSON(w, http.StatusOK, map[string]any{
+				"id": "standup", "agent_id": "dev", "cron": "0 9 * * *",
+				"timezone": "Asia/Seoul", "prompt": "summarise yesterday",
+				"channel_id": "chan-dev", "enabled": true,
+			})
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeTestJSON(w, http.StatusOK, map[string]any{
+			"id": "standup", "agent_id": "dev", "cron": "0 10 * * *",
+			"timezone": "Asia/Seoul", "channel_id": "chan-dev", "enabled": true,
+		})
+	}))
+	defer srv.Close()
+
+	code := cmdSchedule([]string{"set", "standup", "--cron", "0 10 * * *", "--url", srv.URL, "--token", "t"})
+	if code != 0 {
+		t.Fatalf("cmdSchedule exit = %d, want 0", code)
+	}
+	if sent["cron"] != "0 10 * * *" {
+		t.Errorf("cron = %v, want the new one", sent["cron"])
+	}
+	if sent["prompt"] != "summarise yesterday" {
+		t.Errorf("prompt = %v, want the existing one carried over", sent["prompt"])
+	}
+	if sent["channel_id"] != "chan-dev" {
+		t.Errorf("channel_id = %v, want the existing one carried over", sent["channel_id"])
+	}
+	// Nothing said about pausing means the schedule keeps the state it is in;
+	// sending enabled would decide it here instead.
+	if _, ok := sent["enabled"]; ok {
+		t.Errorf("body carried enabled=%v; an edit that says nothing about it must leave it to the server", sent["enabled"])
+	}
+}
+
+// A read that fails for any reason other than "no such schedule" must stop the
+// edit. Treating it as a new schedule would write back only the flags that were
+// typed, dropping the prompt and channel the caller never meant to touch.
+func TestScheduleSetRefusesToGuessAfterAFailedRead(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "dev")
+
+	var puts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeTestJSON(w, http.StatusInternalServerError, map[string]any{"error": "registry is down"})
+			return
+		}
+		atomic.AddInt32(&puts, 1)
+		writeTestJSON(w, http.StatusOK, map[string]any{"id": "standup", "agent_id": "dev"})
+	}))
+	defer srv.Close()
+
+	code := cmdSchedule([]string{"set", "standup", "--cron", "0 10 * * *", "--url", srv.URL, "--token", "t"})
+	if code == 0 {
+		t.Error("cmdSchedule exit = 0, want non-zero when the current definition cannot be read")
+	}
+	if puts != 0 {
+		t.Errorf("puts = %d, want 0 — nothing should be written on a guess", puts)
+	}
+}

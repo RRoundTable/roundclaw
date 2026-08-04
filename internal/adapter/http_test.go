@@ -481,6 +481,14 @@ func TestDelegateAllowed(t *testing.T) {
 		{http.MethodGet, "/v1/agents/dev/turns/12", true},
 		{http.MethodGet, "/v1/agents/dev/turns/12/stream", true},
 		{http.MethodPost, "/v1/agents/dev/requests", true},
+		// An agent's own recurring work. The handlers, not this list, are what
+		// keep it to its own: see registerScheduleRoutes.
+		{http.MethodGet, "/v1/agents/dev/schedules", true},
+		{http.MethodGet, "/v1/agents/dev/schedules/standup", true},
+		{http.MethodPut, "/v1/agents/dev/schedules/standup", true},
+		{http.MethodDelete, "/v1/agents/dev/schedules/standup", true},
+		{http.MethodPost, "/v1/agents/dev/schedules/standup/pause", true},
+		{http.MethodPost, "/v1/agents/dev/schedules/standup/resume", true},
 		// Denied: everything privileged.
 		{http.MethodPost, "/v1/agents", false},               // create agent
 		{http.MethodDelete, "/v1/agents/dev", false},         // delete agent
@@ -504,6 +512,14 @@ func TestDelegateAllowed(t *testing.T) {
 		{http.MethodPut, "/v1/tools/outline", false},
 		{http.MethodPost, "/v1/workflows", false},
 		{http.MethodPut, "/v1/schedules/x", false},
+		// The fleet-wide schedule routes take the owner from the body, so there is
+		// nothing there to scope to the caller.
+		{http.MethodGet, "/v1/schedules", false},
+		{http.MethodDelete, "/v1/schedules/x", false},
+		// A schedule id is not a licence to reach the rest of an agent.
+		{http.MethodPut, "/v1/agents/dev/definition", false},
+		{http.MethodDelete, "/v1/agents/dev/schedules", false},
+		{http.MethodPost, "/v1/agents/dev/schedules/standup/trigger", false},
 	}
 	for _, c := range cases {
 		if got := delegateAllowed(c.method, c.path); got != c.want {

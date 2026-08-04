@@ -547,11 +547,18 @@ func (h *HTTP) authenticate(next http.Handler) http.Handler {
 }
 
 // delegateAllowed is the whitelist a restricted (delegate-scoped) token may
-// reach: list agents, read one agent's status/turns/workflow, and send it a
-// request. It is a prefix/shape check on the raw path because it runs in the
-// auth middleware, before the router has matched a pattern. Deny by default —
-// any route not named here (agent CRUD, secrets, tools, workflows, schedules,
-// even an agent's definition, which exposes host paths) is refused.
+// reach: list agents, read one agent's status/turns/workflow, send it a request,
+// and manage the schedules filed under it. It is a prefix/shape check on the raw
+// path because it runs in the auth middleware, before the router has matched a
+// pattern. Deny by default — any route not named here (agent CRUD, secrets,
+// tools, workflows, fleet-wide schedules, even an agent's definition, which
+// exposes host paths) is refused.
+//
+// The agent-scoped schedule routes are the one write surface here beyond
+// starting work. They are bounded by the handlers rather than by this list: the
+// stored agent_id comes from the path, another agent's schedule is invisible and
+// unwritable, and the delivery channel must be one the named agent already has.
+// See registerScheduleRoutes.
 func delegateAllowed(method, path string) bool {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
 	if len(segs) < 2 || segs[0] != "v1" || segs[1] != "agents" {
@@ -565,9 +572,11 @@ func delegateAllowed(method, path string) bool {
 		case 3: // /v1/agents/{id}                     status
 			return true
 		case 4: // /v1/agents/{id}/workflow            execution state
-			return segs[3] == "workflow"
+			//     /v1/agents/{id}/schedules           its own recurring work
+			return segs[3] == "workflow" || segs[3] == "schedules"
 		case 5: // /v1/agents/{id}/turns/{turn}        turn result
-			return segs[3] == "turns"
+			//     /v1/agents/{id}/schedules/{s}       one of its schedules
+			return segs[3] == "turns" || segs[3] == "schedules"
 		case 6: // /v1/agents/{id}/turns/{turn}/stream live transcript
 			return segs[3] == "turns" && segs[5] == "stream"
 		}
@@ -584,8 +593,14 @@ func delegateAllowed(method, path string) bool {
 		// history, never from the request.
 		case len(segs) == 4 && segs[3] == "messages":
 			return true
+		// /v1/agents/{id}/schedules/{s}/pause|resume  stop and start its own
+		case len(segs) == 6 && segs[3] == "schedules" && (segs[5] == "pause" || segs[5] == "resume"):
+			return true
 		}
 		return false
+	case http.MethodPut, http.MethodDelete:
+		// /v1/agents/{id}/schedules/{s}               define or drop its own
+		return len(segs) == 5 && segs[3] == "schedules"
 	}
 	return false
 }

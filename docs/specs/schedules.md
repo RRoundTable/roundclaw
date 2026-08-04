@@ -41,6 +41,25 @@ and the same limits.
 
 People stop reading a channel that says "nothing to report" every morning.
 
+### An agent keeps its own schedules
+
+**Given** an agent at work
+**When** it decides something should happen every morning
+**Then** it can define, read, change, pause and delete that schedule itself,
+without a person doing it for it and without gaining any other power over the
+fleet.
+
+### An agent's schedule cannot be pointed at somebody else
+
+**Given** an agent managing its own schedules
+**When** it names another agent, another agent's schedule, or a channel it does
+not speak in
+**Then** it is refused. Its own schedules are all it can see and all it can
+change.
+
+Anything else would make a schedule a way to spend another agent's budget, or to
+post into a channel on a timer, forever.
+
 ### An unknown time zone is refused when set, not at run time
 
 **Given** a schedule given a time zone that does not exist
@@ -56,3 +75,4 @@ from when anybody expected.
   a [workflow](workflows.md).
 - Scheduled work and human requests share one queue, one ordering and one set of
   limits.
+- A schedule is announced only where its agent is already spoken to, or nowhere.

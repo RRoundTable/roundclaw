@@ -128,10 +128,12 @@ Notable behaviour:
 
 There are **two token scopes**. Full tokens (`http.tokens_env`) reach every
 route. Delegate tokens (`http.delegate_tokens_env`) are restricted by
-`delegateAllowed` to sending a request, reading agent status, and speaking in a
-conversation — list, status, turns, stream, workflow, `POST …/requests` and
-`POST …/messages`; everything else is `403`, including an agent's `definition`
-(it exposes host paths). Speaking is on the restricted surface because it starts
+`delegateAllowed` to sending a request, reading agent status, speaking in a
+conversation, and managing the schedules filed under an agent — list, status,
+turns, stream, workflow, `POST …/requests`, `POST …/messages` and
+`…/agents/{id}/schedules…`; everything else is `403`, including an agent's
+`definition` (it exposes host paths) and the fleet-wide `/v1/schedules` routes,
+which take their owner from the body. Speaking is on the restricted surface because it starts
 no work, spends no tokens, and cannot reach a channel the agent is not already
 spoken to in: the target is resolved from that conversation's own history, never
 from the request, so a prompt-injected agent cannot broadcast. This is what lets an
@@ -140,6 +142,17 @@ tool, [agent-runtime.md](agent-runtime.md#registered-tools)) without being able
 to reconfigure or delete the fleet — the check runs in the auth middleware,
 before routing, and denies by default. Tokens are held only as SHA-256 hashes and
 compared in constant time.
+
+The agent-scoped schedule routes are the only **write** on that surface beyond
+starting work, and the whitelist is not what keeps them safe — the handlers are
+(`http_schedules.go`). A shared token cannot prove who is calling, so the agent
+in the path is a claim, bounded the same way `notify` is: the stored `agent_id`
+comes from the path and never the body, another agent's schedule is `404`
+(`409` on a name collision, because ids are unique fleet-wide), and `channel_id`
+must be one the named agent is already bound to, so a schedule cannot become a
+timed broadcast into a channel nobody granted. Per-agent tokens would let the
+gateway fill the identity in rather than believe it; that is the upgrade path if
+the claim ever needs to be worth more than a wasted turn.
 
 ```
 POST   /v1/agents/{agent}/requests        202 {turn_id, conversation, queue_position, duplicate}

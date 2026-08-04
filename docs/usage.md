@@ -115,6 +115,19 @@ Run an agent automatically on a cron schedule (a daily report, an hourly check):
 Scheduled runs use the agent's **default** session, so a daily job builds on what
 it did yesterday. Editing a schedule takes effect on its next run.
 
+An agent can also keep its own, from inside its container, with the CLI:
+
+```bash
+roundclaw schedule set standup --cron "0 9 * * *" --tz Asia/Seoul \
+    --prompt "어제 한 일 정리해서 올려" --channel <its own channel>
+roundclaw schedule ls                 # its own, with next run times
+roundclaw schedule pause standup      # and resume, rm, show
+```
+
+No `--agent` is needed or wanted: inside a container it defaults to the agent
+itself, which is the only one it can manage. `set` changes only the flags you
+pass, so moving the time keeps the prompt.
+
 ### Managing in plain language — the `admin` agent
 
 Management by conversation is done by an **agent**, not a slash command. `admin`
@@ -445,6 +458,22 @@ POST   /v1/schedules/{schedule}/resume   let it fire again
 A schedule carries a `cron` expression, a `timezone` (default `UTC`), and the
 `prompt` to run.
 
+The same schedules are reachable under the agent that owns them, and these are
+the ones a delegate-scoped token may use:
+
+```
+GET    /v1/agents/{agent}/schedules                   its own, with next run times
+GET    /v1/agents/{agent}/schedules/{schedule}        read one of its own
+PUT    /v1/agents/{agent}/schedules/{schedule}        create or replace
+DELETE /v1/agents/{agent}/schedules/{schedule}        delete
+POST   /v1/agents/{agent}/schedules/{schedule}/pause  · /resume
+```
+
+The path decides the owner: `agent_id` in the body is ignored, another agent's
+schedule is `404` (`409` if you try to take its name), and `channel_id` must be
+one the agent is already bound to. A schedule with no channel is recorded and
+announced nowhere.
+
 ### Evals
 
 ```
@@ -745,14 +774,22 @@ gets a worktree with the files already present.
 ### The token is deliberately weaker
 
 `http.delegate_tokens_env` names a set of tokens restricted to sending a request,
-reading agent status, and speaking in a conversation. Managing agents, secrets,
-tools, workflows or schedules is `403`, and so is reading a definition (it exposes
-host paths). So an agent talked into misbehaving by a message in its channel
-cannot delete or reconfigure the others.
+reading agent status, speaking in a conversation, and managing the schedules filed
+under an agent. Managing agents, secrets, tools, workflows or the fleet-wide
+schedule routes is `403`, and so is reading a definition (it exposes host paths).
+So an agent talked into misbehaving by a message in its channel cannot delete or
+reconfigure the others.
 
 Speaking is on that restricted surface because it cannot reach a channel the agent
 is not already spoken to in: the target is resolved from the conversation's own
 history, never from the request. There is no way to name an arbitrary channel.
+
+Schedules are on it for the same kind of reason. The token is shared, so the agent
+in the path is a claim rather than a proof; what bounds it is that the claim buys
+nothing beyond that agent — the work runs there, its result can only be announced
+in a channel that agent already has, and somebody else's schedule is invisible.
+Per-agent tokens would let the gateway decide the identity instead of believing
+it; until then, this is the same bargain `notify` already makes.
 
 Setting it up (operator, once):
 
@@ -819,6 +856,7 @@ The end-to-end flows, with sequence diagrams and what each step records, are in
 | Stop and clear the queue | `/stop` | — |
 | A separate, parallel session | reply in a **thread** | — |
 | Schedule recurring work | `/schedule create` | `PUT /v1/schedules/{id}` |
+| Let an agent schedule itself | — | `roundclaw schedule set` · `PUT /v1/agents/{a}/schedules/{id}` |
 | Trigger from an external system | — | `POST /v1/webhooks/{a}` (signed) |
 | Give an agent a secret | — | `roundclaw secret set` · `PUT /v1/agents/{a}/secrets/{name}` |
 | Give an agent a local tool | register: `roundclaw tool set` · grant: ask admin "붙여줘" | `PUT /v1/tools/{id}` · agent `tools` list |

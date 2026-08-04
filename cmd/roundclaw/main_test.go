@@ -205,6 +205,82 @@ func TestSendAcceptsFlagsAfterPositionals(t *testing.T) {
 	}
 }
 
+// Delegated work belongs to the conversation that asked for it. Without this the
+// request lands in the delegate's default conversation — the one /ask, schedules
+// and webhooks share — so every thread delegating to the same agent piles into a
+// single Claude session and reads the others' history.
+func TestSendNotifyMeRunsInTheCallersConversation(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "pm")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "1529396903836651540")
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeTestJSON(w, http.StatusAccepted, map[string]any{"turn_id": 4, "status": "queued"})
+	}))
+	defer srv.Close()
+
+	code := cmdSend([]string{"--url", srv.URL, "--token", "t", "dev", "x", "--notify-me"})
+	if code != 0 {
+		t.Fatalf("cmdSend exit = %d, want 0", code)
+	}
+	if got["conversation_id"] != "1529396903836651540" {
+		t.Errorf("conversation_id = %v, want the caller's own conversation", got["conversation_id"])
+	}
+}
+
+// An explicit --conversation is the caller saying where the work goes, so
+// inheriting must not override it.
+func TestSendNotifyMeKeepsAnExplicitConversation(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "pm")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "thread-1")
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeTestJSON(w, http.StatusAccepted, map[string]any{"turn_id": 5, "status": "queued"})
+	}))
+	defer srv.Close()
+
+	code := cmdSend([]string{
+		"--url", srv.URL, "--token", "t", "dev", "x", "--notify-me", "--conversation", "worker-1",
+	})
+	if code != 0 {
+		t.Fatalf("cmdSend exit = %d, want 0", code)
+	}
+	if got["conversation_id"] != "worker-1" {
+		t.Errorf("conversation_id = %v, want worker-1", got["conversation_id"])
+	}
+}
+
+// A delegator that is itself in a default conversation has no thread to hand
+// down, and inventing one would strand the work in a conversation nobody is
+// watching. The delegate's default conversation is the right answer there.
+func TestSendNotifyMeFromTheDefaultConversationNamesNothing(t *testing.T) {
+	t.Setenv("ROUNDCLAW_AGENT_ID", "pm")
+	t.Setenv("ROUNDCLAW_CONVERSATION_ID", "")
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeTestJSON(w, http.StatusAccepted, map[string]any{"turn_id": 6, "status": "queued"})
+	}))
+	defer srv.Close()
+
+	if code := cmdSend([]string{"--url", srv.URL, "--token", "t", "dev", "x", "--notify-me"}); code != 0 {
+		t.Fatalf("cmdSend exit = %d, want 0", code)
+	}
+	if _, ok := got["conversation_id"]; ok {
+		t.Errorf("conversation_id = %v, want it absent so the delegate uses its default", got["conversation_id"])
+	}
+}
+
 // Without an injected identity there is nobody to notify, and guessing would
 // wake the wrong agent.
 func TestSendRefusesNotifyMeOutsideAContainer(t *testing.T) {

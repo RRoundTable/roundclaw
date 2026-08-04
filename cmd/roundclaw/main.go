@@ -349,7 +349,8 @@ func cmdSend(args []string) int {
 	notifyMe := fs.Bool("notify-me", false,
 		"return the result to me as a new turn when it finishes, instead of waiting (implies --no-wait)")
 	conversation := fs.String("conversation", "",
-		"run in this named conversation of the target agent (own session, queue and workspace)")
+		"run in this named conversation of the target agent (own session, queue and workspace); "+
+			"with --notify-me it defaults to the conversation I am running in")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
 		return 2
@@ -382,9 +383,27 @@ func cmdSend(args []string) int {
 			return fail(fmt.Errorf("--notify-me needs ROUNDCLAW_AGENT_ID, which is set inside an agent container; " +
 				"from a terminal use --wait or --callback instead"))
 		}
+		mine := os.Getenv("ROUNDCLAW_CONVERSATION_ID")
 		body["notify"] = map[string]any{
 			"agent":        me,
-			"conversation": os.Getenv("ROUNDCLAW_CONVERSATION_ID"),
+			"conversation": mine,
+		}
+		// Delegated work runs in the conversation it belongs to, not the
+		// delegate's default one. Left unnamed it lands in the conversation
+		// /ask, schedules and webhooks share, so every thread handing work to
+		// the same agent piles into one Claude session and reads the others'
+		// history — and that conversation ends up carrying an audience per
+		// thread, which is the one-conversation-one-audience invariant a result
+		// relies on to know where it goes.
+		//
+		// The delegator's own ID is passed through unchanged rather than derived
+		// from. A thread ID is a Discord snowflake, unique across the fleet, so
+		// it cannot collide with a conversation the delegate already holds; it
+		// does not grow as a chain delegates onward; and `/stop` typed in that
+		// thread resolves to this same ID, which is what keeps a wedged
+		// delegated turn stoppable from where the person is watching it.
+		if *conversation == "" && mine != "" {
+			body["conversation_id"] = mine
 		}
 		// Waiting as well would defeat the point and hold this process open for
 		// a result that is already guaranteed to come back.

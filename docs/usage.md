@@ -1,8 +1,13 @@
 # Using roundclaw
 
-This is the user guide: how to talk to an agent from **Discord** or the **HTTP
-API**, watch it work, steer or stop it, and set up recurring runs. For how any of
-it works underneath, see [architecture/](architecture/README.md).
+This is the user guide: how to talk to an agent from **Discord**, **Slack** or
+the **HTTP API**, watch it work, steer or stop it, and set up recurring runs. For
+how any of it works underneath, see [architecture/](architecture/README.md).
+
+The three reach the same agents and the same queue. Everything you can do in one
+chat tool you can do in the other; only the wording and the widgets differ, and
+the Slack section below covers just those differences rather than repeating the
+Discord one.
 
 An **agent** is a named Claude Code worker with its own workspace and session. It
 keeps context across requests, so you can follow up without repeating yourself.
@@ -306,10 +311,125 @@ appear or is refused, you don't have rights for it — ask whoever runs the bot.
 
 ---
 
+## Slack
+
+Everything above works the same way here. What follows is only what differs.
+
+### Setting it up
+
+Slack does not let an app create its own slash commands, so they are declared
+once in the app manifest. Create an app at <https://api.slack.com/apps> with
+**From an app manifest**, paste this in, install it to the workspace, and invite
+the bot to the channels you want it in.
+
+```yaml
+display_information:
+  name: roundclaw
+features:
+  bot_user:
+    display_name: roundclaw
+    always_online: false
+  slash_commands:
+    - { command: /ask,       description: Send a request to a specific agent,  usage_hint: "<agent> <what you want done>" }
+    - { command: /agents,    description: List the agents you can call }
+    - { command: /agent,     description: Create, edit or delete an agent,     usage_hint: "create | edit <id> | show <id> | enable <id> | disable <id> | delete <id>" }
+    - { command: /schedule,  description: Run an agent on a recurring schedule, usage_hint: "create <agent> | list | show <id> | pause <id> | resume <id> | delete <id>" }
+    - { command: /proposals, description: Review changes waiting on your approval }
+    - { command: /status,    description: Show what an agent is doing right now, usage_hint: "[agent]" }
+    - { command: /workflow,  description: Show an agent's execution state,      usage_hint: "[agent]" }
+    - { command: /stop,      description: Stop the current turn and drop the queue, usage_hint: "[agent]" }
+    - { command: /steer,     description: Interrupt and redirect the agent,     usage_hint: "<what it should do instead>" }
+  shortcuts:
+    - { name: Stop this line of work,  type: message, callback_id: stop_here,  description: Stop the agent working in this thread }
+    - { name: Steer this line of work, type: message, callback_id: steer_here, description: Interrupt and redirect the agent in this thread }
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - chat:write
+      - commands
+      - files:read
+      - files:write
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events: [message.channels, message.groups, message.im, message.mpim]
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
+```
+
+Then set two environment variables and restart the gateway:
+
+```
+SLACK_BOT_TOKEN=xoxb-…    # OAuth & Permissions → Bot User OAuth Token
+SLACK_APP_TOKEN=xapp-…    # Basic Information → App-Level Tokens, scope connections:write
+```
+
+Both are needed. The bot token authorises the API calls and the app-level token
+opens the connection, so with only one the app can speak but not listen. Setting
+one and not the other is refused at startup rather than left half-working.
+
+Nothing needs to be reachable from the internet: roundclaw dials out to Slack.
+
+### Binding a channel
+
+Same as Discord — `/agent create`, then put the channel in **Bound channels**,
+or just type `this` for the channel you are in. A channel belongs to one agent,
+and that holds across both chat tools.
+
+If you are setting a binding by hand — in YAML, or through the API — a Slack
+channel is written `slack:C0123ABCD`. A bare id means Discord, which is what
+every binding written before Slack existed meant. `discord:123` also works and
+is stored as `123`.
+
+### Commands take one line, not options
+
+Slack gives a command a single box, so arguments are positional:
+
+```
+/ask pm 이번 주 리포트 정리해줘
+/agent edit pm
+/schedule create pm
+/status pm            ← the agent is optional; without it, this channel's
+/stop
+```
+
+There is no autocomplete, so agent and schedule names are typed in full. Run
+`/agents` to see them.
+
+### Stopping or steering a thread
+
+`/stop` and `/steer` act on the agent's **main line of work**, not the thread
+you type them in — Slack does not tell a slash command which thread it is in.
+
+To stop or redirect what is running *in a thread*, use the message shortcut:
+hover any message in the thread → **More actions** (⋯) → **Stop this line of
+work** or **Steer this line of work**. Steering opens a box for the new
+instruction.
+
+### Who can run what
+
+One gate here, not two: Slack has no way to hide a command from a member, so
+`slack.allowed_users` in the config is the only check. Leave it empty and anyone
+in the workspace can run anything; list Slack user IDs and only they can spend
+tokens or change the fleet. `/status`, `/agents` and `/workflow` stay open
+either way.
+
+Answers to commands are shown only to you. An agent's actual replies, and
+proposals with their Approve/Reject buttons, go to the channel — a decision that
+changes the fleet should be visible to the room it was made in.
+
+---
+
 ## HTTP API
 
-Same agents, same queue as Discord — an API request and a Discord message land in
-the same place and wait behind each other. Every route below is under `/v1` and
+Same agents, same queue as the chat tools — an API request and a Discord or Slack
+message land in the same place and wait behind each other. Every route below is under `/v1` and
 needs a bearer token except webhooks, which are signed instead.
 
 ```

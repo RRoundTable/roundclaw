@@ -82,6 +82,28 @@ discord:
   allowed_roles: []
   allowed_users: []
 
+# Slack, over Socket Mode: roundclaw dials out, so no public URL, ingress or
+# TLS certificate is needed. Leave both tokens unset to run without Slack —
+# one chat tool and not the other is a supported configuration, and so is
+# neither. See docs/usage.md for the app manifest to paste in.
+slack:
+  # The bot token, xoxb-…, which authorises the API calls.
+  token_env: SLACK_BOT_TOKEN
+  # The app-level token, xapp-…, which opens the socket. Both are required:
+  # a bot token alone can speak but cannot listen, so the app would be a bot
+  # that silently ignores everybody. Setting only one is refused at startup.
+  app_token_env: SLACK_APP_TOKEN
+  # Who may run the commands, by Slack user ID.
+  #
+  # Unlike Discord this is the ONLY gate. Slack has no equivalent of
+  # default_member_permissions — any workspace member can invoke a slash
+  # command the app installs — so this is not a second line of defence here,
+  # it is the first and last. A workspace where it matters who spends tokens
+  # has to set it.
+  #
+  # /status, /workflow and /agents stay open regardless, for the reason above.
+  allowed_users: []
+
 http:
   addr: ":8080"
   tokens_env: ROUNDCLAW_API_TOKENS

@@ -20,6 +20,9 @@ type OriginType string
 const (
 	// OriginDiscord routes the result back to the channel it came from.
 	OriginDiscord OriginType = "discord"
+	// OriginSlack routes the result back to the Slack channel, and to the
+	// thread within it when the request arrived in one.
+	OriginSlack OriginType = "slack"
 	// OriginHTTPPoll records the result in SQLite and stops there; the client
 	// collects it via GET /v1/turns/{id} or the SSE stream.
 	OriginHTTPPoll OriginType = "http_poll"
@@ -43,7 +46,14 @@ const (
 type Origin struct {
 	Type OriginType `json:"type"`
 
-	// Discord
+	// Chat channels, Discord and Slack alike.
+	//
+	// MessageID means slightly different things in the two, because a thread
+	// does. A Discord thread is its own channel, so ChannelID is already the
+	// thread and MessageID only names the message being answered. A Slack
+	// thread is not a channel — it is a channel plus the timestamp of the
+	// message that started it — so for Slack this field is that timestamp, and
+	// dropping it turns a threaded reply into one shouted at the whole channel.
 	ChannelID string `json:"channel_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
 
@@ -87,7 +97,7 @@ type Origin struct {
 // into that search instead of breaking routing.
 func (o Origin) WithAudience(a Origin) Origin {
 	switch a.Type {
-	case OriginDiscord, OriginHTTPCallback:
+	case OriginDiscord, OriginSlack, OriginHTTPCallback:
 	default:
 		return o
 	}
@@ -113,7 +123,7 @@ func (o Origin) Listening() (Origin, bool) {
 		return *o.Audience, true
 	}
 	switch o.Type {
-	case OriginDiscord, OriginHTTPCallback:
+	case OriginDiscord, OriginSlack, OriginHTTPCallback:
 		return o, true
 	}
 	return Origin{}, false
@@ -122,6 +132,13 @@ func (o Origin) Listening() (Origin, bool) {
 // DiscordOrigin builds an Origin that replies in a Discord channel.
 func DiscordOrigin(channelID, messageID string) Origin {
 	return Origin{Type: OriginDiscord, ChannelID: channelID, MessageID: messageID}
+}
+
+// SlackOrigin builds an Origin that replies in a Slack channel, in the thread
+// named by threadTS when there is one. Empty threadTS posts in the channel
+// itself.
+func SlackOrigin(channelID, threadTS string) Origin {
+	return Origin{Type: OriginSlack, ChannelID: channelID, MessageID: threadTS}
 }
 
 // HTTPPollOrigin builds an Origin for a caller that will fetch the result.
@@ -163,6 +180,11 @@ func (o Origin) Validate() error {
 			return fmt.Errorf("discord origin: channel_id is required")
 		}
 		return nil
+	case OriginSlack:
+		if o.ChannelID == "" {
+			return fmt.Errorf("slack origin: channel_id is required")
+		}
+		return nil
 	case OriginHTTPPoll:
 		return nil
 	case OriginHTTPCallback:
@@ -201,6 +223,11 @@ func (o Origin) String() string {
 	switch o.Type {
 	case OriginDiscord:
 		return "discord:" + o.ChannelID
+	case OriginSlack:
+		if o.MessageID != "" {
+			return "slack:" + o.ChannelID + "/" + o.MessageID
+		}
+		return "slack:" + o.ChannelID
 	case OriginAgent:
 		s := "agent:" + o.Agent
 		if o.Conversation != "" {

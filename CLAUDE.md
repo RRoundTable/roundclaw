@@ -1,7 +1,7 @@
 # roundclaw
 
 A durable orchestrator for Claude Code. Agents run in containers, work survives
-worker crashes, and Discord and the HTTP API feed the same queue.
+worker crashes, and Discord, Slack and the HTTP API feed the same queue.
 
 ## Read these first
 

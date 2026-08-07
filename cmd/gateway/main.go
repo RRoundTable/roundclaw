@@ -21,6 +21,7 @@ import (
 	"github.com/roundtable/roundclaw/internal/adapter"
 	"github.com/roundtable/roundclaw/internal/claude"
 	"github.com/roundtable/roundclaw/internal/config"
+	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/registry"
 	"github.com/roundtable/roundclaw/internal/store"
 )
@@ -111,34 +112,43 @@ func run(configPath string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Speaking outside a turn needs the live session, which only exists when
-	// Discord is connected. Hoisted out of the block below so the HTTP API can be
-	// given it; nil when running API-only, which that endpoint reports.
-	var sender adapter.MessageSender
+	// Speaking outside a turn needs a live connection, which only exists for a
+	// chat tool that is configured. Hoisted out of the blocks below so the HTTP
+	// API can be given each one it has; a tool with no entry is one that
+	// endpoint reports rather than silently swallowing.
+	senders := map[core.OriginType]adapter.MessageSender{}
+
+	// Built once and shared: both chat edges route unbound channels the same
+	// way, and two router instances would mean two credentials resolved and two
+	// containers per decision.
+	var router *claude.Router
+	if cfg.Router.Enabled {
+		cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
+		if err != nil {
+			return fmt.Errorf("router.enabled is set but %w", err)
+		}
+		router = &claude.Router{
+			Runtime:         cfg.Container.Runtime,
+			Image:           cfg.Container.Image,
+			Model:           cfg.Router.Model,
+			Timeout:         cfg.Router.Timeout,
+			CredentialEnv:   cred.EnvName,
+			CredentialValue: cred.Value,
+			// --bare is faster but reads only an API key, so use it only when
+			// that is what was resolved. A setup-token runs the full CLI.
+			Bare: cfg.Container.IsAPIKey(cred),
+		}
+		log.Info("routing enabled for unbound channels",
+			"model", cfg.Router.Model, "channels", len(cfg.Router.Channels))
+	}
 
 	if token := os.Getenv(cfg.Discord.TokenEnv); token != "" {
 		dc, err := adapter.NewDiscord(token, cfg.Discord.GuildID, disp, log)
 		if err != nil {
 			return err
 		}
-		if cfg.Router.Enabled {
-			cred, err := cfg.Container.ResolveCredential(os.LookupEnv)
-			if err != nil {
-				return fmt.Errorf("router.enabled is set but %w", err)
-			}
-			dc.SetRouter(&claude.Router{
-				Runtime:         cfg.Container.Runtime,
-				Image:           cfg.Container.Image,
-				Model:           cfg.Router.Model,
-				Timeout:         cfg.Router.Timeout,
-				CredentialEnv:   cred.EnvName,
-				CredentialValue: cred.Value,
-				// --bare is faster but reads only an API key, so use it only when
-				// that is what was resolved. A setup-token runs the full CLI.
-				Bare: cfg.Container.IsAPIKey(cred),
-			})
-			log.Info("routing enabled for unbound channels",
-				"model", cfg.Router.Model, "channels", len(cfg.Router.Channels))
+		if router != nil {
+			dc.SetRouter(router)
 		}
 		// Natural-language admin is no longer the stateless /admin planner. It is an
 		// ordinary agent (id "admin") given a full-scope API token and the roundclaw
@@ -150,10 +160,42 @@ func run(configPath string, log *slog.Logger) error {
 			return err
 		}
 		defer dc.Close()
-		sender = dc.Sender()
+		senders[core.OriginDiscord] = dc.Sender()
 	} else {
-		log.Warn("discord token is unset; running with the HTTP API only",
+		log.Info("discord token is unset; not connecting to discord",
 			"env", cfg.Discord.TokenEnv)
+	}
+
+	// Slack, over Socket Mode. Both tokens are required: the bot token
+	// authorises the API calls and the app-level token opens the socket, so a
+	// deployment with only one of them is told rather than left half-connected.
+	// See adr/001-slack-socket-mode.
+	slackBot := os.Getenv(cfg.Slack.TokenEnv)
+	slackApp := os.Getenv(cfg.Slack.AppTokenEnv)
+	switch {
+	case slackBot != "" && slackApp != "":
+		sc, err := adapter.NewSlack(slackBot, slackApp, disp, log)
+		if err != nil {
+			return err
+		}
+		if router != nil {
+			sc.SetRouter(router)
+		}
+		if err := sc.Start(ctx); err != nil {
+			return err
+		}
+		defer sc.Close()
+		senders[core.OriginSlack] = sc.Sender()
+	case slackBot != "" || slackApp != "":
+		return fmt.Errorf("slack needs both tokens: %s and %s, and only one is set",
+			cfg.Slack.TokenEnv, cfg.Slack.AppTokenEnv)
+	default:
+		log.Info("slack tokens are unset; not connecting to slack",
+			"bot_env", cfg.Slack.TokenEnv, "app_env", cfg.Slack.AppTokenEnv)
+	}
+
+	if len(senders) == 0 {
+		log.Warn("no chat tool is connected; running with the HTTP API only")
 	}
 
 	tokens := adapter.TokensFromEnv(os.Getenv(cfg.HTTP.TokensEnv))
@@ -170,7 +212,9 @@ func run(configPath string, log *slog.Logger) error {
 	}
 
 	api := adapter.NewHTTP(disp, log, tokens, delegateTokens, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
-	api.SetMessageSender(sender)
+	for originType, s := range senders {
+		api.SetMessageSender(originType, s)
+	}
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
 		Handler:           api.Handler(),

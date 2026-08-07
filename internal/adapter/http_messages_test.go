@@ -18,7 +18,7 @@ import (
 	"github.com/roundtable/roundclaw/internal/store"
 )
 
-// fakeSender records what an agent said instead of sending it to Discord.
+// fakeSender records what an agent said instead of sending it to a chat tool.
 type fakeSender struct {
 	mu    sync.Mutex
 	sent  []string // "channel: text"
@@ -26,19 +26,19 @@ type fakeSender struct {
 	err   error
 }
 
-func (f *fakeSender) ChannelMessageSend(channelID, text string) error {
+func (f *fakeSender) SendMessage(to core.Origin, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
 	}
-	f.sent = append(f.sent, channelID+": "+text)
+	f.sent = append(f.sent, to.ChannelID+": "+text)
 	return nil
 }
 
 // Mirrors the real sender's contract: it owns the readers and closes them
 // whether or not the send succeeds.
-func (f *fakeSender) ChannelFileSend(channelID, text string, files []OutFile) error {
+func (f *fakeSender) SendFiles(to core.Origin, text string, files []OutFile) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, file := range files {
@@ -48,7 +48,7 @@ func (f *fakeSender) ChannelFileSend(channelID, text string, files []OutFile) er
 	if f.err != nil {
 		return f.err
 	}
-	f.sent = append(f.sent, channelID+": "+text)
+	f.sent = append(f.sent, to.ChannelID+": "+text)
 	return nil
 }
 
@@ -122,7 +122,7 @@ agents:
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	api := NewHTTP(disp, log, []string{testToken}, []string{delegateToken},
 		cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
-	api.SetMessageSender(sender)
+	api.SetMessageSender(core.OriginDiscord, sender)
 
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)

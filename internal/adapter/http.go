@@ -37,10 +37,12 @@ type HTTP struct {
 	delegateTokens [][32]byte
 	waitTimeout    time.Duration
 
-	// sender is how an agent speaks outside a turn (POST .../messages). Nil when
-	// no Discord connection exists, which that endpoint reports rather than
-	// silently swallowing.
-	sender MessageSender
+	// senders is how an agent speaks outside a turn (POST .../messages), keyed
+	// by the chat tool it is speaking into. A tool with no entry is one this
+	// gateway has no connection for, which that endpoint reports rather than
+	// silently swallowing. Running with one chat tool and not the other is a
+	// supported configuration, so a partial map is normal.
+	senders map[core.OriginType]MessageSender
 
 	sse sseLimiter
 }

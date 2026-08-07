@@ -88,7 +88,7 @@ func notifyHarness(t *testing.T) (*Activities, *recordingSignaller, *store.Store
 	}
 
 	sig := &recordingSignaller{}
-	return NewActivities(cfg, stores, reg, nil, sig), sig, pm
+	return NewActivities(cfg, stores, reg, nil, nil, sig), sig, pm
 }
 
 // runDeliver executes the activity in a real activity context, the same way

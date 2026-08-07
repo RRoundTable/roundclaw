@@ -1,9 +1,34 @@
 # Adapters
 
-`internal/adapter` is every edge roundclaw has: the two inbound sources
-(Discord, HTTP), the read paths that answer questions about running work, and
-the admission logic they share. Outbound delivery lives in the worker
+`internal/adapter` is every edge roundclaw has: the three inbound sources
+(Discord, Slack, HTTP), the read paths that answer questions about running work,
+and the admission logic they share. Outbound delivery lives in the worker
 ([orchestration.md](orchestration.md)) because it must be retried durably.
+
+## Channels are references, not ids
+
+Three things store a channel and later turn it back into a reply address: an
+agent's bindings (`agent_channels`), a schedule, and a workflow. With two chat
+tools a bare vendor id no longer says where a reply goes, so a stored channel
+names its tool: `slack:C0123ABCD`, and a value with **no prefix means Discord**
+— which is what every row written before Slack existed says.
+
+`core.ParseChannelRef` / `FormatChannelRef` / `OriginForChannel` are the only
+places that know this. Two rules are load-bearing:
+
+- **Normalise before storing, never at the point of use.** `agent_channels` is
+  keyed on the reference, so if `123` and `discord:123` could both be stored
+  they would be two rows — and two agents bound to one Discord channel, which
+  the [Channels spec](../specs/channels.md) forbids. `registry.replaceChannels`
+  and `ByChannel` both go through `core.CanonicalChannelRef`.
+- **Nothing infers the tool from the id's shape.** Slack's ids start C/G/D and
+  Discord's are all digits, and sniffing that would work until a vendor changed
+  an opaque format and then misdeliver silently. A prefix somebody wrote down
+  is a record; a regex over someone else's id is a guess.
+
+No table gained a platform column, and no stored definition or version snapshot
+was rewritten — snapshots record what an agent *was*, so migrating them would
+make rollback restore a shape that never existed. See `adr/002-channel-refs`.
 
 ## Dispatcher — the shared admission path
 
@@ -120,6 +145,59 @@ Notable behaviour:
   test. The outbox is resolved against the workspace the *conversation* runs in,
   by the same function the worker mounts with, so a file written in one thread is
   not visible from another.
+
+## Slack (`slack*.go`)
+
+One Socket Mode connection in the gateway; the worker uses the Web API only.
+Same split as Discord and for the same reason — a second live connection would
+double-deliver every inbound event — which is most of why Socket Mode was
+chosen over the Events API (`adr/001-slack-socket-mode`). The other half is
+that dialling out needs no public ingress, so wanting Slack does not first mean
+solving reverse proxying and certificate renewal.
+
+Every command Discord has exists here. What differs is how it is typed and, in
+two places, what the platform will tell us:
+
+- **No runtime command registration.** Slack slash commands are declared in the
+  app manifest by whoever installs the app, not created over the API. There is
+  no equivalent of Discord's bulk overwrite, so `docs/usage.md` carries the
+  manifest to paste in and this code only handles what arrives.
+- **One free-text argument.** Slack gives a command a single string where
+  Discord gives named, typed, autocompleted options. `cutWord` parses the
+  subcommand and its argument out of it, and anything that would have been a
+  picker is a name typed in full.
+- **Ack first, always.** Slack expects an acknowledgement within three seconds
+  and retries what it does not get one for, so `dispatchEvent` acks and then
+  handles in a goroutine — unconditionally. Everything downstream is keyed for
+  idempotency anyway, but a retry that is merely harmless still costs a queue
+  slot.
+- **A thread costs no API call.** Replying with a `thread_ts` *is* opening the
+  thread, where Discord needs `MessageThreadStart` first. The conversation ID is
+  the timestamp with its dot replaced (`slackConversation`), validated rather
+  than trusted because it becomes a workflow ID and a directory name.
+- **Slash commands carry no thread.** This is the one real gap and it is
+  Slack's: the payload has a channel and a user and nothing that says which
+  thread it was typed in. So `/stop` and `/steer` act on the agent's default
+  conversation, and thread-scoped control is a **message shortcut**
+  (`slack_shortcuts.go`) — invoked from a specific message, which does carry the
+  thread. Same effect, different widget; without it Slack would be missing
+  something Discord has, which [the spec](../specs/channels.md) forbids.
+- **One permission gate, not two.** Slack has no
+  `default_member_permissions` — any workspace member can invoke a command the
+  app installs — so `slack.allowed_users` is the first and last check rather
+  than the second of two. Buttons and submitted forms re-check it themselves,
+  because a message with buttons is visible to the whole channel.
+
+Uploads are fetched with a plain authenticated GET: `URLPrivateDownload` needs
+the bot token, and an unauthenticated fetch returns a sign-in page with status
+200 — which would be staged and handed to the agent as though it were the
+document. Files going out are one upload per file (`SendFiles`), because Slack
+takes one at a time where Discord takes a set in one message.
+
+`slackMarkup` translates the shared formatters' Discord-flavoured bold at the
+edge. One set of formatters and a translation is cheaper than a second copy of
+every report — and a second copy is how the two tools would start describing the
+same agent differently.
 
 ## HTTP (`http*.go`)
 

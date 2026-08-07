@@ -98,6 +98,17 @@ func run(configPath string, log *slog.Logger) error {
 			"env", cfg.Discord.TokenEnv)
 	}
 
+	// Web-API-only Slack client, for the same reason: the gateway owns the one
+	// Socket Mode connection. Only the bot token is needed here — the
+	// app-level token opens a socket, and this must not open one.
+	var slackSend activity.SlackSender
+	if token := os.Getenv(cfg.Slack.TokenEnv); token != "" {
+		slackSend = adapter.SlackRESTSender(token)
+	} else {
+		log.Info("slack bot token is unset; slack deliveries will fail",
+			"env", cfg.Slack.TokenEnv)
+	}
+
 	tc, err := dialTemporal(cfg, log)
 	if err != nil {
 		return err
@@ -126,7 +137,7 @@ func run(configPath string, log *slog.Logger) error {
 	w.RegisterWorkflow(rcworkflow.EvalRun)
 	// Registering the struct exposes every exported method as an activity,
 	// which is why Activities carries no exported non-activity methods.
-	w.RegisterActivity(activity.NewActivities(cfg, stores, reg, discord, tc))
+	w.RegisterActivity(activity.NewActivities(cfg, stores, reg, discord, slackSend, tc))
 
 	// Cancelled when the worker stops, so a sweep cannot outlive the process.
 	retentionCtx, stopRetention := context.WithCancel(context.Background())

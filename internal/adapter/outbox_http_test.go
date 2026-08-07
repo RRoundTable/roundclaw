@@ -76,7 +76,7 @@ func outboxHarness(t *testing.T) (*httptest.Server, *fakeSender, string) {
 	disp := NewDispatcher(cfg, &fakeTemporal{}, stores, reg)
 	api := NewHTTP(disp, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		[]string{testToken}, nil, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
-	api.SetMessageSender(sender)
+	api.SetMessageSender(core.OriginDiscord, sender)
 
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)

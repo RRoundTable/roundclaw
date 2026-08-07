@@ -66,20 +66,35 @@ type messageResponse struct {
 	Files int `json:"files,omitempty"`
 }
 
-// MessageSender posts a message to a Discord channel. The gateway already owns a
+// MessageSender posts a message to a chat channel. The gateway already owns a
 // session for receiving, so speaking costs no new connection.
+//
+// It takes the whole audience rather than a channel id because a channel id is
+// no longer enough to reach a place: it does not say which chat tool, and for
+// Slack it does not say which thread. Handing over the address roundclaw
+// recorded is also what keeps the authorisation story intact — the sender is
+// given somewhere the agent has already been heard, never a name from a request.
 type MessageSender interface {
-	ChannelMessageSend(channelID, text string) error
-	// ChannelFileSend posts text with files attached. The sender closes every
+	SendMessage(to core.Origin, text string) error
+	// SendFiles posts text with files attached. The sender closes every
 	// reader, including when the send fails.
-	ChannelFileSend(channelID, text string, files []OutFile) error
+	SendFiles(to core.Origin, text string, files []OutFile) error
 }
 
-// SetMessageSender installs the sender used by POST /v1/agents/{id}/messages.
-// Left unset, the endpoint reports 503 rather than pretending to deliver: an
+// SetMessageSender installs the sender for one chat tool, used by
+// POST /v1/agents/{id}/messages. With no sender for the tool a conversation
+// answers to, the endpoint reports 503 rather than pretending to deliver: an
 // agent that believes it announced progress and did not is worse than one that
 // knows it cannot.
-func (h *HTTP) SetMessageSender(s MessageSender) { h.sender = s }
+func (h *HTTP) SetMessageSender(t core.OriginType, s MessageSender) {
+	if s == nil {
+		return
+	}
+	if h.senders == nil {
+		h.senders = map[core.OriginType]MessageSender{}
+	}
+	h.senders[t] = s
+}
 
 func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agent")
@@ -103,15 +118,20 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 		h.writeLookupError(w, err)
 		return
 	}
-	if h.sender == nil {
-		writeError(w, http.StatusServiceUnavailable,
-			"no discord connection is configured, so there is nowhere to speak")
+	target, err := h.conversationAudience(r.Context(), agentID, body.Conversation, body.TurnID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	target, err := h.conversationChannel(r.Context(), agentID, body.Conversation, body.TurnID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	// Resolved after the audience, not before: which chat tool has to be
+	// connected depends on where this conversation is heard, and reporting "no
+	// connection" for the tool it does not use would be a lie.
+	sender := h.senders[target.Type]
+	if sender == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+			"this conversation answers to %s, and no such connection is configured, "+
+				"so there is nowhere to speak", target.Type))
 		return
 	}
 
@@ -125,12 +145,14 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Chunked the same way a turn's result is: Discord rejects anything over its
-	// per-message limit, and a progress note can still carry a diff. Attachments
-	// ride on the last part so a short note and its file arrive as one message.
-	parts := chunk(body.Text, 1990)
+	// Chunked the same way a turn's result is, to the limit of the tool being
+	// spoken into rather than a fixed one: a note that fits in one Slack message
+	// should not arrive as three because Discord would have needed three.
+	// Attachments ride on the last part so a short note and its file arrive as
+	// one message.
+	parts := chunk(body.Text, messageChunk(target.Type))
 	for _, part := range parts[:len(parts)-1] {
-		if err := h.sender.ChannelMessageSend(target, part); err != nil {
+		if err := sender.SendMessage(target, part); err != nil {
 			closeOutbound(files)
 			writeError(w, http.StatusBadGateway, "send failed: "+err.Error())
 			return
@@ -140,9 +162,9 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 	last := parts[len(parts)-1]
 	if len(files) > 0 {
 		// The sender closes the readers either way.
-		err = h.sender.ChannelFileSend(target, last, files)
+		err = sender.SendFiles(target, last, files)
 	} else {
-		err = h.sender.ChannelMessageSend(target, last)
+		err = sender.SendMessage(target, last)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "send failed: "+err.Error())
@@ -150,12 +172,22 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Info("agent spoke out of band",
-		"agent", agentID, "conversation", body.Conversation, "channel", target,
+		"agent", agentID, "conversation", body.Conversation, "channel", target.String(),
 		"bytes", len(body.Text), "files", len(files))
 	writeJSON(w, http.StatusOK, messageResponse{
 		AgentID: agentID, Conversation: body.Conversation, Delivered: true,
-		Target: target, Files: len(files),
+		Target: target.String(), Files: len(files),
 	})
+}
+
+// messageChunk is the per-message limit to split an out-of-band note at, held
+// just under the tool's hard limit so a chunk that gains a character in
+// transit is not rejected outright.
+func messageChunk(t core.OriginType) int {
+	if t == core.OriginSlack {
+		return core.SlackMaxMessage - 10
+	}
+	return core.DiscordMaxMessage - 10
 }
 
 // conversationChannel resolves which channel the speaker is heard in.
@@ -172,56 +204,63 @@ func (h *HTTP) postMessage(w http.ResponseWriter, r *http.Request) {
 // the request. That is the whole authorisation model for speaking: an agent can
 // only reach an audience it already has, so there is no way to name an arbitrary
 // channel and no way for a prompt-injected agent to broadcast.
-func (h *HTTP) conversationChannel(ctx context.Context, agentID, conversation string, turnID int64) (string, error) {
+func (h *HTTP) conversationAudience(ctx context.Context, agentID, conversation string, turnID int64) (core.Origin, error) {
 	st, err := h.disp.Store(ctx, agentID)
 	if err != nil {
-		return "", err
+		return core.Origin{}, err
 	}
 
 	if turnID > 0 {
 		t, err := st.GetTurn(ctx, turnID)
 		if err != nil {
-			return "", fmt.Errorf("read turn %d of agent %s: %w", turnID, agentID, err)
+			return core.Origin{}, fmt.Errorf("read turn %d of agent %s: %w", turnID, agentID, err)
 		}
 		audience, ok := t.Origin.Listening()
 		if !ok {
-			return "", fmt.Errorf(
+			return core.Origin{}, fmt.Errorf(
 				"turn %d of agent %s has nobody listening; it was driven by the API, "+
 					"so its caller reads the result rather than being told it", turnID, agentID)
 		}
-		return audienceChannel(audience, fmt.Sprintf("turn %d of agent %s", turnID, agentID))
+		return speakableAudience(audience, fmt.Sprintf("turn %d of agent %s", turnID, agentID))
 	}
 
 	audience, ok, err := st.AudienceIn(ctx, conversation, store.AudienceLookback)
 	if err != nil {
-		return "", err
+		return core.Origin{}, err
 	}
 	if ok {
-		return audienceChannel(audience, fmt.Sprintf("conversation %q of agent %s", conversation, agentID))
+		return speakableAudience(audience, fmt.Sprintf("conversation %q of agent %s", conversation, agentID))
 	}
 
 	turns, err := st.RecentTurnsIn(ctx, conversation, 1)
 	if err != nil {
-		return "", err
+		return core.Origin{}, err
 	}
 	if len(turns) == 0 {
-		return "", fmt.Errorf("agent %s has no conversation %q to speak into", agentID, conversation)
+		return core.Origin{}, fmt.Errorf("agent %s has no conversation %q to speak into", agentID, conversation)
 	}
-	return "", fmt.Errorf(
-		"conversation %q of agent %s has no discord audience; it was driven by the API, "+
+	return core.Origin{}, fmt.Errorf(
+		"conversation %q of agent %s has no chat audience; it was driven by the API, "+
 			"so its caller reads results rather than being told them", conversation, agentID)
 }
 
-// audienceChannel narrows a resolved audience to something this endpoint can
-// actually post to. A callback URL is a real audience for a *result* and no use
+// speakableAudience narrows a resolved audience to somewhere this endpoint can
+// actually post. A callback URL is a real audience for a *result* and no use
 // here: there is no channel behind it, and answering as though a progress note
 // had been delivered is the failure this whole path exists to avoid.
-func audienceChannel(audience core.Origin, who string) (string, error) {
-	if audience.Type != core.OriginDiscord || audience.ChannelID == "" {
-		return "", fmt.Errorf("%s answers to %s, which is not a channel that can be spoken into",
-			who, audience.String())
+//
+// The address is returned whole rather than reduced to a channel id, so the
+// chat tool and — for Slack — the thread survive to the send. Reducing it here
+// is what would put a threaded progress note in front of the whole channel.
+func speakableAudience(audience core.Origin, who string) (core.Origin, error) {
+	switch audience.Type {
+	case core.OriginDiscord, core.OriginSlack:
+		if audience.ChannelID != "" {
+			return audience, nil
+		}
 	}
-	return audience.ChannelID, nil
+	return core.Origin{}, fmt.Errorf("%s answers to %s, which is not a channel that can be spoken into",
+		who, audience.String())
 }
 
 // maxMessageBytes caps an out-of-band message. Generous next to Discord's 2000

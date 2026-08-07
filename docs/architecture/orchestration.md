@@ -106,7 +106,7 @@ three Temporal executions these map to are next.
 
 ```
 roundclaw-<agentID>-default          default conversation
-roundclaw-<agentID>-<conversationID> a Discord thread
+roundclaw-<agentID>-<conversationID> a chat thread
 ```
 
 A conversation ID is not always a thread the agent itself is talked to in.
@@ -117,8 +117,10 @@ only ever handed work still has one execution per originating thread — see
 A conversation — not an agent — is the unit that owns a Claude session, a queue
 and a workspace. Every ID has the same three-part shape; the default
 conversation uses the `default` sentinel (`contract.DefaultConversation`) rather
-than a second format. The sentinel cannot collide with a thread, whose ID is an
-all-digit Discord snowflake.
+than a second format. The sentinel cannot collide with a thread ID: a Discord
+one is an all-digit snowflake, and a Slack one is its timestamp with the dot
+replaced (`1712345678-000100`), which `slackConversation` validates precisely
+because it also becomes a directory name.
 
 State held in the workflow:
 
@@ -285,9 +287,12 @@ agent anyone wants measured.
 ## Activities
 
 `internal/temporal/activity`. Registered as one struct via
-`NewActivities(cfg, stores, reg, discord, tc)` — dependencies are injected
-through the constructor because `RegisterActivity` on a struct registers *every*
-exported method, and a stray `SetDiscord` setter panics worker startup.
+`NewActivities(cfg, stores, reg, discord, slack, tc)` — dependencies are
+injected through the constructor because `RegisterActivity` on a struct
+registers *every* exported method, and a stray `SetDiscord` setter panics worker
+startup. Either chat sender may be nil: running with one chat tool and not the
+other is supported, so a delivery to a tool that is not configured fails as
+non-retryable rather than being refused at boot.
 
 **Failing fast is explicit.** `newNonRetryable` wraps the errors no retry can
 fix — a deleted agent, a missing credential, an origin this binary does not
@@ -350,6 +355,10 @@ default — a pipeline has no human to answer a permission prompt — and get th
 Switches on `turns.origin`:
 
 - `discord` — send to the channel, chunked at 2000 characters.
+- `slack` — send to the channel, in the thread named by `message_id` when there
+  is one, chunked at 4000. Every chunk carries the thread, not only the first:
+  posting the rest bare would drop the tail of a long answer into the channel,
+  out of the conversation it belongs to.
 - `http_callback` — signed POST, retried by Temporal's retry policy, host
   re-validated before the request.
 - `http_poll` — nothing to do; the row is already the answer.

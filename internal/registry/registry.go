@@ -199,6 +199,17 @@ func (a Agent) Validate() error {
 			return err
 		}
 	}
+	// A binding this cannot read is refused here rather than at delivery: the
+	// failure would otherwise surface as a reply that goes nowhere, long after
+	// whoever typed it has stopped watching.
+	for _, ch := range a.DiscordChannels {
+		if strings.TrimSpace(ch) == "" {
+			continue
+		}
+		if _, err := core.CanonicalChannelRef(ch); err != nil {
+			return fmt.Errorf("bound channel: %w", err)
+		}
+	}
 	// The image, the model and each group become docker or CLI argv tokens
 	// directly, so a value with whitespace could not be one argument — reject it
 	// here rather than build a command that means something other than it reads.
@@ -323,8 +334,15 @@ func (s *Store) Get(ctx context.Context, id string) (Agent, error) {
 
 // ByChannel returns the agent bound to a Discord channel.
 func (s *Store) ByChannel(ctx context.Context, channelID string) (Agent, error) {
+	// Through the same canonical form the binding was stored under, or a lookup
+	// for "discord:123" would miss a channel bound as "123".
+	channelID, err := core.CanonicalChannelRef(channelID)
+	if err != nil {
+		return Agent{}, fmt.Errorf("%w: %s", ErrNotFound, err)
+	}
+
 	var id string
-	err := s.db.QueryRowContext(ctx,
+	err = s.db.QueryRowContext(ctx,
 		`SELECT agent_id FROM agent_channels WHERE channel_id = ?`, channelID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, fmt.Errorf("%w: channel %s", ErrNotFound, channelID)
@@ -515,7 +533,15 @@ func replaceChannels(ctx context.Context, tx *sql.Tx, agentID string, channels [
 		if ch == "" {
 			continue
 		}
-		_, err := tx.ExecContext(ctx,
+		// Canonicalised before it is keyed on, not after. "123" and
+		// "discord:123" name one Discord channel, and storing both spellings
+		// would make them two rows — which is two agents bound to one channel,
+		// the thing the primary key below exists to prevent.
+		ch, err := core.CanonicalChannelRef(ch)
+		if err != nil {
+			return fmt.Errorf("channel binding of %s: %w", agentID, err)
+		}
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO agent_channels (channel_id, agent_id) VALUES (?, ?)`, ch, agentID)
 		if err != nil {
 			// The primary key on channel_id is what surfaces this, so a

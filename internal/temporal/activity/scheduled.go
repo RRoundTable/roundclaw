@@ -68,7 +68,15 @@ func (a *Activities) EnqueueScheduled(ctx context.Context, in EnqueueScheduledIn
 
 	origin := core.HTTPPollOrigin()
 	if sched.ChannelID != "" {
-		origin = core.DiscordOrigin(sched.ChannelID, "")
+		// The stored channel names its chat tool; this used to assume Discord,
+		// which would deliver a Slack schedule to Discord with a Slack id.
+		origin, err = core.OriginForChannel(sched.ChannelID)
+		if err != nil {
+			// A stored channel this binary cannot read will not become readable
+			// on retry, and firing into the wrong place is worse than not
+			// firing. The schedule is left for a person to fix.
+			return newNonRetryable(fmt.Errorf("schedule %s: %w", sched.ID, err))
+		}
 	}
 
 	// The firing time is the idempotency key: Temporal may retry this activity,

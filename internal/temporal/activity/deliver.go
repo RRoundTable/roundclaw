@@ -48,6 +48,17 @@ type DiscordSender interface {
 	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
 }
 
+// SlackSender posts a message to a Slack channel, in a thread when threadTS is
+// set. Same rule as DiscordSender for the same reason: the gateway owns the
+// single Socket Mode connection and the worker speaks only over the Web API,
+// because a second live connection would double-deliver every inbound event.
+//
+// Stated in roundclaw's own terms rather than slack-go's so this package does
+// not depend on that library's option builders — the caller adapts.
+type SlackSender interface {
+	PostMessage(ctx context.Context, channelID, threadTS, text string) error
+}
+
 // DeliverResponse routes a finished turn back to wherever it came from.
 //
 // The result is already durable in SQLite before this runs, so delivery is a
@@ -69,6 +80,9 @@ func (a *Activities) DeliverResponse(ctx context.Context, in DeliverInput) error
 	case core.OriginDiscord:
 		return a.deliverDiscord(in)
 
+	case core.OriginSlack:
+		return a.deliverSlack(ctx, in)
+
 	case core.OriginHTTPCallback:
 		return a.deliverCallback(ctx, in)
 
@@ -88,20 +102,41 @@ func (a *Activities) deliverDiscord(in DeliverInput) error {
 		return newNonRetryable(fmt.Errorf("discord delivery requested but no discord client is configured"))
 	}
 
-	text := in.Result.Text
-	if in.Result.Status == core.TurnError {
-		text = "⚠️ " + in.Result.ErrorMessage
-	}
-	if text == "" {
-		text = "(no output)"
-	}
-
-	for _, chunk := range chunkForDiscord(text) {
+	for _, chunk := range chunkForDiscord(deliveredText(in.Result)) {
 		if _, err := a.discord.ChannelMessageSend(in.Origin.ChannelID, chunk); err != nil {
 			return fmt.Errorf("send to discord channel %s: %w", in.Origin.ChannelID, err)
 		}
 	}
 	return nil
+}
+
+func (a *Activities) deliverSlack(ctx context.Context, in DeliverInput) error {
+	if a.slack == nil {
+		return newNonRetryable(fmt.Errorf("slack delivery requested but no slack client is configured"))
+	}
+
+	// Every chunk goes to the same thread, not just the first. Posting the rest
+	// bare would drop the tail of a long answer into the channel, out of the
+	// conversation it belongs to.
+	for _, chunk := range core.ChunkMessage(deliveredText(in.Result), core.SlackMaxMessage) {
+		if err := a.slack.PostMessage(ctx, in.Origin.ChannelID, in.Origin.MessageID, chunk); err != nil {
+			return fmt.Errorf("send to slack channel %s: %w", in.Origin.ChannelID, err)
+		}
+	}
+	return nil
+}
+
+// deliveredText is what a chat channel shows for a finished turn: the agent's
+// answer, or the reason there is none. Shared so the two chat adapters cannot
+// disagree about what a failed turn looks like.
+func deliveredText(r core.TurnResult) string {
+	if r.Status == core.TurnError {
+		return "⚠️ " + r.ErrorMessage
+	}
+	if r.Text == "" {
+		return "(no output)"
+	}
+	return r.Text
 }
 
 // deliverToAgent hands a finished turn's result to the agent that delegated it,
@@ -202,9 +237,10 @@ func (a *Activities) wakeAgent(ctx context.Context, agentID, conversation, idemp
 // replyOriginFor is where the woken agent's own answer should go: wherever that
 // conversation last answered.
 //
-// A conversation has exactly one audience — the Discord thread it lives in — so
-// the last human-facing turn is the authoritative address, and reading it here
-// keeps a second copy of it out of the delegated turn's origin.
+// A conversation has exactly one audience — the chat thread it lives in, in
+// whichever tool that is — so the last human-facing turn is the authoritative
+// address, and reading it here keeps a second copy of it out of the delegated
+// turn's origin.
 //
 // A conversation whose only turns are notifications has no audience to answer
 // to; recording the result is then all that can be done, which is what
@@ -216,7 +252,7 @@ func (a *Activities) replyOriginFor(ctx context.Context, st *store.Store, conver
 	}
 	for _, t := range turns {
 		switch t.Origin.Type {
-		case core.OriginDiscord, core.OriginHTTPCallback:
+		case core.OriginDiscord, core.OriginSlack, core.OriginHTTPCallback:
 			return t.Origin, nil
 		}
 	}
@@ -338,5 +374,5 @@ var callbackClient = &http.Client{
 // characters rather than bytes, and a cut has to land on a rune boundary or a
 // Korean reply carries a broken character at every seam.
 func chunkForDiscord(s string) []string {
-	return core.ChunkForDiscord(s, DiscordMaxMessage)
+	return core.ChunkMessage(s, DiscordMaxMessage)
 }

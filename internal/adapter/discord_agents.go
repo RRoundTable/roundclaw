@@ -257,7 +257,7 @@ func (d *Discord) showAgent(i *discordgo.InteractionCreate, agentID string) {
 		fmt.Fprintf(&b, "extra dirs (read-only): `%s`\n", strings.Join(agent.AdditionalDirs, ", "))
 	}
 	for _, ch := range agent.DiscordChannels {
-		fmt.Fprintf(&b, "bound to <#%s>\n", ch)
+		fmt.Fprintf(&b, "bound to %s\n", channelLabel(ch))
 	}
 	fmt.Fprintf(&b, "_created %s · updated %s_",
 		agent.CreatedAt.Format("2006-01-02 15:04"), agent.UpdatedAt.Format("2006-01-02 15:04"))

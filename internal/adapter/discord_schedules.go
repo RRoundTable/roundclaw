@@ -225,7 +225,9 @@ func describeSchedule(v ScheduleView) string {
 		fmt.Fprintf(&b, " · next %s", v.NextRun)
 	}
 	if v.ChannelID != "" {
-		fmt.Fprintf(&b, " · reports to <#%s>", v.ChannelID)
+		// Through channelLabel, not printed raw: a stored channel now names its
+		// chat tool, and "<#slack:C0123>" is a link to nothing.
+		fmt.Fprintf(&b, " · reports to %s", channelLabel(v.ChannelID))
 	} else {
 		b.WriteString(" · result recorded but not posted")
 	}

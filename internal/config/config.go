@@ -28,6 +28,7 @@ type Config struct {
 	Temporal  TemporalConfig  `yaml:"temporal"`
 	Container ContainerConfig `yaml:"container"`
 	Discord   DiscordConfig   `yaml:"discord"`
+	Slack     SlackConfig     `yaml:"slack"`
 	HTTP      HTTPConfig      `yaml:"http"`
 	Router    RouterConfig    `yaml:"router"`
 	Limits    LimitsConfig    `yaml:"limits"`
@@ -122,6 +123,52 @@ type DiscordConfig struct {
 // CommandsRestricted reports whether an allow-list is configured at all.
 func (d DiscordConfig) CommandsRestricted() bool {
 	return len(d.AllowedRoles) > 0 || len(d.AllowedUsers) > 0
+}
+
+// SlackConfig is the Socket Mode edge. Two credentials rather than Discord's
+// one: the bot token authorises the API calls, and the app-level token opens
+// the socket. See adr/001-slack-socket-mode.
+type SlackConfig struct {
+	// TokenEnv names the env var holding the bot token (xoxb-…).
+	TokenEnv string `yaml:"token_env"`
+	// AppTokenEnv names the env var holding the app-level token (xapp-…) that
+	// Socket Mode dials with. Without it there is no connection to receive on,
+	// so Slack stays off even when the bot token is present.
+	AppTokenEnv string `yaml:"app_token_env"`
+
+	// AllowedUsers restricts who may run roundclaw's commands, by Slack user
+	// ID. Empty means anybody in the workspace who can see the command.
+	//
+	// This is the *only* gate on the Slack side, which is the one real
+	// difference from Discord. Discord filters with
+	// default_member_permissions before an interaction is ever delivered;
+	// Slack has no equivalent — a workspace member can invoke any slash
+	// command the app installs — so the allow-list is not a second line of
+	// defence here, it is the first and last. A Slack deployment that cares
+	// who spends tokens has to set it.
+	AllowedUsers []string `yaml:"allowed_users"`
+
+	// ReadOnlyCommands are exempt, for the reason DiscordConfig gives.
+	readOnly map[string]bool
+}
+
+// CommandsRestricted reports whether an allow-list is configured at all.
+func (s SlackConfig) CommandsRestricted() bool { return len(s.AllowedUsers) > 0 }
+
+// PermitsCommand reports whether a caller may run a command.
+func (s SlackConfig) PermitsCommand(command, userID string) bool {
+	if !s.CommandsRestricted() {
+		return true
+	}
+	if s.readOnly[command] {
+		return true
+	}
+	for _, u := range s.AllowedUsers {
+		if u == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // PermitsCommand reports whether a caller may run a command.
@@ -353,6 +400,12 @@ func (c *Config) applyDefaults() {
 	if c.Discord.TokenEnv == "" {
 		c.Discord.TokenEnv = "DISCORD_TOKEN"
 	}
+	if c.Slack.TokenEnv == "" {
+		c.Slack.TokenEnv = "SLACK_BOT_TOKEN"
+	}
+	if c.Slack.AppTokenEnv == "" {
+		c.Slack.AppTokenEnv = "SLACK_APP_TOKEN"
+	}
 	if c.HTTP.Addr == "" {
 		c.HTTP.Addr = ":8080"
 	}
@@ -383,6 +436,13 @@ func (c *Config) applyDefaults() {
 	// Commands that only read. Everything else can spend money or destroy work
 	// in progress, so it needs the allow-list when one is configured.
 	c.Discord.readOnly = map[string]bool{
+		"agents": true, "status": true, "workflow": true,
+	}
+	// The same list for the same reason. Kept as two maps rather than one
+	// shared value because the two adapters key it on their own command names,
+	// and a command that exists in one tool only would otherwise silently
+	// inherit the other's exemption.
+	c.Slack.readOnly = map[string]bool{
 		"agents": true, "status": true, "workflow": true,
 	}
 	if c.Retention.Interval == 0 {

@@ -106,6 +106,15 @@ func deliverWorkflow(ctx workflow.Context, def registry.Workflow, text string) {
 	if def.ChannelID == "" {
 		return
 	}
+	// The stored channel names its chat tool. A reference this binary cannot
+	// read is dropped rather than guessed at: the run's result is already
+	// recorded, and posting it to the wrong tool is worse than not posting it.
+	origin, err := core.OriginForChannel(def.ChannelID)
+	if err != nil {
+		workflow.GetLogger(ctx).Error("workflow has an unreadable channel; not delivering",
+			"workflow", def.ID, "channel", def.ChannelID, "error", err)
+		return
+	}
 	dctx, cancel := workflow.NewDisconnectedContext(ctx)
 	defer cancel()
 	actCtx := workflow.WithActivityOptions(dctx, workflow.ActivityOptions{
@@ -117,7 +126,7 @@ func deliverWorkflow(ctx workflow.Context, def registry.Workflow, text string) {
 	})
 	_ = workflow.ExecuteActivity(actCtx, (*activity.Activities).DeliverResponse, activity.DeliverInput{
 		AgentID: "workflow:" + def.ID,
-		Origin:  core.DiscordOrigin(def.ChannelID, ""),
+		Origin:  origin,
 		Result:  core.TurnResult{Text: text, Status: core.TurnDone},
 	}).Get(actCtx, nil)
 }

@@ -1,13 +1,13 @@
 # Architecture
 
 roundclaw is a durable orchestrator for Claude Code. Requests arrive from
-Discord or HTTP, are queued by a per-agent Temporal workflow, and are executed
+Discord, Slack or HTTP, are queued by a per-agent Temporal workflow, and are executed
 as `claude -p --output-format stream-json` inside a container that holds nothing
 but the `claude` binary.
 
 This document describes what the code does today. Layer detail lives in the
 files listed under [Layer index](#layer-index). For how to *use* an agent from
-Discord or the API rather than how it is built, see [../usage.md](../usage.md).
+a chat tool or the API rather than how it is built, see [../usage.md](../usage.md).
 
 ## System overview
 
@@ -15,6 +15,7 @@ Discord or the API rather than how it is built, see [../usage.md](../usage.md).
 flowchart TD
     subgraph inbound
         DC[Discord slash commands]
+        SL[Slack slash commands]
         API[HTTP API]
         WH[Inbound webhooks]
         SCH[Temporal Schedules]
@@ -41,6 +42,7 @@ flowchart TD
     REG[(registry.db)]
 
     DC --> DISP
+    SL --> DISP
     API --> DISP
     WH --> DISP
     DISP -->|SignalWithStartWorkflow| WF
@@ -51,10 +53,12 @@ flowchart TD
     RT -->|stream-json| DB
     WF --> DEL
     DEL --> DC
+    DEL --> SL
     DEL -->|callback POST| API
     EW -->|wakes the requester| WF
 
     DC -.->|/status| READ
+    SL -.->|/status| READ
     API -.->|GET turn / SSE| READ
     READ --> DB
     DISP --> REG
@@ -84,6 +88,7 @@ subsystem beside them; see [orchestration.md](orchestration.md#what-you-register
 | Temporal server | `temporalio/auto-setup` 1.27 on Postgres 16 | see [infrastructure](infrastructure.md) |
 | Storage | `modernc.org/sqlite` v1.54 (pure Go), WAL | one DB per agent + one registry DB |
 | Discord | `bwmarrin/discordgo` v0.29 | slash commands, modals, autocomplete |
+| Slack | `slack-go/slack` v0.27 | Socket Mode, Block Kit, file upload — see `adr/001` |
 | HTTP | `net/http` `ServeMux` (Go 1.22 routing) | no framework |
 | Config | `gopkg.in/yaml.v3` | secrets referenced by env var name only |
 | Agent runtime | `docker` CLI → `@anthropic-ai/claude-code` on `node:22-slim` | no roundclaw code in the image |
@@ -94,10 +99,10 @@ subsystem beside them; see [orchestration.md](orchestration.md#what-you-register
 ```
 cmd/
 ├── worker/          # Temporal worker: registers workflows + activities, runs retention
-└── gateway/         # Discord listener + HTTP server + direct SQLite reads
+└── gateway/         # Discord + Slack listeners, HTTP server, direct SQLite reads
 internal/
 ├── core/            # Request, Origin, AgentStatus — shared by every layer, imports nothing local
-├── config/          # YAML config, env indirection, Discord permission gating
+├── config/          # YAML config, env indirection, chat permission gating
 ├── registry/        # runtime CRUD: agents, schedules, workflows, tools, skills,
 │                    #   versions, eval sets/runs, proposals (registry.db)
 ├── store/           # per-agent SQLite: turns, live_logs, runtime, idempotency
@@ -125,7 +130,7 @@ features; no code knows either name.
 
 | Document | Covers |
 |----------|--------|
-| [adapters.md](adapters.md) | Discord commands, HTTP API, webhooks, dispatcher, limits, files, proposals |
+| [adapters.md](adapters.md) | Discord and Slack commands, channel references, HTTP API, webhooks, dispatcher, limits, files, proposals |
 | [orchestration.md](orchestration.md) | Temporal workflows (including eval runs), activities, signals, contract package |
 | [data.md](data.md) | SQLite schemas, versions, eval runs, migrations, retention, cross-process access |
 | [agent-runtime.md](agent-runtime.md) | Container invocation, session derivation, workspaces, isolation |

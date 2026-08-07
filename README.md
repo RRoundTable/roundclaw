@@ -1,8 +1,8 @@
 # roundclaw
 
 A durable orchestrator for Claude Code. It runs agents in containers, keeps
-their work alive across worker crashes, and accepts requests from Discord and an
-HTTP API at the same time.
+their work alive across worker crashes, and accepts requests from Discord, Slack
+and an HTTP API at the same time.
 
 roundclaw does not use the Agent SDK. Each agent turn is a `claude -p
 --output-format stream-json` process inside a container that holds nothing but
@@ -26,6 +26,7 @@ Two problems with running Claude Code as a service:
 [inbound]                     [core]                       [outbound]
 
 Discord ─┐                                                 ┌─ Discord
+Slack   ─┤                                                 ├─ Slack
 HTTP API ┼→ Request{agentID, text, origin} → workflow → ─→ ┼─ HTTP poll / SSE
          │                                                 └─ callback POST
          │
@@ -65,13 +66,13 @@ constraints that are easy to break — is in [docs/architecture/](docs/architect
 | Path | Purpose |
 | --- | --- |
 | `cmd/worker` | Temporal worker: runs turns, delivers responses |
-| `cmd/gateway` | Discord listener + HTTP API + status reads |
+| `cmd/gateway` | Discord and Slack listeners + HTTP API + status reads |
 | `cmd/roundclaw` | Terminal client for the HTTP API (agents, requests, secrets) |
 | `cmd/routercheck` | Verifies the router against a real model (manual, needs a credential) |
 | `internal/core` | Types shared by every adapter; imports no adapter |
 | `internal/claude` | CLI argv, stream-json decoder, session derivation |
 | `internal/store` | Per-agent SQLite (WAL) |
-| `internal/adapter` | Discord and HTTP inbound edges |
+| `internal/adapter` | Discord, Slack and HTTP inbound edges |
 | `internal/temporal` | Workflow and activities |
 | `container/` | Production agent image |
 | `container/fake/` | Scripted `claude` stand-in for end-to-end tests |
@@ -336,7 +337,7 @@ Three ways to get the result, with different durability:
 | `?wait=true` | connection held until the turn ends | **No** — a convenience only |
 
 `?wait=true` demotes to `202` at the timeout and hands back a `turn_id` to poll.
-Discord and the HTTP API share one queue per agent, so a wait can be long
+The chat tools and the HTTP API share one queue per agent, so a wait can be long
 because of someone else's request; `queue_position` says how long.
 
 Supply `Idempotency-Key` on every POST. Without it a client retry becomes a

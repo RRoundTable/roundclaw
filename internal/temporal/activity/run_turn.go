@@ -52,18 +52,22 @@ type Activities struct {
 	stores  *store.Registry
 	reg     *registry.Store
 	discord DiscordSender
+	slack   SlackSender
 	// signal queues scheduled requests. Nil when the worker was built without
 	// a Temporal client, which only happens in tests.
 	signal TemporalSignaller
 }
 
 // NewActivities builds the activity set. The store registry must be opened in
-// ReadWrite mode: this is the only writer. discord may be nil when Discord is
-// not configured; discord-origin deliveries then fail as non-retryable rather
-// than blocking startup.
+// ReadWrite mode: this is the only writer.
+//
+// Either chat sender may be nil when that tool is not configured; a delivery to
+// it then fails as non-retryable rather than blocking startup. Running with one
+// chat tool and not the other is a supported configuration, so a missing sender
+// is an ordinary state and not a misconfiguration to refuse at boot.
 func NewActivities(cfg *config.Config, stores *store.Registry, reg *registry.Store,
-	discord DiscordSender, signal TemporalSignaller) *Activities {
-	return &Activities{cfg: cfg, stores: stores, reg: reg, discord: discord, signal: signal}
+	discord DiscordSender, slack SlackSender, signal TemporalSignaller) *Activities {
+	return &Activities{cfg: cfg, stores: stores, reg: reg, discord: discord, slack: slack, signal: signal}
 }
 
 // RunTurnInput is one agent turn.

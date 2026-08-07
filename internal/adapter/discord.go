@@ -42,8 +42,8 @@ func (d *Discord) Sender() MessageSender { return discordSender{d} }
 
 type discordSender struct{ d *Discord }
 
-func (s discordSender) ChannelMessageSend(channelID, text string) error {
-	_, err := s.d.session.ChannelMessageSend(channelID, text)
+func (s discordSender) SendMessage(to core.Origin, text string) error {
+	_, err := s.d.session.ChannelMessageSend(to.ChannelID, text)
 	return err
 }
 
@@ -53,14 +53,14 @@ func (s discordSender) ChannelMessageSend(channelID, text string) error {
 // 10MB attachment is streamed onto the wire. They are closed here whatever
 // happens: this is where ownership ends, and a failed send would otherwise leak
 // a descriptor per attempt.
-func (s discordSender) ChannelFileSend(channelID, text string, files []OutFile) error {
+func (s discordSender) SendFiles(to core.Origin, text string, files []OutFile) error {
 	defer closeOutbound(files)
 
 	send := &discordgo.MessageSend{Content: text}
 	for _, f := range files {
 		send.Files = append(send.Files, &discordgo.File{Name: f.Name, Reader: f.Body})
 	}
-	_, err := s.d.session.ChannelMessageSendComplex(channelID, send)
+	_, err := s.d.session.ChannelMessageSendComplex(to.ChannelID, send)
 	return err
 }
 
@@ -950,7 +950,7 @@ func (d *Discord) reply(channelID, content string) {
 // The worker sends messages too, so the rule lives in core: the cut has to land
 // on a rune boundary, and Discord's limit counts characters rather than bytes.
 // Both are easy to get subtly wrong in one copy and not the other.
-func chunk(s string, n int) []string { return core.ChunkForDiscord(s, n) }
+func chunk(s string, n int) []string { return core.ChunkMessage(s, n) }
 
 func (d *Discord) respondNow(i *discordgo.InteractionCreate, content string) {
 	err := d.session.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

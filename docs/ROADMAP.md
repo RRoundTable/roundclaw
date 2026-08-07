@@ -41,9 +41,9 @@ started.
   Block Kit is a different shape from Discord's modals and autocomplete, so the
   agent, schedule and proposal commands are rewritten rather than ported.
 
-  **Decided before writing code:** Socket Mode rather than the Events API, and
-  a self-describing channel reference rather than a platform column — see
-  `adr/001`.
+  **Decided before writing code:** Socket Mode rather than the Events API
+  (`adr/001`), and a self-describing channel reference rather than a platform
+  column (`adr/002`).
 
 ## Next
 

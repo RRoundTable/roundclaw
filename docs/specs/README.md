@@ -12,6 +12,7 @@ separately", not "the handler returns 202".
 
 | Capability | What a person gets from it |
 |---|---|
+| [Channels](channels.md) | Reach the fleet from the chat tool the team already works in |
 | [Requests](agent-requests.md) | Ask an agent to do something and get an answer back |
 | [Turn control](turn-control.md) | See what an agent is doing; stop it; redirect it |
 | [Conversations](conversations.md) | Keep separate lines of work from bleeding into each other |
@@ -46,6 +47,9 @@ document first.
    the work have all died since.
 6. **Measuring an agent never touches what it works on.** An evaluation runs
    against a copy; it cannot write to the agent's live workspace.
+7. **An answer returns to the channel that asked for it.** Which chat tool a
+   request arrived through decides where its answer goes, and no capability is
+   available in one chat tool and missing from another.
 
 ## Depth
 

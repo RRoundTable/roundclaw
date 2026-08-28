@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 )
 
 // What a tool or skill is made of, and how that is recognised again later.
@@ -38,13 +41,33 @@ import (
 // source that changes on every read — a clock, a request id — would report a tool
 // that has always just changed.
 type IdentityMember struct {
-	Path string `json:"path"`
+	// Path is an absolute host path: a file, or a directory that is walked.
+	Path string `json:"path,omitempty"`
+	// Endpoint is an http(s) URL whose response body is the witness. It is how a
+	// tool that is a running service says what it is, since nothing on the host
+	// answers that — a mount beside such a service is its client's configuration,
+	// not the service.
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // Validate checks a member before it is written.
+//
+// Exactly one source, because a member with both would have no defined reading
+// order and a member with neither is a claim about nothing.
 func (m IdentityMember) Validate() error {
-	if m.Path == "" || m.Path[0] != '/' {
-		return fmt.Errorf("identity member: path must be absolute, got %q", m.Path)
+	switch {
+	case m.Path != "" && m.Endpoint != "":
+		return fmt.Errorf("identity member: name a path or an endpoint, not both")
+	case m.Path != "":
+		if m.Path[0] != '/' {
+			return fmt.Errorf("identity member: path must be absolute, got %q", m.Path)
+		}
+	case m.Endpoint != "":
+		if !strings.HasPrefix(m.Endpoint, "http://") && !strings.HasPrefix(m.Endpoint, "https://") {
+			return fmt.Errorf("identity member: endpoint must be http or https, got %q", m.Endpoint)
+		}
+	default:
+		return fmt.Errorf("identity member: needs a path or an endpoint")
 	}
 	return nil
 }
@@ -89,12 +112,24 @@ func (s *Store) digestOf(members []IdentityMember) (string, string) {
 // the digest is stable across filesystem iteration order. Symlinks are hashed as
 // their target string rather than followed: a link that points somewhere else is
 // a change, and following one would let a member escape the path that declared it.
+// An endpoint member is fetched with this bound. A tool write should not be able
+// to hang on a service that accepts a connection and never answers, and a witness
+// that took a minute to read is not one worth waiting for.
+const identityFetchTimeout = 5 * time.Second
+
 func IdentityByReading() IdentitySource {
+	client := &http.Client{Timeout: identityFetchTimeout}
 	return func(members []IdentityMember) (string, error) {
 		sum := sha256.New()
 		for _, m := range members {
 			if err := m.Validate(); err != nil {
 				return "", err
+			}
+			if m.Endpoint != "" {
+				if err := hashEndpoint(sum, client, m.Endpoint); err != nil {
+					return "", err
+				}
+				continue
 			}
 			if err := hashMember(sum, m.Path); err != nil {
 				return "", err
@@ -103,6 +138,33 @@ func IdentityByReading() IdentitySource {
 		return hex.EncodeToString(sum.Sum(nil)), nil
 	}
 }
+
+// hashEndpoint reads a service's own answer to "what are you".
+//
+// A non-2xx is an error rather than a witness: hashing an error page would make
+// a service that started failing look like a service that changed, and the two
+// want different reactions. The body is capped so a tool cannot point identity at
+// something unbounded and stall every session that follows.
+func hashEndpoint(sum io.Writer, client *http.Client, url string) error {
+	resp, err := client.Get(url) //nolint:noctx // bounded by the client's timeout
+	if err != nil {
+		return fmt.Errorf("read identity endpoint %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("read identity endpoint %s: status %d", url, resp.StatusCode)
+	}
+	fmt.Fprintf(sum, "endpoint\x00%s\x00", url)
+	if _, err := io.Copy(sum, io.LimitReader(resp.Body, identityBodyLimit)); err != nil {
+		return fmt.Errorf("read identity endpoint %s: %w", url, err)
+	}
+	fmt.Fprint(sum, "\x00")
+	return nil
+}
+
+// identityBodyLimit caps an endpoint witness. A version banner is bytes; anything
+// approaching this is not being used as an identity.
+const identityBodyLimit = 1 << 20
 
 func hashMember(sum io.Writer, root string) error {
 	info, err := os.Lstat(root)

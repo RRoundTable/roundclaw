@@ -812,6 +812,7 @@ func (a *Activities) resolveTools(ctx context.Context, ids []string, env map[str
 	}
 	log := activity.GetLogger(ctx)
 	var dirs []string
+	var resolved []registry.Tool
 	var note strings.Builder
 	for _, id := range ids {
 		t, err := a.reg.GetTool(ctx, id)
@@ -822,6 +823,7 @@ func (a *Activities) resolveTools(ctx context.Context, ids []string, env map[str
 		if err != nil {
 			return nil, "", fmt.Errorf("load tool %s: %w", id, err)
 		}
+		resolved = append(resolved, t)
 		dirs = append(dirs, t.HostPath)
 		for k, v := range t.Env {
 			env[k] = v
@@ -836,7 +838,9 @@ func (a *Activities) resolveTools(ctx context.Context, ids []string, env map[str
 	if note.Len() > 0 {
 		note.WriteString("---\n\n")
 	}
-	return dirs, note.String(), nil
+	// The state report leads, ahead of the instructions: an agent has to know its
+	// database is gone before it reads how to query it, not after.
+	return dirs, toolStateNote(a.resolveToolStates(ctx, resolved)) + note.String(), nil
 }
 
 // resolveSkills turns an agent's granted skill IDs into a map of id to host

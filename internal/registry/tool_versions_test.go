@@ -2,6 +2,9 @@ package registry
 
 import (
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -314,5 +317,110 @@ func TestGrantWithNoVersionIsLeftOutRatherThanZeroed(t *testing.T) {
 	}
 	if _, ok := v.Grants.Tools["never-registered"]; ok {
 		t.Error("a grant with no version was recorded; it should be absent")
+	}
+}
+
+// An endpoint member is how a running service says what it is: nothing on the
+// host answers that, since a mount beside a service is its client's config.
+func TestEndpointIdentityWitnessesAService(t *testing.T) {
+	body := "postgres 15.1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	s := newStore(t)
+	s.UseIdentitySource(IdentityByReading())
+	if _, err := s.PutTool(t.Context(), Tool{ID: "db", HostPath: t.TempDir(),
+		Identity: []IdentityMember{{Endpoint: srv.URL}}}); err != nil {
+		t.Fatalf("put tool: %v", err)
+	}
+	first, err := s.LatestToolVersion(t.Context(), "db")
+	if err != nil {
+		t.Fatalf("latest: %v", err)
+	}
+	if first.Digest == "" {
+		t.Fatal("an endpoint member produced no witness")
+	}
+
+	body = "postgres 16.0" // the service was replaced under a row that never moved
+	if _, err := s.SnapshotTool(t.Context(), "db", Change{}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	second, err := s.LatestToolVersion(t.Context(), "db")
+	if err != nil {
+		t.Fatalf("latest after replacement: %v", err)
+	}
+	if second.Digest == first.Digest {
+		t.Error("the witness did not move when the service did")
+	}
+}
+
+func TestDriftIsReportedAgainstTheRecordedVersion(t *testing.T) {
+	s := newStore(t)
+	s.UseIdentitySource(IdentityByReading())
+	dir := toolDir(t, "echo one")
+	if _, err := s.PutTool(t.Context(), Tool{ID: "deploy", HostPath: dir,
+		Identity: []IdentityMember{{Path: dir}}}); err != nil {
+		t.Fatalf("put tool: %v", err)
+	}
+
+	d, err := s.ToolDriftOf(t.Context(), "deploy")
+	if err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+	if !d.Declared || !d.Matches {
+		t.Fatalf("a freshly written tool reports drift: %+v", d)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("echo two"), 0o600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	d, err = s.ToolDriftOf(t.Context(), "deploy")
+	if err != nil {
+		t.Fatalf("drift after edit: %v", err)
+	}
+	if d.Matches {
+		t.Error("an edited tool does not report drift")
+	}
+}
+
+// Nothing declared is not a drift. Silence about identity says "there is nothing
+// to compare", which is different from "it changed".
+func TestUndeclaredIdentityIsNotDrift(t *testing.T) {
+	s := newStore(t)
+	s.UseIdentitySource(IdentityByReading())
+	if _, err := s.PutTool(t.Context(), Tool{ID: "deploy", HostPath: t.TempDir()}); err != nil {
+		t.Fatalf("put tool: %v", err)
+	}
+	d, err := s.ToolDriftOf(t.Context(), "deploy")
+	if err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+	if d.Declared {
+		t.Error("a tool that declared nothing reported a comparable identity")
+	}
+}
+
+func TestReachabilityValidationRejectsNonsense(t *testing.T) {
+	for _, r := range []Reachability{
+		{Endpoint: "ftp://x"},
+		{File: "relative/path"},
+		{Address: "no-port"},
+		{WithinSeconds: -1},
+	} {
+		if err := (Tool{ID: "t", HostPath: "/tmp", Reachability: r}).Validate(); err == nil {
+			t.Errorf("accepted an invalid reachability: %+v", r)
+		}
+	}
+}
+
+// A member naming both, or neither, has no defined reading.
+func TestIdentityMemberNeedsExactlyOneSource(t *testing.T) {
+	if (IdentityMember{}).Validate() == nil {
+		t.Error("an empty member validated")
+	}
+	if (IdentityMember{Path: "/a", Endpoint: "http://b"}).Validate() == nil {
+		t.Error("a member naming both a path and an endpoint validated")
 	}
 }

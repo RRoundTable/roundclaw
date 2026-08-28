@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS tools (
     env          TEXT NOT NULL DEFAULT '{}',  -- JSON map of env vars to inject
     instructions TEXT NOT NULL DEFAULT '',    -- how the agent should use it
     identity     TEXT NOT NULL DEFAULT '[]',  -- JSON list of members it is made of
+    reachability TEXT NOT NULL DEFAULT '{}',  -- JSON: what "this works" means
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
 );
@@ -47,9 +48,12 @@ type Tool struct {
 	// host_path is not read as a default, because a mount is the tool for a
 	// bundle of scripts and a client's configuration for a server (see
 	// identity.go).
-	Identity  []IdentityMember `json:"identity,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
-	UpdatedAt time.Time        `json:"updated_at"`
+	Identity []IdentityMember `json:"identity,omitempty"`
+	// Reachability is what "this tool works" means, and how far roundclaw may go
+	// to make it true again after an interruption. See reachability.go.
+	Reachability Reachability `json:"reachability,omitzero"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 // Validate checks a tool before it is written.
@@ -64,6 +68,9 @@ func (t Tool) Validate() error {
 		if err := m.Validate(); err != nil {
 			return fmt.Errorf("tool %s: %w", t.ID, err)
 		}
+	}
+	if err := t.Reachability.Validate(); err != nil {
+		return fmt.Errorf("tool %s: %w", t.ID, err)
 	}
 	return nil
 }
@@ -85,6 +92,10 @@ func (s *Store) PutTool(ctx context.Context, t Tool, c ...Change) (Tool, error) 
 	if err != nil {
 		return Tool{}, fmt.Errorf("encode tool identity: %w", err)
 	}
+	reach, err := json.Marshal(t.Reachability)
+	if err != nil {
+		return Tool{}, fmt.Errorf("encode tool reachability: %w", err)
+	}
 	digest, digestErr := s.digestOf(t.Identity)
 	now := time.Now().UnixMilli()
 
@@ -95,13 +106,14 @@ func (s *Store) PutTool(ctx context.Context, t Tool, c ...Change) (Tool, error) 
 	defer tx.Rollback() //nolint:errcheck // no-op once committed
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO tools (id, description, host_path, env, instructions, identity, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO tools (id, description, host_path, env, instructions, identity, reachability, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			description = excluded.description, host_path = excluded.host_path,
 			env = excluded.env, instructions = excluded.instructions,
-			identity = excluded.identity, updated_at = excluded.updated_at`,
-		t.ID, t.Description, t.HostPath, string(env), t.Instructions, string(identity), now, now)
+			identity = excluded.identity, reachability = excluded.reachability,
+			updated_at = excluded.updated_at`,
+		t.ID, t.Description, t.HostPath, string(env), t.Instructions, string(identity), string(reach), now, now)
 	if err != nil {
 		return Tool{}, fmt.Errorf("store tool %s: %w", t.ID, err)
 	}
@@ -117,7 +129,7 @@ func (s *Store) PutTool(ctx context.Context, t Tool, c ...Change) (Tool, error) 
 // GetTool returns one tool.
 func (s *Store) GetTool(ctx context.Context, id string) (Tool, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, description, host_path, env, instructions, identity, created_at, updated_at FROM tools WHERE id = ?`, id)
+		`SELECT id, description, host_path, env, instructions, identity, reachability, created_at, updated_at FROM tools WHERE id = ?`, id)
 	t, err := scanTool(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Tool{}, fmt.Errorf("%w: %s", ErrNotFound, id)
@@ -128,7 +140,7 @@ func (s *Store) GetTool(ctx context.Context, id string) (Tool, error) {
 // ListTools returns every tool, ordered by ID.
 func (s *Store) ListTools(ctx context.Context) ([]Tool, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, description, host_path, env, instructions, identity, created_at, updated_at FROM tools ORDER BY id`)
+		`SELECT id, description, host_path, env, instructions, identity, reachability, created_at, updated_at FROM tools ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
@@ -159,10 +171,10 @@ func (s *Store) DeleteTool(ctx context.Context, id string) error {
 func scanTool(row scanner) (Tool, error) {
 	var (
 		t                    Tool
-		env, identity        string
+		env, identity, reach string
 		createdAt, updatedAt int64
 	)
-	if err := row.Scan(&t.ID, &t.Description, &t.HostPath, &env, &t.Instructions, &identity, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Description, &t.HostPath, &env, &t.Instructions, &identity, &reach, &createdAt, &updatedAt); err != nil {
 		return Tool{}, err
 	}
 	if err := json.Unmarshal([]byte(env), &t.Env); err != nil {
@@ -170,6 +182,9 @@ func scanTool(row scanner) (Tool, error) {
 	}
 	if err := json.Unmarshal([]byte(identity), &t.Identity); err != nil {
 		return Tool{}, fmt.Errorf("decode identity of tool %s: %w", t.ID, err)
+	}
+	if err := json.Unmarshal([]byte(reach), &t.Reachability); err != nil {
+		return Tool{}, fmt.Errorf("decode reachability of tool %s: %w", t.ID, err)
 	}
 	t.CreatedAt = time.UnixMilli(createdAt)
 	t.UpdatedAt = time.UnixMilli(updatedAt)

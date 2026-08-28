@@ -82,8 +82,8 @@ secrets(scope, name, ciphertext, created_at, updated_at, PK(scope, name))
 
 workflows(id PK, description, channel_id, steps, enabled, created_at, updated_at)
 
-tools(id PK, description, host_path, env, instructions, identity, created_at,
-      updated_at)
+tools(id PK, description, host_path, env, instructions, identity, reachability,
+      created_at, updated_at)
 
 skills(id PK, description, host_path, identity, created_at, updated_at)
 
@@ -168,6 +168,29 @@ the config is edited and sits still when the server is replaced — silently wro
 exactly where it matters (`adr/005`). The reading is injected as an
 `IdentitySource`, the same shape and for the same reason as `PersonaSource`: the
 registry stores the witness and never learns the host layout.
+
+**`reachability` is what "this tool works" means, declared and never commanded.**
+A tool states the condition that has to hold — a container that must be running,
+an address that must accept a connection, an endpoint that must answer, a file
+that must exist — and a bound on how long to wait. All empty means it declared
+nothing, and a tool that declared nothing is treated as unrestorable.
+
+It is a declaration because roundclaw has never executed a string out of the
+registry: every process it starts is `git` or the operator-configured container
+runtime, with structured arguments. A command field would be the first, would be
+written by the agent itself now that an agent can write its own tools, and would
+run at session start — ahead of the measurement gate that judges everything else
+an agent changes (`adr/004`). The one action roundclaw will take is starting the
+named container through the runtime it already drives, then waiting for the
+declared condition; a tool needing anything else cannot declare itself
+restorable and is reported unavailable with the reason.
+
+The probing and restoring live in the activity
+([agent-runtime.md](agent-runtime.md)), not here — the registry stores the
+declaration and does no I/O for it. `ToolDriftOf` is the exception it does own:
+comparing a tool's identity now against the digest its newest version recorded,
+which is what makes "the same configuration" a checkable claim rather than an
+assumption.
 
 **`skills` are grantable Claude Code skills.** Simpler than a tool — an id,
 `description`, a `host_path` to a `SKILL.md` directory, and the same `identity`

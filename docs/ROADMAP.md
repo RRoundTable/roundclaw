@@ -64,11 +64,14 @@ started.
   Specified in [specs/self-improvement.md](specs/self-improvement.md) and
   [specs/tool-state.md](specs/tool-state.md) (`spec/003`).
 
-  **Decide before writing code:** whether an agent's changes to itself stay a
-  convention the way the proposal queue does, or need a token scope narrower
-  than roundclaw issues today; what runs a tool's restore contract, and where;
-  and what a tool's identity is, given that a directory, a package, an image and
-  a database each answer "what are you right now?" differently.
+  **Decided before writing code:** an agent's container carries a credential
+  that identifies it, and the write surface that credential opens is bounded by
+  subject as well as by path, so an agent may change itself and nothing else
+  (`adr/003`).
+
+  **Still to decide:** what runs a tool's restore contract, and where; and what
+  a tool's identity is, given that a directory, a package, an image and a
+  database each answer "what are you right now?" differently.
 
 ## Later
 

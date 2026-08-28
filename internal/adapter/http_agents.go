@@ -64,6 +64,12 @@ func (h *HTTP) putAgentPersona(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "malformed JSON body: "+err.Error())
 		return
 	}
+	// Before the file moves, not after: a change that could never be judged is
+	// refused rather than applied and then left standing forever.
+	plan, ok := h.gateSelfChange(w, r, id)
+	if !ok {
+		return
+	}
 	if err := h.writePersona(id, body.Persona); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -80,6 +86,9 @@ func (h *HTTP) putAgentPersona(w http.ResponseWriter, r *http.Request) {
 		c.Note = personaVersionNote
 	}
 	version, err := h.disp.Registry().Snapshot(r.Context(), id, c)
+	if err == nil {
+		h.startSelfChangeGate(r, plan, id, version.Version)
+	}
 	if err != nil {
 		// The persona is already written and the agent will use it. Report the
 		// missing snapshot rather than a failure, so nobody re-PUTs a persona that
@@ -161,10 +170,17 @@ func (h *HTTP) putAgentDefinition(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	plan, ok := h.gateSelfChange(w, r, agent.ID)
+	if !ok {
+		return
+	}
 	updated, err := h.disp.Registry().Update(r.Context(), agent, c)
 	if err != nil {
 		writeAgentError(w, err)
 		return
+	}
+	if v, vErr := h.disp.Registry().LatestVersion(r.Context(), updated.ID); vErr == nil {
+		h.startSelfChangeGate(r, plan, updated.ID, v.Version)
 	}
 	h.log.Info("agent updated", "agent", updated.ID, "enabled", updated.Enabled)
 	writeJSON(w, http.StatusOK, updated)

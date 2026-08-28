@@ -2,8 +2,11 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/roundtable/roundclaw/internal/registry"
 )
 
 // Who the server believes is calling.
@@ -187,4 +190,65 @@ func (h *HTTP) mayWriteGrant(w http.ResponseWriter, r *http.Request, kind, id st
 	writeError(w, http.StatusForbidden,
 		"this token may change only the "+kind+"s "+caller.AgentID+" holds; it does not hold "+id)
 	return false
+}
+
+// gateSelfChange is the half of the measurement gate that runs at write time.
+//
+// spec/003 says a self-made change does not stick until it has been measured.
+// The measuring is asynchronous — a run takes minutes and this write does not —
+// so what happens here is the two things that must be true before the change is
+// allowed to apply at all: something defines "better" for this agent, and there
+// is a completed run of the version being replaced to compare against.
+//
+// Checked before the write rather than after, so a change that could never be
+// judged is refused instead of applied and then left standing forever.
+func (h *HTTP) gateSelfChange(w http.ResponseWriter, r *http.Request, agentID string) (registry.GatePlan, bool) {
+	if !identityFrom(r).Established() {
+		// A person's change is not gated. The gate exists because an agent
+		// judging its own output is an agent that drifts; an operator editing an
+		// agent is somebody taking responsibility, and making them wait on an
+		// eval run would put a delay in front of fixing a wedged agent.
+		return registry.GatePlan{}, true
+	}
+	current, err := h.disp.Registry().LatestVersion(r.Context(), agentID)
+	if err != nil {
+		writeAgentError(w, err)
+		return registry.GatePlan{}, false
+	}
+	plan, err := h.disp.Registry().PlanGate(r.Context(), agentID, current.Version)
+	if err != nil {
+		if errors.Is(err, registry.ErrUngateable) {
+			writeError(w, http.StatusPreconditionFailed, err.Error())
+			return registry.GatePlan{}, false
+		}
+		writeAgentError(w, err)
+		return registry.GatePlan{}, false
+	}
+	return plan, true
+}
+
+// startSelfChangeGate puts the version this write just minted on trial.
+//
+// A failure to start the run is logged and not returned: the change is already
+// applied, and reporting a 500 over a written change would invite a retry that
+// mints a second identical version. What it costs is that this one version goes
+// unjudged, which the run's absence makes visible rather than hiding.
+func (h *HTTP) startSelfChangeGate(r *http.Request, plan registry.GatePlan, agentID string, version int) {
+	if plan.EvalSetID == "" || version == 0 {
+		return
+	}
+	run, err := h.disp.StartEvalRun(r.Context(), registry.EvalRun{
+		EvalSetID:    plan.EvalSetID,
+		AgentID:      agentID,
+		Version:      version,
+		GatesVersion: version,
+		BaselineRun:  plan.Baseline,
+	})
+	if err != nil {
+		h.log.Error("a self-made change was applied but its measurement could not be started",
+			"agent", agentID, "version", version, "error", err)
+		return
+	}
+	h.log.Info("a self-made change is on trial",
+		"agent", agentID, "version", version, "run", run.ID, "baseline", plan.Baseline)
 }

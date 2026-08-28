@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -143,4 +144,60 @@ func (s *Store) PendingRevertsFor(ctx context.Context, agentID string, since int
 		}
 	}
 	return out, nil
+}
+
+// ErrUngateable is returned when a self-made change cannot be measured, and so
+// cannot be allowed to stick.
+//
+// The invariant is that no self-made change takes effect permanently without
+// having been measured. An agent with nothing to measure it by cannot satisfy
+// that, and the honest answer is to refuse the change rather than to keep it and
+// quietly call it unmeasured — which would make the invariant a slogan.
+//
+// It is also the right pressure. The cases are what "better" means, so an agent
+// that has none has not yet been told what improving would look like, and
+// somebody has to say that before it starts rewriting itself.
+var ErrUngateable = errors.New("this change cannot be measured")
+
+// GatePlan is what a self-made change will be judged by.
+type GatePlan struct {
+	EvalSetID string
+	Baseline  int64
+}
+
+// PlanGate finds what would judge a change to this agent, or says why nothing
+// could.
+//
+// Both halves have to exist up front. A baseline started alongside the candidate
+// would race it — the gate settles when the candidate finishes, and a baseline
+// still running compares to nothing — so the baseline has to be a run that
+// already completed against the version being replaced.
+func (s *Store) PlanGate(ctx context.Context, agentID string, currentVersion int) (GatePlan, error) {
+	sets, err := s.ListEvalSets(ctx, agentID)
+	if err != nil {
+		return GatePlan{}, err
+	}
+	var set EvalSet
+	for _, c := range sets {
+		if c.Enabled && len(c.Cases) > 0 {
+			set = c
+			break
+		}
+	}
+	if set.ID == "" {
+		return GatePlan{}, fmt.Errorf("%w: %s has no enabled evaluation set, so there is no definition of better to hold the change to",
+			ErrUngateable, agentID)
+	}
+
+	runs, err := s.ListEvalRuns(ctx, set.ID, agentID, 50)
+	if err != nil {
+		return GatePlan{}, err
+	}
+	for _, r := range runs {
+		if r.Status == EvalDone && r.Version == currentVersion {
+			return GatePlan{EvalSetID: set.ID, Baseline: r.ID}, nil
+		}
+	}
+	return GatePlan{}, fmt.Errorf("%w: no completed run of %s v%d to compare against; run %s against the current version first",
+		ErrUngateable, agentID, currentVersion, set.ID)
 }

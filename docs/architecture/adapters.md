@@ -428,6 +428,20 @@ a tool belongs to no agent — so the middleware admits the shape and
 tool does not exist yet. This is the split the agent-scoped schedule routes
 already used: the list admits the shape, the handler bounds the subject.
 
+**A self-made change is refused unless it can be measured.** `gateSelfChange`
+runs before the write and needs two things: an enabled evaluation set for that
+agent, and a *completed* run of the version being replaced to compare against.
+Missing either is a 412 naming which. The baseline has to already exist because
+one started alongside the candidate would race it — the gate settles when the
+candidate finishes, and a baseline still running compares to nothing.
+
+Refusing rather than applying-and-labelling-unmeasured is what makes the
+invariant real: an agent with no cases has not been told what improving would
+look like, and somebody has to say that before it rewrites itself. An operator's
+change is not gated at all — the gate exists because an agent judging its own
+output drifts, and putting an eval run in front of somebody fixing a wedged agent
+is a delay where responsiveness is the point.
+
 **Authorship splits without a new column.** `agentAuthorPrefix` (`agent:`) is
 reserved: a write from a per-agent credential has it written by the server, and a
 write from anything else is refused if it tries to type it. Without that

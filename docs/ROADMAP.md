@@ -2,10 +2,8 @@
 
 Work on **Now**. Nothing moves up from Next until Now is empty.
 
-Now holds two items. They are genuinely parallel — one adds a place the system
-can be reached from, the other adds a thing it can do — and they touch no
-common code. Two is the limit; a third means something here was not really
-started.
+Now holds one item. Two is the limit; a third means something here was not
+really started.
 
 ## Now
 
@@ -25,25 +23,6 @@ started.
   over — approving a proposal *applies* something, while choosing a candidate
   applies nothing and only records a label. Settle it with
   `/propose-architecture`.
-
-- **Slack as a second place the fleet can be reached from.**
-
-  Everything the system does is reachable from Discord or from the HTTP API.
-  A team that works in Slack can only reach it through the API, which means a
-  person has to hold a token and type CLI commands to ask an agent anything.
-
-  The work is to make Slack an ordinary inbound and outbound channel: a bound
-  channel admits messages as turns, results come back to the thread they were
-  asked in, and every command Discord offers exists there too. Nothing about
-  what an agent *is* changes — this is a surface, not a capability.
-
-  Full parity is the committed scope, and it is the expensive half: Slack's
-  Block Kit is a different shape from Discord's modals and autocomplete, so the
-  agent, schedule and proposal commands are rewritten rather than ported.
-
-  **Decided before writing code:** Socket Mode rather than the Events API
-  (`adr/001`), and a self-describing channel reference rather than a platform
-  column (`adr/002`).
 
 ## Next
 

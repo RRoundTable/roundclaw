@@ -251,7 +251,8 @@ func TestForgedSelfTokenIsRefused(t *testing.T) {
 
 // A tool nobody holds yet is an agent registering a capability for itself.
 func TestSelfTokenMayCreateAToolItDoesNotYetHold(t *testing.T) {
-	srv, _ := selfHarness(t)
+	srv, reg := selfHarness(t)
+	makeGateable(t, reg, "dev")
 	token := core.DeriveAgentToken("dev", selfKey)
 
 	resp := do(t, srv, http.MethodPut, "/v1/tools/scanner", token,
@@ -292,6 +293,7 @@ func TestSelfTokenMayWriteAToolItHolds(t *testing.T) {
 	if _, err := reg.Update(t.Context(), registry.Agent{ID: "dev", Tools: []string{"deploy"}}); err != nil {
 		t.Fatalf("grant to dev: %v", err)
 	}
+	makeGateable(t, reg, "dev")
 
 	token := core.DeriveAgentToken("dev", selfKey)
 	resp := do(t, srv, http.MethodPut, "/v1/tools/deploy", token,
@@ -467,5 +469,43 @@ func TestAGateableSelfChangeAppliesAndIsMeasured(t *testing.T) {
 	}
 	if gating.BaselineRun != base.ID {
 		t.Errorf("baseline = %d, want the completed run of the previous version (%d)", gating.BaselineRun, base.ID)
+	}
+}
+
+// A tool write is a change to what the agent is, on the far side of a pointer.
+// Leaving it ungated would be the one unmeasured way an agent can alter itself.
+func TestSelfToolWriteIsGatedToo(t *testing.T) {
+	srv, reg := selfHarness(t)
+	if _, err := reg.Update(t.Context(), registry.Agent{ID: "dev", Tools: []string{"deploy"}}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := reg.PutTool(t.Context(), registry.Tool{ID: "deploy", HostPath: t.TempDir()}); err != nil {
+		t.Fatalf("put tool: %v", err)
+	}
+
+	// dev has no cases, so the change it holds cannot be judged and is refused.
+	resp := do(t, srv, http.MethodPut, "/v1/tools/deploy", core.DeriveAgentToken("dev", selfKey),
+		map[string]any{"id": "deploy", "host_path": "/etc"})
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412: a self-made tool change must be measurable", resp.StatusCode)
+	}
+
+	// And the tool did not move.
+	tool, err := reg.GetTool(t.Context(), "deploy")
+	if err != nil {
+		t.Fatalf("get tool: %v", err)
+	}
+	if tool.HostPath == "/etc" {
+		t.Error("the refused change was applied anyway")
+	}
+}
+
+// An operator is not gated on tools either, for the same reason as elsewhere.
+func TestOperatorToolWriteIsNotGated(t *testing.T) {
+	srv, _ := selfHarness(t)
+	resp := do(t, srv, http.MethodPut, "/v1/tools/deploy", testToken,
+		map[string]any{"id": "deploy", "host_path": t.TempDir()})
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }

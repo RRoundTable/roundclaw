@@ -227,6 +227,31 @@ func (h *HTTP) gateSelfChange(w http.ResponseWriter, r *http.Request, agentID st
 	return plan, true
 }
 
+// gateSelfGrantChange gates a self-made change to a tool or skill.
+//
+// A grant write mints no agent version by itself, so there would be nothing for
+// a gate to judge — except that an agent version records the tool and skill
+// versions it holds. Snapshotting the agent after the grant moved mints a
+// version whose grants differ, and that version is what goes on trial. The
+// agent's configuration did change; it changed on the far side of a pointer.
+//
+// Without this a self-made change to a tool's host_path would be the one
+// unmeasured way an agent can alter what it is, which is the hole the gate
+// exists to close.
+func (h *HTTP) gateSelfGrantChange(r *http.Request, plan registry.GatePlan, agentID string) {
+	if plan.EvalSetID == "" {
+		return
+	}
+	v, err := h.disp.Registry().Snapshot(r.Context(), agentID,
+		registry.Change{Author: agentAuthorPrefix + agentID, Note: "a grant it holds changed"})
+	if err != nil {
+		h.log.Error("a self-made grant change was applied but could not be versioned",
+			"agent", agentID, "error", err)
+		return
+	}
+	h.startSelfChangeGate(r, plan, agentID, v.Version)
+}
+
 // startSelfChangeGate puts the version this write just minted on trial.
 //
 // A failure to start the run is logged and not returned: the change is already

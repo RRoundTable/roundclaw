@@ -106,9 +106,12 @@ func TestHistoryRejectsAnUnknownStatus(t *testing.T) {
 func TestPersonaWriteMintsAVersion(t *testing.T) {
 	srv, _, _ := newHarness(t)
 
+	// A plain author, not "agent:...": since adr/003 that prefix is reserved for
+	// a credential that proved which agent it was, and this test holds the
+	// operator token.
 	resp := send(t, srv, http.MethodPut, "/v1/agents/pr-reviewer/persona",
 		map[string]string{"persona": "Always answer in Korean."},
-		map[string]string{headerNote: "korean please", headerAuthor: "agent:curator"})
+		map[string]string{headerNote: "korean please", headerAuthor: "curator"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -125,11 +128,25 @@ func TestPersonaWriteMintsAVersion(t *testing.T) {
 		t.Fatalf("versions = %d, want 2", len(list.Versions))
 	}
 	newest := list.Versions[0]
-	if newest.Note != "korean please" || newest.Author != "agent:curator" {
+	if newest.Note != "korean please" || newest.Author != "curator" {
 		t.Errorf("change metadata = %q by %q", newest.Note, newest.Author)
 	}
 	if newest.PersonaBytes == 0 {
 		t.Error("the newest version records no persona")
+	}
+}
+
+// The reservation that makes established authorship worth anything. A gate keyed
+// on "an agent changed itself" is escaped by typing the prefix into a header,
+// unless typing it is refused.
+func TestAssertedAgentAuthorshipIsRefused(t *testing.T) {
+	srv, _, _ := newHarness(t)
+
+	resp := send(t, srv, http.MethodPut, "/v1/agents/pr-reviewer/persona",
+		map[string]string{"persona": "Always answer in Korean."},
+		map[string]string{headerAuthor: "agent:pr-reviewer"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403: an operator token may not claim to be an agent", resp.StatusCode)
 	}
 }
 

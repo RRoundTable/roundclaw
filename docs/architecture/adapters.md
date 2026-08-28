@@ -269,11 +269,16 @@ POST   /v1/webhooks/{agent}               signature-authenticated
 ```
 
 Two headers apply to every write: `X-Roundclaw-Author` and `X-Roundclaw-Note` are
-recorded on the agent version the write mints. Neither is authenticated — a
-bearer token says what may be done, not who is doing it — so they are a
-changelog, not an audit log. That is the honest reading: "curator, because eval
-run 12 regressed" is useful to whoever reads the history later, and nothing
-depends on it being true.
+recorded on the agent version the write mints. The note is never authenticated
+and nothing depends on it being true — "curator, because eval run 12 regressed"
+is useful to whoever reads the history later, and that is all it has to be.
+
+Authorship used to be the same, and the record was a changelog rather than an
+audit log. Since `adr/003` it is two things in one field: a write from a
+per-agent credential carries an authorship the server established and the header
+gets no say, while every other write carries one the caller asserted, as before.
+The `agent:` prefix is what separates them and is reserved — see
+[Identity](#identity--who-is-calling-not-just-what-may-be-called).
 
 The delegate whitelist (`delegateAllowed`) refuses all of the routes above. One
 agent must not read another's request history — those turns are other people's
@@ -383,8 +388,56 @@ second one" would then mean something else than when it was rendered.
 `PUT /v1/agents/{id}/definition` and skipping the queue. The gate is a convention
 the curator's instructions keep, not a permission the server enforces — the same
 trade the admin agent already makes. What the queue guarantees is that a change
-made through it is recorded, atomic, and reversible. Enforcing it would need a
-token scope narrower than roundclaw issues today.
+made through it is recorded, atomic, and reversible.
+
+That remains true of a **full-scope** token. What `adr/003` changed is that it is
+no longer true of every token: a per-agent credential is bounded by subject, so
+an agent holding one reaches its own configuration and nothing else. The gate on
+proposals is still a convention; the fleet is no longer wide open to anything
+that holds any credential at all.
+
+## Identity — who is calling, not just what may be called
+
+Authentication used to answer one question, and `authenticate` returned a
+boolean. A bearer token said what may be done and never who was doing it, so the
+`X-Roundclaw-Author` header was self-declared and the version history was a
+changelog rather than an audit log. Nothing could be gated on "an agent changed
+itself", because claiming to be a different agent was a header edit.
+
+A credential now resolves to an `Identity` carried on the request context
+(`identity.go`), with three scopes:
+
+| Scope | Credential | Reaches | Authorship |
+|---|---|---|---|
+| `ScopeFull` | `http.tokens_env` | everything | asserted, as before |
+| `ScopeDelegate` | `http.delegate_tokens_env`, shared | `delegateAllowed` — send requests, read status, its schedules | asserted |
+| `ScopeSelf` | derived per agent | the delegate surface **plus its own agent** | **established** |
+
+A per-agent token is `rcs.<agent-id>.<hmac>`, an HMAC over the id under
+`http.self_token_key_env` (`core.DeriveAgentToken`). Derived rather than stored:
+no table, no issuance step, and rotating the key revokes every agent at once. The
+id travels in the clear because it is not a secret and carrying it makes
+verification one HMAC rather than one per registered agent — and rewriting it
+fails, since the id is what the MAC is over. With no key configured the scheme is
+off entirely and the fleet behaves exactly as it did before.
+
+`allowedFor` bounds a route by identity. For the agent routes the bound is the id
+in the path against the id in the credential. For tools and skills it cannot be —
+a tool belongs to no agent — so the middleware admits the shape and
+`mayWriteGrant` refuses in the handler unless the caller holds the tool, or the
+tool does not exist yet. This is the split the agent-scoped schedule routes
+already used: the list admits the shape, the handler bounds the subject.
+
+**Authorship splits without a new column.** `agentAuthorPrefix` (`agent:`) is
+reserved: a write from a per-agent credential has it written by the server, and a
+write from anything else is refused if it tries to type it. Without that
+reservation a gate keyed on established authorship is escaped by setting a
+header, which is the entire reason the identity exists.
+
+The worker injects the derived token into a container as `ROUNDCLAW_SELF_TOKEN`
+(`identityEnv` in `run_turn.go`), and the CLI falls back to it when no
+`ROUNDCLAW_API_TOKEN` is set — fallback rather than default, so an operator who
+exported a wider token in the same shell keeps it.
 
 ## Webhooks
 

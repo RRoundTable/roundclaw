@@ -10,9 +10,10 @@ import (
 
 // Skill management over the API.
 //
-// A skill names a host path (a SKILL.md directory), so registering one is an
-// operator act — the same boundary tools draw. Granting a skill to an agent is
-// done through the agent definition (its "skills" list), not here.
+// A skill names a host path (a SKILL.md directory), so writing one is bounded by
+// who is asking, the same boundary tools draw (see mayWriteGrant). Granting a
+// skill to an agent is done through the agent definition (its "skills" list),
+// not here.
 //
 //	GET    /v1/skills              list registered skills
 //	POST   /v1/skills             create or replace (id in the body)
@@ -56,7 +57,14 @@ func (h *HTTP) putSkillByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) saveSkill(w http.ResponseWriter, r *http.Request, sk registry.Skill) {
-	saved, err := h.disp.Registry().PutSkill(r.Context(), sk)
+	if !h.mayWriteGrant(w, r, "skill", sk.ID) {
+		return
+	}
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
+	saved, err := h.disp.Registry().PutSkill(r.Context(), sk, c)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

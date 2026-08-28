@@ -235,6 +235,18 @@ type HTTPConfig struct {
 	// another agent without being able to reconfigure the fleet — a prompt
 	// injection reaching one agent then cannot delete another.
 	DelegateTokensEnv string `yaml:"delegate_tokens_env"`
+	// SelfTokenKeyEnv names an env var holding the key that per-agent
+	// credentials are derived under. A delegate token is shared, so it can say
+	// what may be done but never who is doing it; a per-agent token is derived
+	// from this key plus the agent's id, so presenting it proves which agent is
+	// calling and lets a write be bounded to that agent's own configuration
+	// (adr/003).
+	//
+	// Empty leaves per-agent credentials off entirely, and the fleet behaves
+	// exactly as it did before: no token resolves to an agent and no authorship
+	// is ever established. Rotating this value invalidates every agent's
+	// credential at once, which is the intended way to revoke them.
+	SelfTokenKeyEnv string `yaml:"self_token_key_env"`
 	// WaitTimeout bounds ?wait=true before the request is demoted to 202.
 	WaitTimeout time.Duration `yaml:"wait_timeout"`
 	// MaxSSEPerAgent caps concurrent SSE streams so the gateway cannot run out
@@ -414,6 +426,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.HTTP.DelegateTokensEnv == "" {
 		c.HTTP.DelegateTokensEnv = "ROUNDCLAW_DELEGATE_TOKENS"
+	}
+	if c.HTTP.SelfTokenKeyEnv == "" {
+		c.HTTP.SelfTokenKeyEnv = "ROUNDCLAW_SELF_TOKEN_KEY"
 	}
 	if c.HTTP.WaitTimeout == 0 {
 		c.HTTP.WaitTimeout = 60 * time.Second

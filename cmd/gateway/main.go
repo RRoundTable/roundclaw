@@ -230,6 +230,19 @@ func run(configPath string, log *slog.Logger) error {
 	}
 
 	api := adapter.NewHTTP(disp, log, tokens, delegateTokens, cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
+
+	// Per-agent credentials. Without a key an agent can still delegate and read
+	// status on the shared token; what it cannot do is prove which agent it is,
+	// so nothing it writes is ever recorded as its own.
+	if key := os.Getenv(cfg.HTTP.SelfTokenKeyEnv); key != "" {
+		api.UseSelfTokenKey(key)
+		log.Info("per-agent API credentials enabled; an agent can change its own configuration",
+			"key_env", cfg.HTTP.SelfTokenKeyEnv)
+	} else {
+		log.Info("no per-agent credential key configured; agents cannot change their own configuration",
+			"key_env", cfg.HTTP.SelfTokenKeyEnv)
+	}
+
 	for originType, s := range senders {
 		api.SetMessageSender(originType, s)
 	}

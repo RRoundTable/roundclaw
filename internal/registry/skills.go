@@ -19,9 +19,9 @@ import (
 // Unlike a tool it carries no env and no injected prompt: a SKILL.md is
 // self-describing, so roundclaw only has to put it where `claude` will find it.
 //
-// Registering a skill names a host path (sensitive), so it is an operator act,
-// the same boundary tools draw; granting one to an agent only references a
-// registered id.
+// Registering a skill names a host path (sensitive), so who may write one is
+// bounded at the API edge, the same boundary tools draw; granting one to an
+// agent only references a registered id.
 
 const skillSchema = `
 CREATE TABLE IF NOT EXISTS skills (

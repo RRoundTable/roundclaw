@@ -775,6 +775,13 @@ func (a *Activities) identityEnv(ctx context.Context, st *store.Store, in RunTur
 		"ROUNDCLAW_TURN_ID":         strconv.FormatInt(in.TurnID, 10),
 		"ROUNDCLAW_CONVERSATION_ID": in.ConversationID,
 	}
+	// The credential that says which agent this is, derived rather than looked
+	// up so the worker and the gateway agree without sharing anything but the
+	// key. Absent when no key is configured, which leaves the container with the
+	// shared delegate token it has always had and no way to change itself.
+	if token := core.DeriveAgentToken(in.AgentID, os.Getenv(a.cfg.HTTP.SelfTokenKeyEnv)); token != "" {
+		env["ROUNDCLAW_SELF_TOKEN"] = token
+	}
 	// A failed read is not worth failing the turn over: the agent simply runs
 	// without knowing who delegated to it, which is how every turn ran before
 	// this existed.

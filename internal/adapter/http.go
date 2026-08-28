@@ -35,7 +35,10 @@ type HTTP struct {
 
 	tokens         [][32]byte
 	delegateTokens [][32]byte
-	waitTimeout    time.Duration
+	// selfTokenKey derives the per-agent credentials this gateway recognises.
+	// Empty leaves them off entirely; see UseSelfTokenKey.
+	selfTokenKey string
+	waitTimeout  time.Duration
 
 	// senders is how an agent speaks outside a turn (POST .../messages), keyed
 	// by the chat tool it is speaking into. A tool with no entry is one this
@@ -506,8 +509,20 @@ func (h *HTTP) streamTurn(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authenticate enforces bearer auth with a constant-time comparison. Tokens are
-// held hashed so a heap dump does not hand over live credentials.
+// UseSelfTokenKey enables per-agent credentials by installing the key they are
+// derived under. Empty leaves them off, and a deployment with them off behaves
+// exactly as it did before: no token resolves to an agent, so no authorship is
+// ever established.
+//
+// Installed by a setter rather than taken in NewHTTP for the reason UseSecretKey
+// and UsePersonaSource are: the constructor already carries what every caller
+// needs, and an optional capability should not appear in six test call sites
+// that do not use it.
+func (h *HTTP) UseSelfTokenKey(key string) { h.selfTokenKey = key }
+
+// authenticate resolves a bearer credential to an identity and bounds the route
+// by it. Shared tokens are held hashed so a heap dump does not hand over live
+// credentials; a per-agent token is recomputed rather than stored at all.
 func (h *HTTP) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(h.tokens) == 0 {
@@ -522,31 +537,51 @@ func (h *HTTP) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "a bearer token is required")
 			return
 		}
+		presented = strings.TrimSpace(presented)
 
-		sum := sha256.Sum256([]byte(strings.TrimSpace(presented)))
-		for _, known := range h.tokens {
-			if subtle.ConstantTimeCompare(sum[:], known[:]) == 1 {
-				next.ServeHTTP(w, r)
-				return
-			}
+		id, ok := h.resolve(presented)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "invalid bearer token")
+			return
 		}
-		// A delegate token is accepted only on the restricted surface — sending a
-		// request to an agent and reading status. Everything else (managing agents,
-		// secrets, tools, workflows, schedules) is 403, so a token that leaks into
-		// an agent container cannot reconfigure the fleet.
-		for _, known := range h.delegateTokens {
-			if subtle.ConstantTimeCompare(sum[:], known[:]) == 1 {
-				if !delegateAllowed(r.Method, r.URL.Path) {
-					writeError(w, http.StatusForbidden,
-						"this token may only send requests to agents and read their status")
-					return
-				}
-				next.ServeHTTP(w, r)
-				return
-			}
+		if !allowedFor(id, r.Method, r.URL.Path) {
+			writeError(w, http.StatusForbidden, forbiddenReason(id))
+			return
 		}
-		writeError(w, http.StatusUnauthorized, "invalid bearer token")
+		next.ServeHTTP(w, withIdentity(r, id))
 	})
+}
+
+// resolve turns a presented credential into an identity.
+//
+// Order matters only in that the full-scope check comes first: it is the common
+// case and the cheapest. A per-agent token is checked last and by derivation, so
+// there is nothing stored to compare against and nothing to leak.
+func (h *HTTP) resolve(presented string) (Identity, bool) {
+	sum := sha256.Sum256([]byte(presented))
+	for _, known := range h.tokens {
+		if subtle.ConstantTimeCompare(sum[:], known[:]) == 1 {
+			return Identity{Scope: ScopeFull}, true
+		}
+	}
+	// A delegate token reaches the restricted surface — sending a request to an
+	// agent and reading status — and names nobody, so it establishes nothing.
+	for _, known := range h.delegateTokens {
+		if subtle.ConstantTimeCompare(sum[:], known[:]) == 1 {
+			return Identity{Scope: ScopeDelegate}, true
+		}
+	}
+	if agentID, ok := core.VerifyAgentToken(presented, h.selfTokenKey); ok {
+		return Identity{Scope: ScopeSelf, AgentID: agentID}, true
+	}
+	return Identity{}, false
+}
+
+func forbiddenReason(id Identity) string {
+	if id.Scope == ScopeSelf {
+		return "this token may change " + id.AgentID + " and nothing else in the fleet"
+	}
+	return "this token may only send requests to agents and read their status"
 }
 
 // delegateAllowed is the whitelist a restricted (delegate-scoped) token may

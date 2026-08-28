@@ -148,8 +148,12 @@ recorded as turns ([orchestration.md](orchestration.md#runworkflow--the-agent-le
 (mounted read-only at `/mnt/<basename>`), an `env` JSON map, and `instructions`.
 An agent's `tools` column lists the IDs it is granted; the activity resolves them
 each turn ([agent-runtime.md](agent-runtime.md#registered-tools)). Registering a
-row names a host path and is operator-only; granting an ID to an agent is safe in
-plain language, since only registered IDs resolve. No FK from `agents.tools` to
+row names a host path, so it is bounded rather than open: a full-scope token may
+write any tool, and a per-agent credential may write only the tools that agent
+holds, or one that does not exist yet
+([adapters.md](adapters.md#identity--who-is-calling-not-just-what-may-be-called)).
+Granting an ID to an agent is safe in plain language, since only registered IDs
+resolve. No FK from `agents.tools` to
 `tools`: it is a JSON list like the other list columns, and a grant referencing a
 since-deleted tool is skipped at turn time rather than blocked at write.
 

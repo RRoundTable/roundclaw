@@ -10,10 +10,11 @@ import (
 
 // Tool management over the API.
 //
-// A tool names a host path and the env a local capability needs, so registering
-// one is an operator act — the same reason admin can attach a tool but not
-// create it. Granting a tool to an agent is done through the agent definition
-// (its "tools" list) or the admin attach_tool action, not here.
+// A tool names a host path and the env a local capability needs, so writing one
+// is bounded by who is asking: an operator credential may write any tool, and a
+// per-agent credential only the tools that agent holds, or one that does not
+// exist yet (see mayWriteGrant). Granting a tool to an agent is done through the
+// agent definition (its "tools" list) or the admin attach_tool action, not here.
 //
 //	GET    /v1/tools              list registered tools
 //	POST   /v1/tools             create or replace (id in the body)
@@ -57,7 +58,14 @@ func (h *HTTP) putToolByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) saveTool(w http.ResponseWriter, r *http.Request, t registry.Tool) {
-	saved, err := h.disp.Registry().PutTool(r.Context(), t)
+	if !h.mayWriteGrant(w, r, "tool", t.ID) {
+		return
+	}
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
+	saved, err := h.disp.Registry().PutTool(r.Context(), t, c)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

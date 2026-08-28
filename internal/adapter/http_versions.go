@@ -3,6 +3,7 @@ package adapter
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/roundtable/roundclaw/internal/registry"
@@ -30,20 +31,45 @@ func (h *HTTP) registerVersionRoutes(mux *http.ServeMux) {
 // Change metadata travels in headers rather than the body, so that every write
 // route can carry it without each one growing an envelope around its payload.
 //
-// Neither is authenticated — a bearer token says what may be done, not who is
-// doing it — so they are a changelog, not an audit log. That is the honest
-// reading: "curator, because eval run 12 regressed" is useful to whoever reads
-// the history later, and nothing depends on it being true.
+// The note is whatever the caller says and nothing depends on it being true.
+// Authorship used to be the same, which made the record a changelog rather than
+// an audit log. Since adr/003 it is two things wearing one field: a write from a
+// per-agent credential carries an authorship the server established, and every
+// other write carries one the caller asserted, exactly as before.
+//
+// agentAuthorPrefix is what separates them, and it is reserved. Anyone may still
+// write "curator, because eval run 12 regressed"; nobody may write
+// "agent:curator" without presenting curator's own credential. Without that
+// reservation a gate keyed on established authorship is escaped by typing the
+// prefix into a header, which is the whole reason the identity exists.
 const (
 	headerAuthor = "X-Roundclaw-Author"
 	headerNote   = "X-Roundclaw-Note"
+
+	agentAuthorPrefix = "agent:"
 )
 
-func changeFrom(r *http.Request) registry.Change {
-	return registry.Change{
-		Note:   r.Header.Get(headerNote),
-		Author: r.Header.Get(headerAuthor),
+// changeFrom builds the change metadata for a write, or reports that the caller
+// claimed an authorship it could not prove.
+func changeFrom(w http.ResponseWriter, r *http.Request) (registry.Change, bool) {
+	c := registry.Change{Note: r.Header.Get(headerNote)}
+
+	if id := identityFrom(r); id.Established() {
+		// The credential named the agent, so the header gets no say. A
+		// self-improving agent's history says who it was without the agent
+		// having to be trusted about it.
+		c.Author = agentAuthorPrefix + id.AgentID
+		return c, true
 	}
+
+	asserted := r.Header.Get(headerAuthor)
+	if strings.HasPrefix(asserted, agentAuthorPrefix) {
+		writeError(w, http.StatusForbidden,
+			"the \""+agentAuthorPrefix+"\" author prefix is reserved for an agent's own credential")
+		return registry.Change{}, false
+	}
+	c.Author = asserted
+	return c, true
 }
 
 // versionSummary is a version without its payload — enough to see what changed
@@ -137,7 +163,10 @@ func (h *HTTP) rollbackVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := changeFrom(r)
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
 	if c.Note == "" {
 		c.Note = "rolled back to v" + strconv.Itoa(n)
 	}

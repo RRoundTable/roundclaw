@@ -182,7 +182,12 @@ func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 // environment, so every subcommand accepts them.
 func commonFlags(fs *flag.FlagSet) (*string, *string) {
 	base := fs.String("url", envOr("ROUNDCLAW_URL", "http://127.0.0.1:8099"), "gateway base URL")
-	token := fs.String("token", os.Getenv("ROUNDCLAW_API_TOKEN"), "bearer token")
+	// ROUNDCLAW_SELF_TOKEN is what the worker puts in an agent's container: the
+	// credential that says which agent this is. It is the fallback rather than
+	// the default so an operator who exported a full-scope token in the same
+	// shell still gets the wider one — the narrower credential should never
+	// silently replace a credential somebody chose.
+	token := fs.String("token", envOr("ROUNDCLAW_API_TOKEN", os.Getenv("ROUNDCLAW_SELF_TOKEN")), "bearer token")
 	return base, token
 }
 

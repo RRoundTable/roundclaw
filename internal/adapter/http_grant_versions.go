@@ -118,7 +118,11 @@ func (h *HTTP) rollbackToolVersion(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	res, err := h.disp.Registry().RollbackTool(r.Context(), r.PathValue("tool"), n, changeFrom(r))
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.disp.Registry().RollbackTool(r.Context(), r.PathValue("tool"), n, c)
 	if err != nil {
 		writeAgentError(w, err)
 		return
@@ -172,7 +176,11 @@ func (h *HTTP) rollbackSkillVersion(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	res, err := h.disp.Registry().RollbackSkill(r.Context(), r.PathValue("skill"), n, changeFrom(r))
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.disp.Registry().RollbackSkill(r.Context(), r.PathValue("skill"), n, c)
 	if err != nil {
 		writeAgentError(w, err)
 		return

@@ -15,10 +15,12 @@ import (
 //
 // A tool bundles what it takes to use a local capability: a host directory to
 // mount (a CLI, its config), the environment variables it needs, and a note on
-// how to drive it. Registering a tool is an operator act — it names a host path,
-// which is sensitive. Attaching one to an agent is then safe to do in natural
-// language, because admin can only pick from tools already registered, never
-// mount an arbitrary path.
+// how to drive it. Registering a tool names a host path, which is sensitive, so
+// who may write one is bounded at the API edge rather than here: an operator
+// credential may write any tool, an agent's own credential may write only the
+// tools it holds or one that does not exist yet (adr/003). Attaching a tool to
+// an agent stays safe in natural language, because admin can only pick from
+// tools already registered, never mount an arbitrary path.
 
 const toolSchema = `
 CREATE TABLE IF NOT EXISTS tools (

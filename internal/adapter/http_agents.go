@@ -72,7 +72,10 @@ func (h *HTTP) putAgentPersona(w http.ResponseWriter, r *http.Request) {
 	// A persona change never reaches registry.Update — it is a file, not a
 	// column — so this is the one write that has to mint its own version. Without
 	// it the most consequential edit an agent can receive would leave no trace.
-	c := changeFrom(r)
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
 	if c.Note == "" {
 		c.Note = personaVersionNote
 	}
@@ -123,7 +126,11 @@ func (h *HTTP) createAgent(w http.ResponseWriter, r *http.Request) {
 		agent.Enabled = true
 	}
 
-	created, err := h.disp.Registry().Create(r.Context(), agent, changeFrom(r))
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
+	created, err := h.disp.Registry().Create(r.Context(), agent, c)
 	if err != nil {
 		writeAgentError(w, err)
 		return
@@ -150,7 +157,11 @@ func (h *HTTP) putAgentDefinition(w http.ResponseWriter, r *http.Request) {
 	// out from under its workspace and Claude session.
 	agent.ID = r.PathValue("agent")
 
-	updated, err := h.disp.Registry().Update(r.Context(), agent, changeFrom(r))
+	c, ok := changeFrom(w, r)
+	if !ok {
+		return
+	}
+	updated, err := h.disp.Registry().Update(r.Context(), agent, c)
 	if err != nil {
 		writeAgentError(w, err)
 		return

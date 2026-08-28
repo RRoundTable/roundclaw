@@ -64,17 +64,20 @@ started.
   Specified in [specs/self-improvement.md](specs/self-improvement.md) and
   [specs/tool-state.md](specs/tool-state.md) (`spec/003`).
 
-  **Decided before writing code:** an agent's container carries a credential
-  that identifies it, and the write surface that credential opens is bounded by
-  subject as well as by path, so an agent may change itself and nothing else
-  (`adr/003`); and a tool's restore contract declares what reachable means
-  rather than carrying a command to run, because the registry has never stored
-  a command and a restore runs ahead of the gate that would judge one
-  (`adr/004`).
+  **Decided before writing code:**
 
-  **Still to decide:** what a tool's identity is, given that a directory, a
-  package, an image and a database each answer "what are you right now?"
-  differently.
+  - An agent's container carries a credential that identifies it, and the write
+    surface it opens is bounded by subject as well as by path, so an agent may
+    change itself and nothing else (`adr/003`).
+  - A tool's restore contract declares what reachable means rather than carrying
+    a command to run: the registry has never stored a command, and a restore
+    runs ahead of the gate that would judge one (`adr/004`).
+  - A tool declares the set of things it is made of, or it has no version.
+    roundclaw cannot tell from the row whether a mount is the tool itself or a
+    client's configuration, so it does not guess (`adr/005`).
+
+  Nothing here is left open. What remains is implementation, and that waits for
+  Now to empty.
 
 ## Later
 

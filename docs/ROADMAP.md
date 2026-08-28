@@ -7,25 +7,6 @@ really started.
 
 ## Now
 
-- **Human-in-the-loop as a general capability.**
-
-  Today there is exactly one place the system can ask a person to decide:
-  `proposals`, which only ever answers "apply this fleet change, or not". Every
-  other kind of human judgement — which of these candidates is better, is this
-  output good enough to keep, should this run continue — has nowhere to live.
-
-  The work is to make "wait for a person to decide" something the system supports
-  generally, rather than a feature of one table with one verb.
-
-  **Open question, decide before writing code:** whether that is one mechanism
-  that covers both approving a change and choosing among candidates, or a second
-  mechanism beside `proposals`. They differ in a way that may not be papered
-  over — approving a proposal *applies* something, while choosing a candidate
-  applies nothing and only records a label. Settle it with
-  `/propose-architecture`.
-
-## Next
-
 - **An agent improves itself.**
 
   The pieces of a self-improvement loop already exist, pointed outward: a curator
@@ -55,8 +36,26 @@ really started.
     roundclaw cannot tell from the row whether a mount is the tool itself or a
     client's configuration, so it does not guess (`adr/005`).
 
-  Nothing here is left open. What remains is implementation, and that waits for
-  Now to empty.
+  Nothing here is left open. What remains is implementation.
+
+## Next
+
+- **Human-in-the-loop as a general capability.**
+
+  Today there is exactly one place the system can ask a person to decide:
+  `proposals`, which only ever answers "apply this fleet change, or not". Every
+  other kind of human judgement — which of these candidates is better, is this
+  output good enough to keep, should this run continue — has nowhere to live.
+
+  The work is to make "wait for a person to decide" something the system supports
+  generally, rather than a feature of one table with one verb.
+
+  **Open question, decide before writing code:** whether that is one mechanism
+  that covers both approving a change and choosing among candidates, or a second
+  mechanism beside `proposals`. They differ in a way that may not be papered
+  over — approving a proposal *applies* something, while choosing a candidate
+  applies nothing and only records a label. Settle it with
+  `/propose-architecture`.
 
 ## Later
 

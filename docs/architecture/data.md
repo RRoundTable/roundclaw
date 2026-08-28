@@ -97,7 +97,8 @@ skill_versions(skill_id, version, definition, digest, digest_err, note, author,
 
 eval_sets(id PK, agent_id, description, cases, full_grants, enabled, ...)
 eval_runs(id PK AUTOINCREMENT, eval_set_id, agent_id, version, status, score,
-          passed, total, cost_usd, error, notify_agent, notify_conversation, ...)
+          passed, total, cost_usd, error, notify_agent, notify_conversation,
+          gates_version, baseline_run, ...)
 eval_results(run_id, case_name, output, score, passed, reason, cost_usd,
              duration_ms, PK(run_id, case_name))
 
@@ -272,6 +273,26 @@ not branch is a comment with a migration attached (`adr/005`). Rollback applies
 an old snapshot as a **new** version and reports `digest_matches`, so a restore
 whose content has drifted says the configuration came back and the content did
 not, rather than reporting success.
+
+**`eval_runs.gates_version` is what makes a self-made change survivable.** A run
+with it set is judging that agent version rather than merely reporting on it, and
+`baseline_run` is what it is judged against. When the run finishes,
+`SettleGate` compares the two and puts the agent back if the verdict is worse or
+mixed — any regression makes a change worse, and that rule lives in
+`compareRuns` rather than being restated here.
+
+The gate is asynchronous because a run takes minutes and the write that triggered
+it does not: the change applies and is then judged. Three things settle to "not
+measured" instead of reverting — a run that failed, a run with no baseline, and a
+comparison that reports itself incomparable — because undoing a change on a
+marking failure is scoring a broken harness as a regression, which
+[evaluation.md](../specs/evaluation.md) refuses. Settling happens on *every*
+completion; an ordinary run judges nothing, which is what keeps the gate from
+being a path somebody has to remember to take.
+
+An agent cannot move the gate: `/v1/evals` is outside the surface a per-agent
+credential opens, so the cases it is measured against are the one thing it cannot
+edit.
 
 **`eval_runs.version` pins what was measured.** A run asked for version 0 ("live")
 resolves it to a concrete number when it starts: a run that cannot say what it

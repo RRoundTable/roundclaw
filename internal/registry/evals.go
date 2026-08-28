@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     -- wait — the same return address a delegated turn carries.
     notify_agent        TEXT NOT NULL DEFAULT '',
     notify_conversation TEXT NOT NULL DEFAULT '',
+    -- The agent version this run judges (0 = an ordinary run), and the run it
+    -- is judged against. See gate.go.
+    gates_version INTEGER NOT NULL DEFAULT 0,
+    baseline_run  INTEGER NOT NULL DEFAULT 0,
     started_at   INTEGER NOT NULL,
     finished_at  INTEGER NOT NULL DEFAULT 0
 );
@@ -165,20 +169,27 @@ func (e EvalSet) Validate() error {
 
 // EvalRun is one execution of a set against one agent version.
 type EvalRun struct {
-	ID                 int64     `json:"id"`
-	EvalSetID          string    `json:"eval_set_id"`
-	AgentID            string    `json:"agent_id"`
-	Version            int       `json:"version"`
-	Status             string    `json:"status"`
-	Score              float64   `json:"score"`
-	Passed             int       `json:"passed"`
-	Total              int       `json:"total"`
-	CostUSD            float64   `json:"cost_usd"`
-	Error              string    `json:"error,omitempty"`
-	NotifyAgent        string    `json:"notify_agent,omitempty"`
-	NotifyConversation string    `json:"notify_conversation,omitempty"`
-	StartedAt          time.Time `json:"started_at"`
-	FinishedAt         time.Time `json:"finished_at,omitempty"`
+	ID                 int64   `json:"id"`
+	EvalSetID          string  `json:"eval_set_id"`
+	AgentID            string  `json:"agent_id"`
+	Version            int     `json:"version"`
+	Status             string  `json:"status"`
+	Score              float64 `json:"score"`
+	Passed             int     `json:"passed"`
+	Total              int     `json:"total"`
+	CostUSD            float64 `json:"cost_usd"`
+	Error              string  `json:"error,omitempty"`
+	NotifyAgent        string  `json:"notify_agent,omitempty"`
+	NotifyConversation string  `json:"notify_conversation,omitempty"`
+	// GatesVersion is the agent version this run judges, or 0 for an ordinary
+	// run. A gating run's verdict decides whether that version survives.
+	GatesVersion int `json:"gates_version,omitempty"`
+	// BaselineRun is what the gate compares against. Without one there is
+	// nothing to compare and the gate settles to "not measured" rather than
+	// inventing a verdict.
+	BaselineRun int64     `json:"baseline_run,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	FinishedAt  time.Time `json:"finished_at,omitempty"`
 }
 
 // EvalResult is one case's outcome within a run.
@@ -307,10 +318,10 @@ func (s *Store) StartEvalRun(ctx context.Context, r EvalRun) (EvalRun, error) {
 	now := time.Now().UnixMilli()
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO eval_runs (eval_set_id, agent_id, version, status, total,
-		                       notify_agent, notify_conversation, started_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       notify_agent, notify_conversation, gates_version, baseline_run, started_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.EvalSetID, r.AgentID, r.Version, EvalRunning, r.Total,
-		r.NotifyAgent, r.NotifyConversation, now)
+		r.NotifyAgent, r.NotifyConversation, r.GatesVersion, r.BaselineRun, now)
 	if err != nil {
 		return EvalRun{}, fmt.Errorf("start eval run of %s: %w", r.EvalSetID, err)
 	}
@@ -337,7 +348,7 @@ func (s *Store) FinishEvalRun(ctx context.Context, id int64, status string, scor
 func (s *Store) GetEvalRun(ctx context.Context, id int64) (EvalRun, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, eval_set_id, agent_id, version, status, score, passed, total,
-		       cost_usd, error, notify_agent, notify_conversation, started_at, finished_at
+		       cost_usd, error, notify_agent, notify_conversation, gates_version, baseline_run, started_at, finished_at
 		FROM eval_runs WHERE id = ?`, id)
 	r, err := scanEvalRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -353,7 +364,7 @@ func (s *Store) ListEvalRuns(ctx context.Context, evalSetID, agentID string, lim
 		limit = 20
 	}
 	q := `SELECT id, eval_set_id, agent_id, version, status, score, passed, total,
-	             cost_usd, error, notify_agent, notify_conversation, started_at, finished_at
+	             cost_usd, error, notify_agent, notify_conversation, gates_version, baseline_run, started_at, finished_at
 	      FROM eval_runs`
 	var (
 		where []string
@@ -397,6 +408,7 @@ func scanEvalRun(row scanner) (EvalRun, error) {
 	)
 	err := row.Scan(&r.ID, &r.EvalSetID, &r.AgentID, &r.Version, &r.Status, &r.Score,
 		&r.Passed, &r.Total, &r.CostUSD, &r.Error, &r.NotifyAgent, &r.NotifyConversation,
+		&r.GatesVersion, &r.BaselineRun,
 		&startedAt, &finishedAt)
 	if err != nil {
 		return EvalRun{}, err

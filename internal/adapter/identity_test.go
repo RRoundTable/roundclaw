@@ -305,3 +305,27 @@ func TestWithoutAKeyPerAgentTokensDoNotExist(t *testing.T) {
 		t.Errorf("status = %d, want 401 when no key is configured", resp.StatusCode)
 	}
 }
+
+// The cases are what "better" means. An agent that could rewrite them would be
+// grading its own homework, so the whole eval surface is outside what a
+// per-agent credential opens — and this asserts it stays that way.
+func TestSelfTokenCannotTouchItsOwnEvaluationCases(t *testing.T) {
+	srv, _ := selfHarness(t)
+	token := core.DeriveAgentToken("dev", selfKey)
+
+	for _, c := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodGet, "/v1/evals", nil},
+		{http.MethodPost, "/v1/evals", map[string]any{"id": "cases", "agent_id": "dev"}},
+		{http.MethodPut, "/v1/evals/cases", map[string]any{"id": "cases", "agent_id": "dev"}},
+		{http.MethodDelete, "/v1/evals/cases", nil},
+		{http.MethodPost, "/v1/evals/cases/run", nil},
+	} {
+		resp := do(t, srv, c.method, c.path, token, c.body)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s %s = %d, want 403", c.method, c.path, resp.StatusCode)
+		}
+	}
+}

@@ -47,7 +47,28 @@ started.
 
 ## Next
 
-- _placeholder — nothing is committed here yet._
+- **An agent improves itself.**
+
+  The pieces of a self-improvement loop already exist, pointed outward: a curator
+  agent reads history and versions, runs evaluations, compares two runs, and
+  files a proposal a person approves. Turned inward — the agent as its own
+  subject, and a measurement where the curator has a person — the same four
+  pieces let an agent improve without waiting on anybody.
+
+  Two things are missing before that is possible. The tools and skills an agent
+  depends on have no history at all, so there is nothing to put back and no way
+  to say what an agent was when it did something. And those dependencies carry
+  live state that does not always survive a session, which an agent currently
+  discovers by failing a turn.
+
+  Specified in [specs/self-improvement.md](specs/self-improvement.md) and
+  [specs/tool-state.md](specs/tool-state.md) (`spec/003`).
+
+  **Decide before writing code:** whether an agent's changes to itself stay a
+  convention the way the proposal queue does, or need a token scope narrower
+  than roundclaw issues today; what runs a tool's restore contract, and where;
+  and what a tool's identity is, given that a directory, a package, an image and
+  a database each answer "what are you right now?" differently.
 
 ## Later
 

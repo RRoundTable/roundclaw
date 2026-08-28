@@ -22,6 +22,8 @@ separately", not "the handler returns 202".
 | [Fleet management](fleet-management.md) | Add, change and remove agents while the system runs |
 | [Versions and rollback](versions-and-rollback.md) | Know what an agent was when it did something, and undo a change |
 | [Grants](grants.md) | Widen what an agent is allowed to do |
+| [Tool state](tool-state.md) | Know which of an agent's tools work right now, and which are gone |
+| [Self-improvement](self-improvement.md) | Let an agent improve its own tools, skills and instructions |
 | [Evaluation](evaluation.md) | Measure an agent, and compare two of its configurations |
 | [Proposals](proposals.md) | Have a person decide before a change to the fleet takes effect |
 | [Files](files.md) | Send an agent a file, and get files back |
@@ -50,6 +52,10 @@ document first.
 7. **An answer returns to the channel that asked for it.** Which chat tool a
    request arrived through decides where its answer goes, and no capability is
    available in one chat tool and missing from another.
+8. **An agent can change anything about itself except what it is measured by.**
+9. **Nothing an agent changes about itself is unrecoverable.** Every self-made
+   change leaves a version, and every version can be returned to.
+10. **An agent is never told a capability works when it does not.**
 
 ## Depth
 

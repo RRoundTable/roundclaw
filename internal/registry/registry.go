@@ -90,6 +90,9 @@ var migrations = []string{
 	`ALTER TABLE agents ADD COLUMN image TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents ADD COLUMN group_add TEXT NOT NULL DEFAULT '[]'`,
 	`ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE tools ADD COLUMN identity TEXT NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE skills ADD COLUMN identity TEXT NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE agent_versions ADD COLUMN grants TEXT NOT NULL DEFAULT '{}'`,
 }
 
 // Agent is a runtime agent definition.
@@ -249,6 +252,10 @@ type Store struct {
 	// persona reads an agent's CLAUDE.md so a version snapshot can capture it.
 	// Nil until UsePersonaSource is called; see versions.go.
 	persona PersonaSource
+	// identity reduces a tool's or skill's declared members to a digest, so a
+	// version records what it was made of and not only where it was found. Nil
+	// until UseIdentitySource is called; see identity.go.
+	identity IdentitySource
 }
 
 // Open opens (and creates) the registry at path.
@@ -266,7 +273,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open registry %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := applySchema(db, schema+scheduleSchema+secretSchema+workflowSchema+toolSchema+skillSchema+versionSchema+evalSchema+proposalSchema); err != nil {
+	if err := applySchema(db, schema+scheduleSchema+secretSchema+workflowSchema+toolSchema+skillSchema+versionSchema+toolVersionSchema+skillVersionSchema+evalSchema+proposalSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply registry schema: %w", err)
 	}

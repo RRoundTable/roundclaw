@@ -82,6 +82,10 @@ func run(configPath string, log *slog.Logger) error {
 	// that was already sitting in its workspace.
 	reg.UsePersonaSource(registry.PersonaFromWorkspace(cfg.WorkDir))
 
+	// Likewise for what a tool or skill is made of: the registry stores the
+	// witness and this supplies the reading, so it never learns the host layout.
+	reg.UseIdentitySource(registry.IdentityByReading())
+
 	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
 	if err != nil {
 		return err
@@ -98,6 +102,20 @@ func run(configPath string, log *slog.Logger) error {
 		return err
 	} else if backfilled > 0 {
 		log.Info("recorded a first version for agents that had no history", "agents", backfilled)
+	}
+
+	// Tools and skills registered before they had history get the same treatment.
+	// They declared no identity, so their first version records none — which is
+	// the honest reading, not a gap to be filled by guessing at host_path.
+	if backfilled, err := reg.BackfillToolVersions(context.Background()); err != nil {
+		return err
+	} else if backfilled > 0 {
+		log.Info("recorded a first version for tools that had no history", "tools", backfilled)
+	}
+	if backfilled, err := reg.BackfillSkillVersions(context.Background()); err != nil {
+		return err
+	} else if backfilled > 0 {
+		log.Info("recorded a first version for skills that had no history", "skills", backfilled)
 	}
 
 	tc, err := dialTemporal(cfg, log)

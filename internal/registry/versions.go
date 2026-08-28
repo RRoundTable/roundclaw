@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS agent_versions (
     version    INTEGER NOT NULL,
     definition TEXT NOT NULL,             -- the Agent struct as JSON
     persona    TEXT NOT NULL DEFAULT '',  -- the workspace CLAUDE.md at that moment
+    grants     TEXT NOT NULL DEFAULT '{}',-- tool and skill versions held at that moment
     note       TEXT NOT NULL DEFAULT '',  -- why it changed, if the caller said
     author     TEXT NOT NULL DEFAULT '',  -- who changed it, if the caller said
     created_at INTEGER NOT NULL,
@@ -47,12 +48,29 @@ type AgentVersion struct {
 	AgentID string `json:"agent_id"`
 	// Version counts from 1 and never repeats for an agent, including across a
 	// delete and recreate: numbering continues from the history that was kept.
-	Version    int       `json:"version"`
-	Definition Agent     `json:"definition"`
-	Persona    string    `json:"persona,omitempty"`
-	Note       string    `json:"note,omitempty"`
-	Author     string    `json:"author,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	Version    int    `json:"version"`
+	Definition Agent  `json:"definition"`
+	Persona    string `json:"persona,omitempty"`
+	// Grants names which version of each tool and skill the agent held. Without
+	// it a version describes a configuration that never existed, for the same
+	// reason a definition without its persona does — and two evaluations "of the
+	// same configuration" would silently measure different things when a tool
+	// moved underneath them.
+	Grants    Grants    `json:"grants,omitempty"`
+	Note      string    `json:"note,omitempty"`
+	Author    string    `json:"author,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Grants is the tool and skill versions an agent held at one moment.
+//
+// A granted id missing from these maps is one that resolved to nothing when the
+// snapshot was taken — a tool deleted out from under the grant. Recording the
+// absence is the point: it says the agent was configured to use something that
+// was not there, which is exactly what a turn would have skipped over silently.
+type Grants struct {
+	Tools  map[string]int `json:"tools,omitempty"`
+	Skills map[string]int `json:"skills,omitempty"`
 }
 
 // Change is the optional metadata recorded with a write: why, and by whom.
@@ -122,21 +140,33 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, a Agent, persona string, c Chan
 	if err != nil {
 		return fmt.Errorf("encode definition of %s: %w", a.ID, err)
 	}
+	grants, err := grantsTx(ctx, tx, a)
+	if err != nil {
+		return err
+	}
+	grantsJSON, err := json.Marshal(grants)
+	if err != nil {
+		return fmt.Errorf("encode grants of %s: %w", a.ID, err)
+	}
 
 	var (
 		prevDef     string
 		prevPersona string
+		prevGrants  string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT definition, persona FROM agent_versions WHERE agent_id = ? ORDER BY version DESC LIMIT 1`,
-		a.ID).Scan(&prevDef, &prevPersona)
+		`SELECT definition, persona, grants FROM agent_versions WHERE agent_id = ? ORDER BY version DESC LIMIT 1`,
+		a.ID).Scan(&prevDef, &prevPersona, &prevGrants)
 	switch {
 	case err == nil:
 		same, cmpErr := sameContent(prevDef, prevPersona, a, persona)
 		if cmpErr != nil {
 			return cmpErr
 		}
-		if same {
+		// The grants comparison is what catches a tool that changed while the
+		// agent's own row stood still: same definition, same persona, different
+		// tool version. That is a different configuration and gets its own row.
+		if same && prevGrants == string(grantsJSON) {
 			return nil
 		}
 	case errors.Is(err, sql.ErrNoRows):
@@ -152,13 +182,53 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, a Agent, persona string, c Chan
 		return fmt.Errorf("next version of %s: %w", a.ID, err)
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO agent_versions (agent_id, version, definition, persona, note, author, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, next, string(def), persona, c.Note, c.Author, now)
+		INSERT INTO agent_versions (agent_id, version, definition, persona, grants, note, author, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, next, string(def), persona, string(grantsJSON), c.Note, c.Author, now)
 	if err != nil {
 		return fmt.Errorf("snapshot %s v%d: %w", a.ID, next, err)
 	}
 	return nil
+}
+
+// grantsTx resolves an agent's granted tool and skill ids to the versions those
+// grants pointed at, inside the caller's transaction so the answer is the one
+// that was true when the definition was written.
+//
+// A grant naming something with no version — deleted, or registered before
+// history existed — is left out rather than recorded as zero. Absent says "there
+// was nothing to pin"; a zero would read as a real version.
+func grantsTx(ctx context.Context, tx *sql.Tx, a Agent) (Grants, error) {
+	g := Grants{}
+	for _, id := range a.Tools {
+		var v int
+		err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(version), 0) FROM tool_versions WHERE tool_id = ?`, id).Scan(&v)
+		if err != nil {
+			return Grants{}, fmt.Errorf("read tool version for grant %s of %s: %w", id, a.ID, err)
+		}
+		if v > 0 {
+			if g.Tools == nil {
+				g.Tools = map[string]int{}
+			}
+			g.Tools[id] = v
+		}
+	}
+	for _, id := range a.Skills {
+		var v int
+		err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(version), 0) FROM skill_versions WHERE skill_id = ?`, id).Scan(&v)
+		if err != nil {
+			return Grants{}, fmt.Errorf("read skill version for grant %s of %s: %w", id, a.ID, err)
+		}
+		if v > 0 {
+			if g.Skills == nil {
+				g.Skills = map[string]int{}
+			}
+			g.Skills[id] = v
+		}
+	}
+	return g, nil
 }
 
 // sameContent reports whether a stored snapshot and a proposed one describe the
@@ -223,7 +293,7 @@ func (s *Store) Snapshot(ctx context.Context, agentID string, c Change) (AgentVe
 // ListVersions returns an agent's versions, newest first. limit <= 0 returns all
 // of them.
 func (s *Store) ListVersions(ctx context.Context, agentID string, limit int) ([]AgentVersion, error) {
-	q := `SELECT agent_id, version, definition, persona, note, author, created_at
+	q := `SELECT agent_id, version, definition, persona, grants, note, author, created_at
 	      FROM agent_versions WHERE agent_id = ? ORDER BY version DESC`
 	args := []any{agentID}
 	if limit > 0 {
@@ -250,7 +320,7 @@ func (s *Store) ListVersions(ctx context.Context, agentID string, limit int) ([]
 // GetVersion returns one snapshot.
 func (s *Store) GetVersion(ctx context.Context, agentID string, version int) (AgentVersion, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT agent_id, version, definition, persona, note, author, created_at
+		SELECT agent_id, version, definition, persona, grants, note, author, created_at
 		FROM agent_versions WHERE agent_id = ? AND version = ?`, agentID, version)
 	v, err := scanVersion(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -262,7 +332,7 @@ func (s *Store) GetVersion(ctx context.Context, agentID string, version int) (Ag
 // LatestVersion returns the newest snapshot of an agent.
 func (s *Store) LatestVersion(ctx context.Context, agentID string) (AgentVersion, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT agent_id, version, definition, persona, note, author, created_at
+		SELECT agent_id, version, definition, persona, grants, note, author, created_at
 		FROM agent_versions WHERE agent_id = ? ORDER BY version DESC LIMIT 1`, agentID)
 	v, err := scanVersion(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -306,15 +376,18 @@ func (s *Store) BackfillVersions(ctx context.Context) (int, error) {
 
 func scanVersion(row scanner) (AgentVersion, error) {
 	var (
-		v         AgentVersion
-		def       string
-		createdAt int64
+		v           AgentVersion
+		def, grants string
+		createdAt   int64
 	)
-	if err := row.Scan(&v.AgentID, &v.Version, &def, &v.Persona, &v.Note, &v.Author, &createdAt); err != nil {
+	if err := row.Scan(&v.AgentID, &v.Version, &def, &v.Persona, &grants, &v.Note, &v.Author, &createdAt); err != nil {
 		return AgentVersion{}, err
 	}
 	if err := json.Unmarshal([]byte(def), &v.Definition); err != nil {
 		return AgentVersion{}, fmt.Errorf("decode definition of %s v%d: %w", v.AgentID, v.Version, err)
+	}
+	if err := json.Unmarshal([]byte(grants), &v.Grants); err != nil {
+		return AgentVersion{}, fmt.Errorf("decode grants of %s v%d: %w", v.AgentID, v.Version, err)
 	}
 	v.CreatedAt = time.UnixMilli(createdAt)
 	return v, nil

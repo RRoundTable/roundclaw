@@ -82,12 +82,18 @@ secrets(scope, name, ciphertext, created_at, updated_at, PK(scope, name))
 
 workflows(id PK, description, channel_id, steps, enabled, created_at, updated_at)
 
-tools(id PK, description, host_path, env, instructions, created_at, updated_at)
+tools(id PK, description, host_path, env, instructions, identity, created_at,
+      updated_at)
 
-skills(id PK, description, host_path, created_at, updated_at)
+skills(id PK, description, host_path, identity, created_at, updated_at)
 
-agent_versions(agent_id, version, definition, persona, note, author, created_at,
-               PK(agent_id, version))          -- deliberately no FK; see below
+agent_versions(agent_id, version, definition, persona, grants, note, author,
+               created_at, PK(agent_id, version))   -- deliberately no FK; see below
+
+tool_versions(tool_id, version, definition, digest, digest_err, note, author,
+              created_at, PK(tool_id, version))     -- no FK, same reasoning
+skill_versions(skill_id, version, definition, digest, digest_err, note, author,
+               created_at, PK(skill_id, version))
 
 eval_sets(id PK, agent_id, description, cases, full_grants, enabled, ...)
 eval_runs(id PK AUTOINCREMENT, eval_set_id, agent_id, version, status, score,
@@ -147,9 +153,22 @@ plain language, since only registered IDs resolve. No FK from `agents.tools` to
 `tools`: it is a JSON list like the other list columns, and a grant referencing a
 since-deleted tool is skipped at turn time rather than blocked at write.
 
-**`skills` are grantable Claude Code skills.** Simpler than a tool — just an id,
-`description`, and a `host_path` to a `SKILL.md` directory — because a skill
-carries no env and no injected prompt. An agent's `skills` column lists the IDs it
+**`identity` is what a tool is made of, and there is no default.** It is a JSON
+list of members — absolute host paths today — that `tool_versions.digest` hashes
+over, so a version records what the tool *was* rather than only where it was
+found. Empty means the tool declared nothing and therefore has no identity;
+`host_path` is deliberately **not** read as a fallback, because roundclaw cannot
+tell from a row whether a mount is the tool itself or a client's configuration
+for a server living elsewhere. Guessing would produce a witness that moves when
+the config is edited and sits still when the server is replaced — silently wrong
+exactly where it matters (`adr/005`). The reading is injected as an
+`IdentitySource`, the same shape and for the same reason as `PersonaSource`: the
+registry stores the witness and never learns the host layout.
+
+**`skills` are grantable Claude Code skills.** Simpler than a tool — an id,
+`description`, a `host_path` to a `SKILL.md` directory, and the same `identity`
+list — because a skill carries no env and no injected prompt. An agent's
+`skills` column lists the IDs it
 is granted; the activity mounts each read-only at `~/.claude/skills/<id>`, a
 nested mount over ClaudeHome where the CLI discovers it
 ([agent-runtime.md](agent-runtime.md#registered-skills)). Same operator/grant
@@ -201,6 +220,31 @@ A write whose content matches the current version records nothing. Toggling an
 agent off and on, or a client PUTting back what it just read, would otherwise
 mint versions that say nothing, and a list where most rows are noise is one
 nobody scrolls through to find the row that matters.
+
+**`agent_versions.grants` names the tool and skill versions that were in play.**
+Without it a version describes a configuration that never existed, for the same
+reason a definition without its persona does — and two evaluations "of the same
+configuration" would silently measure different things whenever a tool moved
+underneath them, which is the arithmetic `eval compare` stands on. A granted ID
+with no version is left out rather than pinned to zero: absent says there was
+nothing to pin, where a zero would read as a real version. A changed grant is
+itself enough to mint a version, since the same definition over a different tool
+is a different configuration.
+
+**`tool_versions` and `skill_versions` mirror `agent_versions`**, including the
+missing foreign key: deleting a tool must not take the record of what it was,
+which is exactly when somebody wants it back. Each row holds the definition and
+a `digest` over the declared identity, because either can move while the other
+stands still — a row untouched with its directory rewritten is the case these
+tables exist to catch, and it is the one a pointer-only version misses.
+`digest_err` keeps "declared nothing" distinguishable from "could not be read";
+an unreadable member is a version that says so, never a failed write. They are
+written side by side rather than as one table keyed by kind, matching `tools.go`
+beside `skills.go`: a kind column here would never branch, and a kind that does
+not branch is a comment with a migration attached (`adr/005`). Rollback applies
+an old snapshot as a **new** version and reports `digest_matches`, so a restore
+whose content has drifted says the configuration came back and the content did
+not, rather than reporting success.
 
 **`eval_runs.version` pins what was measured.** A run asked for version 0 ("live")
 resolves it to a concrete number when it starts: a run that cannot say what it

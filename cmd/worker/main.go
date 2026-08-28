@@ -74,6 +74,7 @@ func run(configPath string, log *slog.Logger) error {
 	// first version of every seeded agent. Installing the persona source here too
 	// means that version carries the persona no matter which one got there first.
 	reg.UsePersonaSource(registry.PersonaFromWorkspace(cfg.WorkDir))
+	reg.UseIdentitySource(registry.IdentityByReading())
 
 	seeded, err := reg.Seed(context.Background(), configAgents(cfg))
 	if err != nil {

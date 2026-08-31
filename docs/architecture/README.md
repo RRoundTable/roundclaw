@@ -104,7 +104,8 @@ internal/
 ├── core/            # Request, Origin, AgentStatus — shared by every layer, imports nothing local
 ├── config/          # YAML config, env indirection, chat permission gating
 ├── registry/        # runtime CRUD: agents, schedules, workflows, tools, skills,
-│                    #   versions, eval sets/runs, proposals (registry.db)
+│                    #   versions (agent, tool, skill), tool identity and
+│                    #   reachability, eval sets/runs, proposals (registry.db)
 ├── store/           # per-agent SQLite: turns, live_logs, runtime, idempotency
 ├── claude/          # container argv, stream-json decoder, session ID derivation, router
 ├── adapter/         # inbound/outbound edges: discord*.go, http*.go, dispatch.go,
@@ -193,6 +194,9 @@ on the leaf instead of on each other.
   applies an old snapshot as a *new* version, so the change being undone stays on
   the record — which is what anyone looks at afterwards. Versions also outlive
   the agent (no foreign key), on the same reasoning that keeps its workspace.
+  Tools and skills version the same way, and their versions record a digest of
+  what the definition pointed at as well as the definition — a row can stand
+  still while the directory or service behind it moves (`adr/005`).
 - **Verdicts are computed, not summarised.** Whether a change helped is decided
   by `registry.compareRuns` from case-level pass/fail, not by a model reading
   outputs. The reviewer is itself a model, and forming an impression from outputs

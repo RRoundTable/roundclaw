@@ -428,6 +428,14 @@ a tool belongs to no agent — so the middleware admits the shape and
 tool does not exist yet. This is the split the agent-scoped schedule routes
 already used: the list admits the shape, the handler bounds the subject.
 
+**Off unless a key is set, and nothing measures a change.** With
+`http.self_token_key_env` unset — which is how this deploys — no credential ever
+resolves to `ScopeSelf`, so the whole scope is inert and the fleet behaves as it
+did before `adr/003`. When it is set, a self-made change applies immediately:
+versioning and rollback are the safety net, not a gate. An earlier design held
+changes behind an automatic evaluation and reverted regressions unasked; that
+was removed, so nothing here waits on a measurement.
+
 **Authorship splits without a new column.** `agentAuthorPrefix` (`agent:`) is
 reserved: a write from a per-agent credential has it written by the server, and a
 write from anything else is refused if it tries to type it. Without that

@@ -177,13 +177,17 @@ nothing, and a tool that declared nothing is treated as unrestorable.
 
 It is a declaration because roundclaw has never executed a string out of the
 registry: every process it starts is `git` or the operator-configured container
-runtime, with structured arguments. A command field would be the first, would be
-written by the agent itself now that an agent can write its own tools, and would
-run at session start — ahead of the measurement gate that judges everything else
-an agent changes (`adr/004`). The one action roundclaw will take is starting the
-named container through the runtime it already drives, then waiting for the
-declared condition; a tool needing anything else cannot declare itself
-restorable and is reported unavailable with the reason.
+runtime, with structured arguments. A command field would be the first, and it
+would be written by the agent itself wherever agents can write their own tools
+(`adr/004`). The one action roundclaw will take is starting the named container
+through the runtime it already drives, then waiting for the declared condition;
+a tool needing anything else cannot declare itself restorable and is reported
+unavailable with the reason.
+
+`adr/004` also argued that a restore runs ahead of the measurement that judges
+everything else an agent changes. That measurement was removed with the gate, so
+only the first half of the reasoning still stands — and it is the half that was
+load-bearing.
 
 The probing and restoring live in the activity
 ([agent-runtime.md](agent-runtime.md)), not here — the registry stores the

@@ -65,18 +65,10 @@ func (h *HTTP) saveTool(w http.ResponseWriter, r *http.Request, t registry.Tool)
 	if !ok {
 		return
 	}
-	caller := identityFrom(r)
-	plan, ok := h.gateSelfChange(w, r, caller.AgentID)
-	if !ok {
-		return
-	}
 	saved, err := h.disp.Registry().PutTool(r.Context(), t, c)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if caller.Established() {
-		h.gateSelfGrantChange(r, plan, caller.AgentID)
 	}
 	h.log.Info("tool saved", "tool", saved.ID, "host_path", saved.HostPath)
 	writeJSON(w, http.StatusOK, saved)

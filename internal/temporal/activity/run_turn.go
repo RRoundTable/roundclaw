@@ -178,9 +178,6 @@ func (a *Activities) RunClaudeTurn(ctx context.Context, in RunTurnInput) (core.T
 	if err != nil {
 		return core.TurnResult{}, err
 	}
-	// A change of its own that was measured and undone leads everything else: an
-	// agent that does not know it was reverted makes the same change again.
-	toolNote = a.revertNote(ctx, in.AgentID) + toolNote
 	delete(secrets, cred.EnvName)
 
 	// Granted Claude Code skills: each mounts into ~/.claude/skills/<id>, where the

@@ -94,8 +94,6 @@ var migrations = []string{
 	`ALTER TABLE skills ADD COLUMN identity TEXT NOT NULL DEFAULT '[]'`,
 	`ALTER TABLE agent_versions ADD COLUMN grants TEXT NOT NULL DEFAULT '{}'`,
 	`ALTER TABLE tools ADD COLUMN reachability TEXT NOT NULL DEFAULT '{}'`,
-	`ALTER TABLE eval_runs ADD COLUMN gates_version INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE eval_runs ADD COLUMN baseline_run INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Agent is a runtime agent definition.

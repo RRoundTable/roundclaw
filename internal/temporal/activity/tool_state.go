@@ -233,30 +233,3 @@ func statFile(path string) error {
 	}
 	return nil
 }
-
-// revertNote tells an agent that a change it made was undone, and on what
-// evidence.
-//
-// The evidence is the point. An agent told only that its change is gone has
-// learned nothing it can act on and will make the same change again; an agent
-// told which cases regressed has the one thing the history holds that its own
-// reasoning does not.
-func (a *Activities) revertNote(ctx context.Context, agentID string) string {
-	reverts, err := a.reg.PendingRevertsFor(ctx, agentID, 0)
-	if err != nil {
-		activity.GetLogger(ctx).Warn("could not read automatic reversions",
-			"agent", agentID, "error", err)
-		return ""
-	}
-	if len(reverts) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("A change you made to yourself was measured and undone:\n\n")
-	for _, v := range reverts {
-		fmt.Fprintf(&b, "- %s\n", v.Note)
-	}
-	b.WriteString("\nThe cases are what \"better\" means here and you cannot change them. " +
-		"If you want that change, find one that does not regress those cases.\n\n---\n\n")
-	return b.String()
-}

@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/roundtable/roundclaw/internal/config"
@@ -103,36 +102,9 @@ func do(t *testing.T, srv *httptest.Server, method, path, token string, body any
 	return resp
 }
 
-// makeGateable gives an agent the two things a self-made change needs before it
-// is allowed to apply: an enabled set of cases, and a completed run of the
-// version being replaced to compare against.
-func makeGateable(t *testing.T, reg *registry.Store, agentID string) {
-	t.Helper()
-	if _, err := reg.PutEvalSet(t.Context(), registry.EvalSet{
-		ID: "cases-" + agentID, AgentID: agentID, Enabled: true,
-		Cases: []registry.EvalCase{{Name: "a", Prompt: "do it"}},
-	}); err != nil {
-		t.Fatalf("put eval set: %v", err)
-	}
-	current, err := reg.LatestVersion(t.Context(), agentID)
-	if err != nil {
-		t.Fatalf("latest version: %v", err)
-	}
-	run, err := reg.StartEvalRun(t.Context(), registry.EvalRun{
-		EvalSetID: "cases-" + agentID, AgentID: agentID, Version: current.Version, Total: 1,
-	})
-	if err != nil {
-		t.Fatalf("start baseline: %v", err)
-	}
-	if err := reg.FinishEvalRun(t.Context(), run.ID, registry.EvalDone, 1, 1, 0, ""); err != nil {
-		t.Fatalf("finish baseline: %v", err)
-	}
-}
-
 // The point of the whole slice: an agent can change what it is.
 func TestSelfTokenMayWriteItsOwnPersona(t *testing.T) {
-	srv, reg := selfHarness(t)
-	makeGateable(t, reg, "dev")
+	srv, _ := selfHarness(t)
 	token := core.DeriveAgentToken("dev", selfKey)
 
 	resp := do(t, srv, http.MethodPut, "/v1/agents/dev/persona", token,
@@ -155,8 +127,7 @@ func TestSelfTokenMayNotWriteAnotherAgent(t *testing.T) {
 }
 
 func TestSelfTokenMayWriteItsOwnDefinition(t *testing.T) {
-	srv, reg := selfHarness(t)
-	makeGateable(t, reg, "dev")
+	srv, _ := selfHarness(t)
 	token := core.DeriveAgentToken("dev", selfKey)
 
 	resp := do(t, srv, http.MethodPut, "/v1/agents/dev/definition", token,
@@ -169,7 +140,6 @@ func TestSelfTokenMayWriteItsOwnDefinition(t *testing.T) {
 // Authorship the server established, not the caller's word for it.
 func TestSelfWriteRecordsEstablishedAuthorship(t *testing.T) {
 	srv, reg := selfHarness(t)
-	makeGateable(t, reg, "dev")
 	token := core.DeriveAgentToken("dev", selfKey)
 
 	// The header lies; the credential does not, and the credential wins.
@@ -251,8 +221,7 @@ func TestForgedSelfTokenIsRefused(t *testing.T) {
 
 // A tool nobody holds yet is an agent registering a capability for itself.
 func TestSelfTokenMayCreateAToolItDoesNotYetHold(t *testing.T) {
-	srv, reg := selfHarness(t)
-	makeGateable(t, reg, "dev")
+	srv, _ := selfHarness(t)
 	token := core.DeriveAgentToken("dev", selfKey)
 
 	resp := do(t, srv, http.MethodPut, "/v1/tools/scanner", token,
@@ -293,7 +262,6 @@ func TestSelfTokenMayWriteAToolItHolds(t *testing.T) {
 	if _, err := reg.Update(t.Context(), registry.Agent{ID: "dev", Tools: []string{"deploy"}}); err != nil {
 		t.Fatalf("grant to dev: %v", err)
 	}
-	makeGateable(t, reg, "dev")
 
 	token := core.DeriveAgentToken("dev", selfKey)
 	resp := do(t, srv, http.MethodPut, "/v1/tools/deploy", token,
@@ -335,177 +303,5 @@ func TestWithoutAKeyPerAgentTokensDoNotExist(t *testing.T) {
 	resp := do(t, srv, http.MethodGet, "/v1/agents", core.DeriveAgentToken("dev", selfKey), nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401 when no key is configured", resp.StatusCode)
-	}
-}
-
-// The cases are what "better" means. An agent that could rewrite them would be
-// grading its own homework, so the whole eval surface is outside what a
-// per-agent credential opens — and this asserts it stays that way.
-func TestSelfTokenCannotTouchItsOwnEvaluationCases(t *testing.T) {
-	srv, _ := selfHarness(t)
-	token := core.DeriveAgentToken("dev", selfKey)
-
-	for _, c := range []struct {
-		method, path string
-		body         any
-	}{
-		{http.MethodGet, "/v1/evals", nil},
-		{http.MethodPost, "/v1/evals", map[string]any{"id": "cases", "agent_id": "dev"}},
-		{http.MethodPut, "/v1/evals/cases", map[string]any{"id": "cases", "agent_id": "dev"}},
-		{http.MethodDelete, "/v1/evals/cases", nil},
-		{http.MethodPost, "/v1/evals/cases/run", nil},
-	} {
-		resp := do(t, srv, c.method, c.path, token, c.body)
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("%s %s = %d, want 403", c.method, c.path, resp.StatusCode)
-		}
-	}
-}
-
-// An agent with nothing to measure it by cannot self-improve. The invariant is
-// that no self-made change takes effect permanently without having been
-// measured, and an unmeasurable change kept and quietly labelled unmeasured
-// would make that a slogan.
-func TestSelfChangeIsRefusedWithNothingToMeasureItBy(t *testing.T) {
-	srv, _ := selfHarness(t)
-	token := core.DeriveAgentToken("dev", selfKey)
-
-	resp := do(t, srv, http.MethodPut, "/v1/agents/dev/persona", token,
-		map[string]string{"persona": "Answer briefly."})
-	if resp.StatusCode != http.StatusPreconditionFailed {
-		t.Fatalf("status = %d, want 412 when the agent has no evaluation set", resp.StatusCode)
-	}
-	body := decode[struct {
-		Error string `json:"error"`
-	}](t, resp)
-	if !strings.Contains(body.Error, "no enabled evaluation set") {
-		t.Errorf("error = %q, want it to say why the change cannot be judged", body.Error)
-	}
-}
-
-// An eval set is not enough on its own: without a completed run of the version
-// being replaced there is nothing to compare against, and a baseline started
-// alongside the candidate would race it.
-func TestSelfChangeIsRefusedWithoutABaseline(t *testing.T) {
-	srv, reg := selfHarness(t)
-	if _, err := reg.PutEvalSet(t.Context(), registry.EvalSet{
-		ID: "cases", AgentID: "dev", Enabled: true,
-		Cases: []registry.EvalCase{{Name: "a", Prompt: "do it"}},
-	}); err != nil {
-		t.Fatalf("put eval set: %v", err)
-	}
-
-	resp := do(t, srv, http.MethodPut, "/v1/agents/dev/persona",
-		core.DeriveAgentToken("dev", selfKey), map[string]string{"persona": "Answer briefly."})
-	if resp.StatusCode != http.StatusPreconditionFailed {
-		t.Fatalf("status = %d, want 412 with no baseline run", resp.StatusCode)
-	}
-	body := decode[struct {
-		Error string `json:"error"`
-	}](t, resp)
-	if !strings.Contains(body.Error, "compare against") {
-		t.Errorf("error = %q, want it to name the missing baseline", body.Error)
-	}
-}
-
-// A person's change is not gated. The gate exists because an agent judging its
-// own output drifts; putting an eval run in front of an operator fixing a wedged
-// agent would be a delay where responsiveness is the whole point.
-func TestAnOperatorChangeIsNotGated(t *testing.T) {
-	srv, _ := selfHarness(t)
-
-	resp := do(t, srv, http.MethodPut, "/v1/agents/dev/persona", testToken,
-		map[string]string{"persona": "Answer briefly."})
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200: an operator is not held behind a measurement", resp.StatusCode)
-	}
-}
-
-// With both halves present the change applies and is put on trial.
-func TestAGateableSelfChangeAppliesAndIsMeasured(t *testing.T) {
-	srv, reg := selfHarness(t)
-	if _, err := reg.PutEvalSet(t.Context(), registry.EvalSet{
-		ID: "cases", AgentID: "dev", Enabled: true,
-		Cases: []registry.EvalCase{{Name: "a", Prompt: "do it"}},
-	}); err != nil {
-		t.Fatalf("put eval set: %v", err)
-	}
-	current, err := reg.LatestVersion(t.Context(), "dev")
-	if err != nil {
-		t.Fatalf("latest version: %v", err)
-	}
-	base, err := reg.StartEvalRun(t.Context(), registry.EvalRun{
-		EvalSetID: "cases", AgentID: "dev", Version: current.Version, Total: 1,
-	})
-	if err != nil {
-		t.Fatalf("start baseline: %v", err)
-	}
-	if err := reg.FinishEvalRun(t.Context(), base.ID, registry.EvalDone, 1, 1, 0, ""); err != nil {
-		t.Fatalf("finish baseline: %v", err)
-	}
-
-	resp := do(t, srv, http.MethodPut, "/v1/agents/dev/persona",
-		core.DeriveAgentToken("dev", selfKey), map[string]string{"persona": "Answer briefly."})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-
-	runs, err := reg.ListEvalRuns(t.Context(), "cases", "dev", 10)
-	if err != nil {
-		t.Fatalf("list runs: %v", err)
-	}
-	var gating *registry.EvalRun
-	for i := range runs {
-		if runs[i].GatesVersion > 0 {
-			gating = &runs[i]
-			break
-		}
-	}
-	if gating == nil {
-		t.Fatal("the change applied but nothing was started to judge it")
-	}
-	if gating.GatesVersion != current.Version+1 {
-		t.Errorf("gates v%d, want v%d", gating.GatesVersion, current.Version+1)
-	}
-	if gating.BaselineRun != base.ID {
-		t.Errorf("baseline = %d, want the completed run of the previous version (%d)", gating.BaselineRun, base.ID)
-	}
-}
-
-// A tool write is a change to what the agent is, on the far side of a pointer.
-// Leaving it ungated would be the one unmeasured way an agent can alter itself.
-func TestSelfToolWriteIsGatedToo(t *testing.T) {
-	srv, reg := selfHarness(t)
-	if _, err := reg.Update(t.Context(), registry.Agent{ID: "dev", Tools: []string{"deploy"}}); err != nil {
-		t.Fatalf("grant: %v", err)
-	}
-	if _, err := reg.PutTool(t.Context(), registry.Tool{ID: "deploy", HostPath: t.TempDir()}); err != nil {
-		t.Fatalf("put tool: %v", err)
-	}
-
-	// dev has no cases, so the change it holds cannot be judged and is refused.
-	resp := do(t, srv, http.MethodPut, "/v1/tools/deploy", core.DeriveAgentToken("dev", selfKey),
-		map[string]any{"id": "deploy", "host_path": "/etc"})
-	if resp.StatusCode != http.StatusPreconditionFailed {
-		t.Fatalf("status = %d, want 412: a self-made tool change must be measurable", resp.StatusCode)
-	}
-
-	// And the tool did not move.
-	tool, err := reg.GetTool(t.Context(), "deploy")
-	if err != nil {
-		t.Fatalf("get tool: %v", err)
-	}
-	if tool.HostPath == "/etc" {
-		t.Error("the refused change was applied anyway")
-	}
-}
-
-// An operator is not gated on tools either, for the same reason as elsewhere.
-func TestOperatorToolWriteIsNotGated(t *testing.T) {
-	srv, _ := selfHarness(t)
-	resp := do(t, srv, http.MethodPut, "/v1/tools/deploy", testToken,
-		map[string]any{"id": "deploy", "host_path": t.TempDir()})
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }

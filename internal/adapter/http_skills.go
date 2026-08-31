@@ -64,18 +64,10 @@ func (h *HTTP) saveSkill(w http.ResponseWriter, r *http.Request, sk registry.Ski
 	if !ok {
 		return
 	}
-	caller := identityFrom(r)
-	plan, ok := h.gateSelfChange(w, r, caller.AgentID)
-	if !ok {
-		return
-	}
 	saved, err := h.disp.Registry().PutSkill(r.Context(), sk, c)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if caller.Established() {
-		h.gateSelfGrantChange(r, plan, caller.AgentID)
 	}
 	h.log.Info("skill saved", "skill", saved.ID, "host_path", saved.HostPath)
 	writeJSON(w, http.StatusOK, saved)

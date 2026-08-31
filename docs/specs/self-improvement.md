@@ -10,15 +10,22 @@ agent reads history to find where agents fail, reads versions to see what change
 runs evaluations, compares two runs to decide whether a change helped, and files a
 proposal a person approves.
 
-This is that loop turned inward and closed. The subject changes from "another
-agent" to "me", and the terminator changes from "somebody approves" to "the cases
-say it did not get worse".
+This is that loop turned inward. The subject changes from "another agent" to
+"me"; what does *not* change is that a person still decides whether the result
+was good.
 
 It removes nothing. The proposal queue was never a wall — an agent holding a
 full-scope token could already rewrite its own instructions and register its own
 tools. What was missing on that path is what this adds: a version for every tool
-and skill, a measurement that has to pass before a self-made change sticks, and a
-reversal when it does not.
+and skill, so a change an agent made to itself can be seen and undone.
+
+**The safety net is the history, not a gate.** Nothing measures a self-made
+change before it takes effect. What the system guarantees is that every such
+change is recorded, attributable, and reversible — somebody reading the history
+decides whether it helped. An earlier design held changes behind an automatic
+measurement and reverted regressions unasked; that was removed deliberately, and
+[Evaluation](evaluation.md) remains available to anyone who wants to measure a
+version on purpose.
 
 ## Behaviours
 
@@ -39,36 +46,15 @@ loop and no restart.
 It differs from a change a person made in authorship only, never in kind. A
 history that cannot say who changed what is not one anybody can act on.
 
-### A change does not stick until it is measured
-
-**Given** a change an agent made to itself
-**When** it is applied
-**Then** it is measured against the cases that already existed for that agent, and
-kept only if the measurement does not say it made things worse.
-
-### A change that made things worse is put back without being asked
-
-**Given** a measured self-made change that regressed
-**When** the measurement finishes
-**Then** the agent returns to the configuration it had before, and both the change
-and its reversal stand in the history.
-
-### The agent learns it was reverted, and on what evidence
-
-**Given** a change undone automatically
-**When** the agent next works
-**Then** it knows the change was undone, and which cases regressed.
-
-An agent told only "no" makes the same change again.
-
 ### An agent cannot change what it is measured by
 
 **Given** an agent editing itself
 **When** it tries to change its own evaluation cases
 **Then** it is refused.
 
-The cases are what "better" means. An agent that could rewrite its own marking
-scheme would be grading its own homework.
+Nothing gates a self-made change on those cases any more, but an agent that
+could rewrite the standard it is judged against would make every later
+measurement worthless too.
 
 ### Deleting removes something from use, not from the record
 
@@ -111,9 +97,9 @@ what an agent can see.
 
 ## Invariants
 
-- An agent can change anything about itself except what it is measured by.
-- No self-made change takes effect permanently without having been measured.
 - Every self-made change leaves a version, and every version can be returned to.
+- A self-made change is always attributable: authorship is established by the
+  credential, never asserted by the caller.
 
 ## Explicitly not guaranteed
 

@@ -54,7 +54,9 @@ document first.
    available in one chat tool and missing from another.
 8. **An agent can change anything about itself except what it is measured by.**
 9. **Nothing an agent changes about itself is unrecoverable.** Every self-made
-   change leaves a version, and every version can be returned to.
+   change leaves a version, and every version can be returned to. This is the
+   whole of the protection: no measurement stands between an agent and a change
+   to itself, so the history is what a person acts on.
 10. **An agent is never told a capability works when it does not.**
 
 ## Depth

@@ -615,23 +615,6 @@ func (a *Activities) FinishEvalRun(ctx context.Context, in FinishEvalInput) (reg
 	if err := a.reg.FinishEvalRun(ctx, in.RunID, status, score, passed, cost, in.Error); err != nil {
 		return registry.EvalRun{}, err
 	}
-
-	// A run that was gating a self-made change decides it here. Settling on every
-	// completion rather than on a path somebody has to remember to take is what
-	// keeps the gate from being skippable: an ordinary run settles to nothing.
-	//
-	// A settle failure does not fail the run. The measurement is real and
-	// recorded; what failed is acting on it, and losing the aggregate too would
-	// destroy the evidence somebody needs to act by hand.
-	out, err := a.reg.SettleGate(ctx, in.RunID)
-	if err != nil {
-		activity.GetLogger(ctx).Error("could not settle a gating eval run",
-			"run", in.RunID, "error", err)
-	} else if out.Gated {
-		activity.GetLogger(ctx).Info("gating eval run settled",
-			"run", in.RunID, "version", out.Version, "verdict", out.Verdict,
-			"reverted", out.Reverted, "regressed", out.Regressed)
-	}
 	return a.reg.GetEvalRun(ctx, in.RunID)
 }
 

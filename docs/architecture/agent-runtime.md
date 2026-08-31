@@ -253,10 +253,26 @@ returns nothing and the turn runs exactly as it did before secrets existed.
 ## Registered tools
 
 A **tool** is a named local capability — a CLI and its config on the host — that
-an agent can be granted. It bundles three things: a host directory (mounted
-read-only at `/mnt/<basename>`), the environment it needs, and a note on how to
-use it. Tools live in the registry ([data.md](data.md#registrydb)); an agent's
-grants are the `tools` array on its definition.
+an agent can be granted. It bundles a host directory (mounted read-only at
+`/mnt/<basename>`), the environment it needs, a note on how to use it, and
+optionally what it is made of and what "it works" means. Tools live in the
+registry ([data.md](data.md#registrydb)); an agent's grants are the `tools` array
+on its definition.
+
+`resolveTools` also decides what the agent is told about them before it starts.
+A tool that declared a reachability condition is checked; a container it named is
+started if it is down; and the prompt is prefixed with anything that is not
+simply fine — restored, drifted from the version it is supposed to be, or
+unavailable with the reason. Tools that work say nothing, because the note exists
+to surface what is not working before the agent acts on it rather than to render
+a status table. Work runs either way: one dead dependency refusing every turn is
+a larger failure than the dependency (`adr/004`, `tool_state.go`).
+
+`identityEnv` adds `ROUNDCLAW_SELF_TOKEN` when `http.self_token_key_env` is set —
+the credential that says which agent this is, derived rather than looked up so
+the worker and gateway agree without sharing anything but the key. Unset, which
+is the default, the container carries only the shared delegate token and cannot
+change its own configuration ([adapters.md](adapters.md#identity--who-is-calling-not-just-what-may-be-called)).
 
 `RunClaudeTurn` resolves the grants each turn through `resolveTools`, which for
 each granted ID:

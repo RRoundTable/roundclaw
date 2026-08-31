@@ -908,8 +908,11 @@ Schedules are on it for the same kind of reason. The token is shared, so the age
 in the path is a claim rather than a proof; what bounds it is that the claim buys
 nothing beyond that agent — the work runs there, its result can only be announced
 in a channel that agent already has, and somebody else's schedule is invisible.
-Per-agent tokens would let the gateway decide the identity instead of believing
-it; until then, this is the same bargain `notify` already makes.
+Per-agent tokens now exist and would let the gateway decide the identity instead
+of believing it (`adr/003`): set `http.self_token_key_env` and the worker gives
+each container a credential only that agent holds. They are off by default and
+the delegate token above is unchanged, so this remains the bargain `notify`
+already makes until somebody turns them on.
 
 Setting it up (operator, once):
 

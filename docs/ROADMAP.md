@@ -32,6 +32,8 @@ really started.
 
   **Decided before writing code:**
 
+  - A routine is a graph document one human-owned interpreter runs; steps are activities keyed by stable ids, recorded to SQLite as they start and finish, and a result is delivered on every terminal path (`adr/006`).
+
 ## Next
 
 - **Human-in-the-loop as a general capability.**

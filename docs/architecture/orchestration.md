@@ -284,6 +284,48 @@ that can push, deploy, post or delegate is not a test. Tools and skills are
 mounted either way, because an agent stripped of its capabilities is not the
 agent anyone wants measured.
 
+### `RoutineRun` — one interpreter for every routine
+
+`internal/temporal/workflow/routinerun.go`, over the pure `internal/routine`
+package (adr/006). A routine is a frozen contract and a graph of steps;
+`Dispatcher.StartRoutineRun` writes the `routine_runs` row first — with the
+manifest of agent versions it resolved (adr/008) — and starts
+`roundclaw-routine-<run>`, so a retried start cannot run the work twice.
+
+```mermaid
+flowchart TB
+    L["LoadRoutineRun<br/>plan pinned by the run's version"] --> S{"next step in compiled order"}
+    S -->|a predecessor did not pass| K["SkipRoutineStep<br/>recorded with the reason"]
+    S -->|agent / process| R["RunRoutineStep<br/>(routine-step queue)"]
+    S -->|routine| C["AdmitChildRun → child RoutineRun"]
+    R -->|fell short, open step, attempts left| R
+    R --> S
+    C --> S
+    K --> S
+    S -->|done| F["contract check · caller's check<br/>FinishRoutineRun · DeliverRoutineRun<br/>(disconnected context)"]
+```
+
+- **Steps run one at a time**, in the compiled topological order; parallel
+  read-only steps are later work. Control flow is decided only by the plan and
+  `routine.Check`, so replay reaches the same decisions.
+- **`RunRoutineStep`** records the attempt when it starts and heartbeats from
+  entry. An agent step is a one-shot turn of the pinned agent version, in the
+  run's own work area, with the persona in the step's own claude home and one
+  session per (run, step) so a further attempt resumes it. A process step is an
+  allowlisted image with a literal argv, only the work area mounted and
+  `--network none` unless external (adr/007). Steps get no identity environment
+  and the fleet-control tools are denied, so no step can hand work on
+  (adr/009); credentials reach only an external step on the owner's own agent.
+- **Retries are of two kinds.** Temporal retries an activity for the
+  infrastructure; a step that ran and fell short is a result, and an open step
+  is run again with the shortfall as feedback until its attempts are spent.
+- **Every terminal path closes the run out and delivers it** — a failed load,
+  a failed step, a stop. No workflow timeout is set; stop is `CancelWorkflow`,
+  and child runs close with `REQUEST_CANCEL`.
+- **Steps run on their own task queue**, `<task_queue>-routine-steps`, polled
+  by a second worker capped by `routines.max_concurrent_steps` (adr/010), so
+  routines cannot take the slots interactive turns and deliveries need.
+
 ## Activities
 
 `internal/temporal/activity`. Registered as one struct via
@@ -377,7 +419,11 @@ Switches on `turns.origin`:
   ([delegation.md](delegation.md#the-audience)).
 
 The `agent` case is drawn end to end in [delegation.md](delegation.md), with what
-is written where at each step.
+is written where at each step. A delegated result longer than
+`routines.result_limit` reaches the delegator as its head plus the path of the
+full result, kept in the delegator's work area under `inbox/results/`
+(`keepResult`, adr/014); a routine's result takes the same path through
+`DeliverRoutineRun`.
 
 That last case is what makes "I'll tell you when it's done" keepable: the return
 address is on the delegated turn's row, so the result comes back even after the

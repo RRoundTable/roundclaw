@@ -131,6 +131,18 @@ limits:
   # host resources, and excess turns wait rather than fail.
   max_concurrent_turns: 5
 
+routines:
+  # Images a process step may run (adr/007). A process step names one of these
+  # and a literal argv; nothing else runs. Empty allows no process steps.
+  process_images: []
+  # Routine step containers at once, on their own queue so routines cannot take
+  # the slots agents need (adr/010). The host runs up to this plus
+  # max_concurrent_turns.
+  max_concurrent_steps: 2
+  # Characters of a delegated result that reach the delegator; the rest is kept
+  # as a file in its work area under inbox/results/ (adr/014).
+  result_limit: 2000
+
 # How much history each agent keeps.
 #
 # live_logs gains a row per stream-json event per turn, so without this a busy

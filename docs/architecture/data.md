@@ -37,7 +37,7 @@ live_logs(id PK, turn_id, kind, content, created_at)
   INDEX (turn_id, id)
 
 turns(id PK, request, result, status, cost_usd, origin, error,
-      conversation, attachments, queued_at, finished_at)
+      conversation, attachments, usage, queued_at, finished_at)
   INDEX (status, id), (conversation, id)
 
 idempotency(key PK, turn_id, created_at)
@@ -61,7 +61,10 @@ idempotency(key PK, turn_id, created_at)
   conversation — recapping a thread with another thread's history would hand the
   agent a conversation it never had.
 - `cost_usd` is the per-turn accounting figure, recorded when the CLI reports
-  it on completion.
+  it on completion. `usage` beside it is the facts behind the figure: per model,
+  input, output, cache-read and cache-write tokens and the CLI's cost, plus
+  round-trips and API time, decoded from the result event and attributed to the
+  model the init event named.
 - `turns` is **not** replayed into prompts. The live Claude session already
   holds the context; the window exists for user-facing summaries and for
   session-loss recovery.
@@ -104,7 +107,38 @@ eval_results(run_id, case_name, output, score, passed, reason, cost_usd,
 proposals(id PK AUTOINCREMENT, kind, target, payload, rationale, evidence,
           status, created_by, created_at, decided_by, decided_at, decision,
           applied_version)
+
+routines(id PK, owner, contract, contract_hash, state, created_at, updated_at)
+routine_versions(routine_id, version, plan, plan_hash, note, author, created_at,
+                 PK(routine_id, version))           -- no FK, like agent_versions
+routine_decisions(id PK AUTOINCREMENT, routine_id, decision, rule, figures,
+                  author, created_at)
+routine_runs(id PK AUTOINCREMENT, routine_id, version, plan_hash, manifest,
+             inputs, origin, requested_by, parent_run_id, parent_step,
+             parent_attempt, depth, expect, expect_verdicts, instead_of,
+             status, reason, failed_step, output, cost_usd, usage,
+             started_at, finished_at)
+routine_step_runs(run_id, step_id, attempt, kind, status, verdicts, feedback,
+                  output, exit_code, cost_usd, usage, duration_ms, turn_id,
+                  child_run_id, error, started_at, finished_at,
+                  PK(run_id, step_id, attempt))
 ```
+
+**Routines keep a frozen contract and append-only versions.** `PutRoutine`
+refuses a changed `contract_hash` (`ErrContractFrozen`) and mints a version only
+when the compiled plan's hash moved; a rollback applies an old plan as a new
+version. Every admission, promotion, rollback, archive and restore is a
+`routine_decisions` row carrying the rule and the figures that decided it.
+
+**A run's trace is written as it happens.** `routine_step_runs` gets a row when
+an attempt starts and is completed when it finishes — with one verdict per
+completion condition, the feedback handed on, and the attempt's usage — so a
+stuck run is readable without Temporal. A child run is unique per parent run,
+step and attempt, so a retried admission finds it. `RoutineMetrics` counts a
+routine's record from these rows, per version and lifetime, keeping the
+routine's own pass rate, the callers' conditions met and redos apart. Agent-step
+turns and their live logs go to a per-run `state.db` under
+`workspace/routines/runs/<run>/`.
 
 `channel_id` is the primary key of the binding table, so one Discord channel can
 never map to two agents. Enforcing it in the schema rather than in a config

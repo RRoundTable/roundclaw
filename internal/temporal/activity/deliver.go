@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -160,7 +161,51 @@ func (a *Activities) deliverToAgent(ctx context.Context, in DeliverInput) error 
 	// (agent, turn) is a stable name for this notification however many times
 	// the activity is retried.
 	key := fmt.Sprintf("notify:%s:%d", in.AgentID, in.Result.TurnID)
-	return a.wakeAgent(ctx, parent, conversation, key, notifyPrompt(in))
+	head, kept, err := a.keepResult(ctx, parent, conversation,
+		fmt.Sprintf("%s-turn-%d", in.AgentID, in.Result.TurnID), in.Result.Text)
+	if err != nil {
+		return err
+	}
+	bounded := in
+	bounded.Result.Text = head
+	return a.wakeAgent(ctx, parent, conversation, key, notifyPrompt(bounded, kept))
+}
+
+// keepResult bounds what a hand-off puts into the delegator's context (adr/014).
+//
+// The delegator's session is resumed on every later turn, so a result pasted
+// into it whole is paid for again and again whether or not it was needed. A
+// result within the limit is delivered as it is. A longer one is delivered as
+// its head, and kept in full as a file in the delegator's own work area — the
+// inbox it already reads attachments from — for it to open on purpose. Nothing
+// summarises it: truncating is computed, a summary would be a description.
+//
+// It returns the text to deliver and, when the result was kept, the path the
+// delegator sees it at.
+func (a *Activities) keepResult(ctx context.Context, delegator, conversation, name, full string) (string, string, error) {
+	limit := a.cfg.Routines.ResultLimit
+	runes := []rune(full)
+	if limit <= 0 || len(runes) <= limit {
+		return full, "", nil
+	}
+	agent, err := a.reg.Get(ctx, delegator)
+	if err != nil {
+		return "", "", newNonRetryable(fmt.Errorf("keep result for %s: %w", delegator, err))
+	}
+	dir, err := a.resolveWorkspace(ctx, agent, conversation)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve %s's work area for a kept result: %w", delegator, err)
+	}
+	resultsDir := filepath.Join(dir, "inbox", "results")
+	if err := os.MkdirAll(resultsDir, 0o750); err != nil {
+		return "", "", fmt.Errorf("create results dir: %w", err)
+	}
+	file := slug(name) + ".md"
+	if err := os.WriteFile(filepath.Join(resultsDir, file), []byte(full), 0o640); err != nil {
+		return "", "", fmt.Errorf("keep result %s: %w", file, err)
+	}
+	head := string(runes[:limit]) + fmt.Sprintf("\n… (%d more characters)", len(runes)-limit)
+	return head, "inbox/results/" + file, nil
 }
 
 // wakeAgent queues text as a new turn for an agent and starts its workflow.
@@ -268,7 +313,7 @@ const replyOriginLookback = 20
 // notifyPrompt is what the delegator reads when it wakes. It says who finished,
 // what it cost, and what to do now, and it hands over the conversation handle so
 // a follow-up continues in the same session rather than briefing a fresh one.
-func notifyPrompt(in DeliverInput) string {
+func notifyPrompt(in DeliverInput, kept string) string {
 	var b strings.Builder
 	status := "완료"
 	if in.Result.Status == core.TurnError {
@@ -292,6 +337,9 @@ func notifyPrompt(in DeliverInput) string {
 	}
 	if in.Result.Text != "" {
 		fmt.Fprintf(&b, "결과:\n%s\n\n", in.Result.Text)
+	}
+	if kept != "" {
+		fmt.Fprintf(&b, "전체 결과: %s (필요할 때만 여세요)\n\n", kept)
 	}
 	b.WriteString("---\n" +
 		"이 결과를 요청한 사람에게 당신의 말로 보고하세요. " +

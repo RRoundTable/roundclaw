@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS routine_runs (
     routine_id      TEXT NOT NULL,
     version         INTEGER NOT NULL,
     plan_hash       TEXT NOT NULL,
+    -- The agent versions resolved when the run was admitted (adr/008).
+    manifest        TEXT NOT NULL DEFAULT '{}',
     inputs          TEXT NOT NULL DEFAULT '{}',
     origin          TEXT NOT NULL,
     requested_by    TEXT NOT NULL DEFAULT '',
@@ -503,6 +505,7 @@ type RoutineRun struct {
 	RoutineID      string            `json:"routine_id"`
 	Version        int               `json:"version"`
 	PlanHash       string            `json:"plan_hash"`
+	Manifest       map[string]int    `json:"manifest,omitempty"`
 	Inputs         map[string]string `json:"inputs,omitempty"`
 	Origin         core.Origin       `json:"origin"`
 	RequestedBy    string            `json:"requested_by,omitempty"`
@@ -539,6 +542,10 @@ func (s *Store) StartRoutineRun(ctx context.Context, run RoutineRun) (RoutineRun
 	if err != nil {
 		return RoutineRun{}, fmt.Errorf("encode expect: %w", err)
 	}
+	manifest, err := json.Marshal(run.Manifest)
+	if err != nil {
+		return RoutineRun{}, fmt.Errorf("encode manifest: %w", err)
+	}
 	if run.ParentRunID != 0 {
 		var existing int64
 		err := s.db.QueryRowContext(ctx, `
@@ -552,10 +559,10 @@ func (s *Store) StartRoutineRun(ctx context.Context, run RoutineRun) (RoutineRun
 		}
 	}
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO routine_runs (routine_id, version, plan_hash, inputs, origin, requested_by,
+		INSERT INTO routine_runs (routine_id, version, plan_hash, manifest, inputs, origin, requested_by,
 		    parent_run_id, parent_step, parent_attempt, depth, expect, instead_of, status, started_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.RoutineID, run.Version, run.PlanHash, string(inputs), string(origin), run.RequestedBy,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.RoutineID, run.Version, run.PlanHash, string(manifest), string(inputs), string(origin), run.RequestedBy,
 		run.ParentRunID, run.ParentStep, run.ParentAttempt, run.Depth, string(expect), run.InsteadOf,
 		RunRunning, time.Now().UnixMilli())
 	if err != nil {
@@ -568,17 +575,17 @@ func (s *Store) StartRoutineRun(ctx context.Context, run RoutineRun) (RoutineRun
 	return s.GetRoutineRun(ctx, id)
 }
 
-const runColumns = `id, routine_id, version, plan_hash, inputs, origin, requested_by, parent_run_id,
+const runColumns = `id, routine_id, version, plan_hash, manifest, inputs, origin, requested_by, parent_run_id,
 	parent_step, parent_attempt, depth, expect, expect_verdicts, instead_of, status, reason,
 	failed_step, output, cost_usd, usage, started_at, finished_at`
 
 func scanRun(row interface{ Scan(...any) error }) (RoutineRun, error) {
 	var (
-		r                                       RoutineRun
-		inputs, origin, expect, verdicts, usage string
-		started, finished                       int64
+		r                                                 RoutineRun
+		inputs, origin, expect, verdicts, usage, manifest string
+		started, finished                                 int64
 	)
-	if err := row.Scan(&r.ID, &r.RoutineID, &r.Version, &r.PlanHash, &inputs, &origin, &r.RequestedBy,
+	if err := row.Scan(&r.ID, &r.RoutineID, &r.Version, &r.PlanHash, &manifest, &inputs, &origin, &r.RequestedBy,
 		&r.ParentRunID, &r.ParentStep, &r.ParentAttempt, &r.Depth, &expect, &verdicts, &r.InsteadOf,
 		&r.Status, &r.Reason, &r.FailedStep, &r.Output, &r.CostUSD, &usage, &started, &finished); err != nil {
 		return RoutineRun{}, err
@@ -586,7 +593,7 @@ func scanRun(row interface{ Scan(...any) error }) (RoutineRun, error) {
 	for _, f := range []struct {
 		raw string
 		dst any
-	}{{inputs, &r.Inputs}, {expect, &r.Expect}, {verdicts, &r.ExpectVerdicts}, {usage, &r.Usage}} {
+	}{{manifest, &r.Manifest}, {inputs, &r.Inputs}, {expect, &r.Expect}, {verdicts, &r.ExpectVerdicts}, {usage, &r.Usage}} {
 		if err := json.Unmarshal([]byte(f.raw), f.dst); err != nil {
 			return RoutineRun{}, fmt.Errorf("decode run %d: %w", r.ID, err)
 		}

@@ -33,6 +33,7 @@ type Config struct {
 	Router    RouterConfig    `yaml:"router"`
 	Limits    LimitsConfig    `yaml:"limits"`
 	Retention RetentionConfig `yaml:"retention"`
+	Routines  RoutinesConfig  `yaml:"routines"`
 
 	Agents []AgentConfig `yaml:"agents"`
 
@@ -298,6 +299,50 @@ type LimitsConfig struct {
 	MaxConcurrentTurns int `yaml:"max_concurrent_turns"`
 }
 
+// RoutinesConfig bounds what routines may do and how much of the host they use.
+type RoutinesConfig struct {
+	// ProcessImages is the allowlist a process step's image must be on
+	// (adr/007). Empty allows no process steps at all.
+	ProcessImages []string `yaml:"process_images"`
+	// MaxConcurrentSteps caps routine step containers, on their own queue and
+	// worker, so routines cannot take the slots interactive turns need
+	// (adr/010). The host runs up to this plus limits.max_concurrent_turns.
+	MaxConcurrentSteps int `yaml:"max_concurrent_steps"`
+	// ResultLimit is how many characters of a delegated result reach the
+	// delegator; the rest is kept as a file in its work area (adr/014).
+	ResultLimit int `yaml:"result_limit"`
+}
+
+// ImageAllowed reports whether image is on the process-step allowlist.
+func (r RoutinesConfig) ImageAllowed(image string) bool {
+	for _, allowed := range r.ProcessImages {
+		if allowed == image {
+			return true
+		}
+	}
+	return false
+}
+
+// RoutineStepQueue is the task queue routine step activities run on.
+func (c *Config) RoutineStepQueue() string { return c.Temporal.TaskQueue + "-routine-steps" }
+
+// Routine run paths live under their own subtree, one directory per run: a run
+// works in a work area of its own, never an agent's live one.
+func (c *Config) RoutineRunDir(runID int64) string {
+	return filepath.Join(c.WorkspaceRoot, "routines", "runs", strconv.FormatInt(runID, 10))
+}
+func (c *Config) RoutineWorkDir(runID int64) string {
+	return filepath.Join(c.RoutineRunDir(runID), "work")
+}
+
+// RoutineClaudeHome is per step, so each step's session and persona are its own.
+func (c *Config) RoutineClaudeHome(runID int64, stepID string) string {
+	return filepath.Join(c.RoutineRunDir(runID), "claude-home", stepID)
+}
+func (c *Config) RoutineDBPath(runID int64) string {
+	return filepath.Join(c.RoutineRunDir(runID), "state.db")
+}
+
 // RetentionConfig bounds how much history each agent keeps.
 //
 // live_logs grows by a row per stream-json event per turn and had no delete
@@ -462,6 +507,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Retention.Interval == 0 {
 		c.Retention.Interval = 6 * time.Hour
+	}
+	if c.Routines.MaxConcurrentSteps == 0 {
+		c.Routines.MaxConcurrentSteps = 2
+	}
+	if c.Routines.ResultLimit == 0 {
+		c.Routines.ResultLimit = 2000
 	}
 	if c.Limits.MaxConcurrentTurns == 0 {
 		// A default matters here: it bounds host resources, and an unbounded

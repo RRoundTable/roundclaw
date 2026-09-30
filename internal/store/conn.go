@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS idempotency (
 var migrations = []string{
 	`ALTER TABLE turns ADD COLUMN conversation TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE turns ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE turns ADD COLUMN usage TEXT NOT NULL DEFAULT '{}'`,
 }
 
 // Store is one agent's database handle.

@@ -125,4 +125,7 @@ type TurnResult struct {
 	// ErrorMessage is set when Status is TurnError. It is delivered to the
 	// caller, so it must stay free of credentials and absolute host paths.
 	ErrorMessage string `json:"error_message,omitempty"`
+	// Usage is what the work consumed, by model. Additive: absent in results
+	// recorded before it existed.
+	Usage Usage `json:"usage,omitempty"`
 }

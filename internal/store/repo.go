@@ -38,6 +38,8 @@ type Turn struct {
 	Conversation string
 	QueuedAt     time.Time
 	FinishedAt   time.Time
+	// Usage is what the turn consumed, by model — the facts behind CostUSD.
+	Usage core.Usage
 }
 
 // LogEntry is one live_logs row.
@@ -212,12 +214,16 @@ func (s *Store) TurnAttachments(ctx context.Context, turnID int64) ([]string, er
 // already reached a terminal state keeps its first outcome, so a delivery retry
 // cannot rewrite a stopped turn into a done one.
 func (s *Store) FinishTurn(ctx context.Context, turnID int64, result core.TurnResult) error {
-	_, err := s.db.ExecContext(ctx, `
+	usageJSON, err := json.Marshal(result.Usage)
+	if err != nil {
+		return fmt.Errorf("encode usage for turn %d: %w", turnID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		UPDATE turns
-		SET result = ?, status = ?, cost_usd = ?, error = ?, finished_at = ?
+		SET result = ?, status = ?, cost_usd = ?, error = ?, finished_at = ?, usage = ?
 		WHERE id = ? AND status = ?`,
 		result.Text, string(result.Status), result.CostUSD, result.ErrorMessage,
-		time.Now().UnixMilli(), turnID, string(core.TurnRunning))
+		time.Now().UnixMilli(), string(usageJSON), turnID, string(core.TurnRunning))
 	if err != nil {
 		return fmt.Errorf("finish turn %d: %w", turnID, err)
 	}
@@ -235,12 +241,13 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 		status     string
 		queuedAt   int64
 		finishedAt sql.NullInt64
+		usageJSON  string
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at, usage
 		FROM turns WHERE id = ?`, turnID).
 		Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg,
-			&t.Conversation, &queuedAt, &finishedAt)
+			&t.Conversation, &queuedAt, &finishedAt, &usageJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}
@@ -255,6 +262,9 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 	t.QueuedAt = time.UnixMilli(queuedAt)
 	if finishedAt.Valid {
 		t.FinishedAt = time.UnixMilli(finishedAt.Int64)
+	}
+	if err := json.Unmarshal([]byte(usageJSON), &t.Usage); err != nil {
+		return t, fmt.Errorf("decode usage for turn %d: %w", turnID, err)
 	}
 	if t.Origin, err = core.DecodeOrigin(originJSON); err != nil {
 		return t, fmt.Errorf("turn %d: %w", turnID, err)

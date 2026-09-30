@@ -447,6 +447,7 @@ func (a *Activities) stream(
 		final    core.TurnResult
 		sawFinal bool
 		sawInit  bool
+		model    string
 	)
 
 	onEvent := func(ev claude.Event) error {
@@ -462,6 +463,7 @@ func (a *Activities) stream(
 				Status:  core.TurnDone,
 				Text:    ev.Text,
 				CostUSD: ev.CostUSD,
+				Usage:   attributeUsage(ev.Usage, model),
 			}
 			if ev.IsError {
 				final.Status = core.TurnError
@@ -470,6 +472,7 @@ func (a *Activities) stream(
 		}
 		if ev.Kind == claude.KindInit {
 			sawInit = true
+			model = ev.Model
 		}
 		if ev.Kind == claude.KindInit && ev.SessionID != "" && ev.SessionID != spec.SessionID {
 			// Not fatal, but it means resume did not attach to the session we
@@ -522,11 +525,24 @@ func (a *Activities) stream(
 				Status:  core.TurnStopped,
 				Text:    final.Text,
 				CostUSD: final.CostUSD,
+				Usage:   final.Usage,
 			}
 			mu.Unlock()
 			return stopped, sawInit, ctx.Err()
 		}
 	}
+}
+
+// attributeUsage names the model behind usage the CLI reported without one,
+// using the model its init event announced.
+func attributeUsage(u core.Usage, model string) core.Usage {
+	m, ok := u.Models[claude.UnattributedModel]
+	if !ok || model == "" {
+		return u
+	}
+	delete(u.Models, claude.UnattributedModel)
+	u.Models[model] = m
+	return u
 }
 
 // finish converts process outcome into a TurnResult. A container that exits

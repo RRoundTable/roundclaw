@@ -33,6 +33,7 @@ really started.
   **Decided before writing code:**
 
   - A routine is a graph document one human-owned interpreter runs; steps are activities keyed by stable ids, recorded to SQLite as they start and finish, and a result is delivered on every terminal path (`adr/006`).
+  - A process step is an allowlisted image and a literal argv in a container with only the run's work area mounted, which amends adr/004 rather than bending it (`adr/007`).
 
 ## Next
 

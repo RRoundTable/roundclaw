@@ -38,6 +38,7 @@ type TemporalClient interface {
 	SignalWorkflow(ctx context.Context, workflowID, runID, signalName string, arg any) error
 	QueryWorkflow(ctx context.Context, workflowID, runID, queryType string, args ...any) (converter.EncodedValue, error)
 	DescribeWorkflowExecution(ctx context.Context, workflowID, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
+	CancelWorkflow(ctx context.Context, workflowID, runID string) error
 }
 
 // Dispatcher admits requests and answers status questions.

@@ -9,7 +9,11 @@
 // private business, since renaming one breaks in-flight workflows.
 package contract
 
-import "github.com/roundtable/roundclaw/internal/core"
+import (
+	"fmt"
+
+	"github.com/roundtable/roundclaw/internal/core"
+)
 
 // Signal and query names.
 const (
@@ -85,4 +89,14 @@ type AgentInput struct {
 	// carried the truth. Whether to resume is now decided from the transcript on
 	// disk, by the activity that can see it.
 	TurnCount int `json:"turn_count,omitempty"`
+}
+
+// RoutineRunWorkflowType is the one interpreter every routine runs on (adr/006).
+const RoutineRunWorkflowType = "RoutineRun"
+
+// RoutineRunID is the execution ID of a routine run. It is derived from the
+// run's row, which is written first, so a retried start cannot make a second
+// execution of the same run.
+func RoutineRunID(runID int64) string {
+	return fmt.Sprintf("roundclaw-routine-%d", runID)
 }

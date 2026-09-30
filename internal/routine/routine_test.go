@@ -79,23 +79,27 @@ func TestCompileRefuses(t *testing.T) {
 		mutate func(*Source)
 		want   string
 	}{
-		"missing intent":       {func(s *Source) { s.Contract.Intent = "" }, "intent"},
-		"unknown agent":        {func(s *Source) { s.Steps[1].Agent = "ghost" }, `agent "ghost"`},
-		"unknown dependency":   {func(s *Source) { s.Steps[1].After = []string{"nope"} }, `"nope"`},
-		"cycle":                {func(s *Source) { s.Steps[0].After = []string{"fix"} }, "cycle"},
-		"open step, no done":   {func(s *Source) { s.Steps[1].Done = Condition{} }, "how to tell it is done"},
-		"unbound input":        {func(s *Source) { s.Steps[1].Goal = "{{inputs.other}}" }, "inputs.other"},
-		"non-upstream binding": {func(s *Source) { s.Steps[0].Argv = []string{"x"}; s.Steps[1].Goal = "ok"; s.Steps = append(s.Steps, Step{ID: "late", Kind: KindAgent, Agent: "dev", Task: "{{steps.fix2.output}}"}) }, "steps.fix2"},
-		"effect over ceiling":  {func(s *Source) { s.Steps[1].Effects = EffectExternal }, "beyond the routine's ceiling"},
-		"image not allowed":    {func(s *Source) { s.Steps[0].Image = "evil:latest" }, "allowlist"},
-		"binding in argv":      {func(s *Source) { s.Steps[0].Argv = []string{"echo", "{{inputs.repo}}"} }, "argv is literal"},
-		"retrying a program":   {func(s *Source) { s.Steps[0].MaxAttempts = 3 }, "max_attempts must be 1"},
-		"task and goal":        {func(s *Source) { s.Steps[1].Task = "also this" }, "exactly one of task or goal"},
-		"duplicate id":         {func(s *Source) { s.Steps[1].ID = "vet" }, "used twice"},
-		"attempts over cap":    {func(s *Source) { s.Steps[1].MaxAttempts = 99 }, "max_attempts must be between"},
-		"unknown routine":      {func(s *Source) { s.Steps = append(s.Steps, Step{ID: "inner", Kind: KindRoutine, Routine: "ghost"}) }, `routine "ghost"`},
-		"contains itself":      {func(s *Source) { s.Steps = append(s.Steps, Step{ID: "inner", Kind: KindRoutine, Routine: "outer"}) }, "contain itself"},
-		"unknown kind":         {func(s *Source) { s.Steps[0].Kind = "magic" }, "unknown step kind"},
+		"missing intent":     {func(s *Source) { s.Contract.Intent = "" }, "intent"},
+		"unknown agent":      {func(s *Source) { s.Steps[1].Agent = "ghost" }, `agent "ghost"`},
+		"unknown dependency": {func(s *Source) { s.Steps[1].After = []string{"nope"} }, `"nope"`},
+		"cycle":              {func(s *Source) { s.Steps[0].After = []string{"fix"} }, "cycle"},
+		"open step, no done": {func(s *Source) { s.Steps[1].Done = Condition{} }, "how to tell it is done"},
+		"unbound input":      {func(s *Source) { s.Steps[1].Goal = "{{inputs.other}}" }, "inputs.other"},
+		"non-upstream binding": {func(s *Source) {
+			s.Steps[0].Argv = []string{"x"}
+			s.Steps[1].Goal = "ok"
+			s.Steps = append(s.Steps, Step{ID: "late", Kind: KindAgent, Agent: "dev", Task: "{{steps.fix2.output}}"})
+		}, "steps.fix2"},
+		"effect over ceiling": {func(s *Source) { s.Steps[1].Effects = EffectExternal }, "beyond the routine's ceiling"},
+		"image not allowed":   {func(s *Source) { s.Steps[0].Image = "evil:latest" }, "allowlist"},
+		"binding in argv":     {func(s *Source) { s.Steps[0].Argv = []string{"echo", "{{inputs.repo}}"} }, "argv is literal"},
+		"retrying a program":  {func(s *Source) { s.Steps[0].MaxAttempts = 3 }, "max_attempts must be 1"},
+		"task and goal":       {func(s *Source) { s.Steps[1].Task = "also this" }, "exactly one of task or goal"},
+		"duplicate id":        {func(s *Source) { s.Steps[1].ID = "vet" }, "used twice"},
+		"attempts over cap":   {func(s *Source) { s.Steps[1].MaxAttempts = 99 }, "max_attempts must be between"},
+		"unknown routine":     {func(s *Source) { s.Steps = append(s.Steps, Step{ID: "inner", Kind: KindRoutine, Routine: "ghost"}) }, `routine "ghost"`},
+		"contains itself":     {func(s *Source) { s.Steps = append(s.Steps, Step{ID: "inner", Kind: KindRoutine, Routine: "outer"}) }, "contain itself"},
+		"unknown kind":        {func(s *Source) { s.Steps[0].Kind = "magic" }, "unknown step kind"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

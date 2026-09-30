@@ -32,6 +32,14 @@ type fakeTemporal struct {
 	signals     []string
 	signaledIDs []string
 	starts      int
+	cancelled   []string
+}
+
+func (f *fakeTemporal) CancelWorkflow(_ context.Context, workflowID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelled = append(f.cancelled, workflowID)
+	return nil
 }
 
 func (f *fakeTemporal) SignalWithStartWorkflow(_ context.Context, _, signalName string, _ any,

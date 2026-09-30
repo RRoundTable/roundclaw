@@ -998,3 +998,28 @@ func percentile(sorted []int64, p int) int64 {
 	}
 	return sorted[idx-1]
 }
+
+// RoutineManifest resolves the agents a plan's steps name to the versions they
+// are on now. It is written on the run before it starts, so a run states exactly
+// what it ran (adr/008). An agent with no version yet is left out rather than
+// pinned to zero.
+func (s *Store) RoutineManifest(ctx context.Context, plan routine.Plan) (map[string]int, error) {
+	manifest := map[string]int{}
+	for _, st := range plan.Source.Steps {
+		if st.Kind != routine.KindAgent {
+			continue
+		}
+		if _, done := manifest[st.Agent]; done {
+			continue
+		}
+		v, err := s.LatestVersion(ctx, st.Agent)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s for the manifest: %w", st.Agent, err)
+		}
+		manifest[st.Agent] = v.Version
+	}
+	return manifest, nil
+}

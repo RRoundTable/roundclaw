@@ -7,36 +7,30 @@ really started.
 
 ## Now
 
-- **An agent improves itself.**
+- **Routines: known work handed off, admitted and improved on evidence.**
 
-  The pieces of a self-improvement loop already exist, pointed outward: a curator
-  agent reads history and versions, runs evaluations, compares two runs, and
-  files a proposal a person approves. Turned inward — the agent as its own
-  subject, and a measurement where the curator has a person — the same four
-  pieces let an agent improve without waiting on anybody.
+  An agent solves a new problem once. The second time it arrives, the agent
+  should hand it to something that already knows how and spend its own turns on
+  what is new. A routine is that something: a graph of steps with a frozen
+  contract, run durably, observable step by step, admitted by roundclaw itself
+  when the same work keeps succeeding, improved when its failures gather at one
+  step, and archived when it stops earning its place. It replaces workflows.
 
-  Two things are missing before that is possible. The tools and skills an agent
-  depends on have no history at all, so there is nothing to put back and no way
-  to say what an agent was when it did something. And those dependencies carry
-  live state that does not always survive a session, which an agent currently
-  discovers by failing a turn.
+  Two things make it trustworthy. Every lifecycle decision is arithmetic on
+  standards the routine did not set — its trial cases are written by something
+  that never saw it, and its callers can state what they need back. And handing
+  work off costs the delegator only the result, never the delegate's progress.
 
-  Specified in [specs/self-improvement.md](specs/self-improvement.md) and
-  [specs/tool-state.md](specs/tool-state.md) (`spec/003`).
+  Self-improvement, the previous item, is done. Its loose ends are prerequisites
+  here, because a routine's owner improves it with the same credential: a
+  rollback does not restore the grants its version named; an unmarked evaluation
+  case is stored as zero; a self token can roll back tools it does not hold; the
+  CLI prefers the wider token and asserts a reserved author; no skill teaches an
+  agent to change itself; and the self credential is switched off.
+
+  Specified in [specs/routines.md](specs/routines.md) (`spec/004`).
 
   **Decided before writing code:**
-
-  - An agent's container carries a credential that identifies it, and the write
-    surface it opens is bounded by subject as well as by path, so an agent may
-    change itself and nothing else (`adr/003`).
-  - A tool's restore contract declares what reachable means rather than carrying
-    a command to run: the registry has never stored a command, and a restore
-    runs ahead of the gate that would judge one (`adr/004`).
-  - A tool declares the set of things it is made of, or it has no version.
-    roundclaw cannot tell from the row whether a mount is the tool itself or a
-    client's configuration, so it does not guess (`adr/005`).
-
-  Nothing here is left open. What remains is implementation.
 
 ## Next
 

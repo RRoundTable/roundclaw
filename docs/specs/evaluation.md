@@ -79,6 +79,26 @@ An evaluation that can deploy, publish or hand out work is not a test.
 **When** it finishes, minutes later
 **Then** they are told, rather than having been made to wait.
 
+### A routine can be measured like an agent
+
+**Given** a [routine](routines.md) and cases its owner did not write
+**When** it is measured
+**Then** it runs each case in a work area of its own, on a stated version, and
+two versions are compared by the same arithmetic as agents.
+
+### A hand-off in a measurement is recorded, not carried out
+
+**Given** an agent under measurement that hands work to another agent or a
+routine
+**When** it does
+**Then** the hand-off is recorded against the case — what it chose and what it
+passed — and not carried out, so a case can check the choice. A measurement may
+instead allow routines that cannot act on the outside world to run for real, in
+their own work areas; nothing that can act outside ever does.
+
+Before this, a hand-off in a case simply failed, so an agent whose job is to
+delegate could not be measured at all.
+
 ## Invariants
 
 - A run always names the configuration it measured.

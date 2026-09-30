@@ -71,8 +71,9 @@ from when anybody expected.
 
 ## Invariants
 
-- A schedule always belongs to an agent. There is no agent-less schedule; that is
-  a [workflow](workflows.md).
+- A schedule always belongs to an agent. There is no agent-less schedule; a
+  recurring multi-step job is an agent's schedule handing work to a
+  [routine](routines.md).
 - Scheduled work and human requests share one queue, one ordering and one set of
   limits.
 - A schedule is announced only where its agent is already spoken to, or nowhere.

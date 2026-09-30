@@ -3,7 +3,7 @@
 A change to the fleet, written down but not made, waiting for a person to decide.
 
 This is the only place today where the system asks a human to judge something.
-That narrowness is the subject of the current roadmap item, so this document
+That narrowness is the subject of the next roadmap item, so this document
 states what exists precisely — including what it does *not* do.
 
 ## Why it exists
@@ -93,6 +93,14 @@ proposal records which version applying it produced.
 
 The cases are what "better" means. An agent that could quietly rewrite its own
 marking scheme would be grading its own homework.
+
+### A proposal can change a routine or add the cases that measure it
+
+**Given** an agent that neither owns a [routine](routines.md) nor is the fleet's
+steward
+**When** it wants the routine changed, or wants cases added to what measures it
+**Then** it files a proposal, and a person decides. An approved change still has
+to pass the routine's trial before it serves.
 
 ## Invariants
 

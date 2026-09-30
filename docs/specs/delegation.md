@@ -76,6 +76,47 @@ needs the person at the top of the chain, so that is carried down.
 **Then** the named agent must still exist, and the worst outcome is a wasted turn
 on that agent.
 
+### A routine can be the delegate
+
+**Given** an agent with work a [routine](routines.md) already does
+**When** it hands the work to that routine
+**Then** the result comes back to it exactly as a delegated agent's result does,
+under every guarantee above.
+
+### A delegator is woken once, with a bounded result
+
+**Given** a delegate that works for an hour and produces a long answer
+**When** it finishes
+**Then** the delegator is woken once, with the outcome, the declared outputs or
+the beginning of the answer up to a stated limit, and a handle. The full result is
+kept as a file in the delegator's work area, to open on purpose. None of the
+delegate's progress reaches the delegator at any point.
+
+The delegator's context is the scarcest thing in the chain. A result pasted whole
+into its conversation stays there for every turn after, whether or not it was
+needed.
+
+### A delegate starts from what it was handed
+
+**Given** a delegator deep in a long conversation
+**When** it hands work off
+**Then** the delegate receives the request and nothing of the delegator's
+history, and spends its own context on the work.
+
+### A delegator can state what it needs back
+
+**Given** a delegator that knows what a good answer must contain
+**When** it says so as it hands the work off
+**Then** the result is checked against that by rule before the delegator is
+woken, and the delegator is told whether it got what it asked for, separately
+from anything the delegate says about itself.
+
+### A delegator can hand work off again in place of an unused result
+
+**Given** a result the delegator could not use
+**When** it hands the same work off again naming the result it replaces
+**Then** the replaced result is recorded as redone.
+
 ## Invariants
 
 - The return address lives with the work, not with the caller.

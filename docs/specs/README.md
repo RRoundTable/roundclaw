@@ -18,7 +18,7 @@ separately", not "the handler returns 202".
 | [Conversations](conversations.md) | Keep separate lines of work from bleeding into each other |
 | [Delegation](delegation.md) | Let an agent hand work to another agent and report the result |
 | [Schedules](schedules.md) | Have an agent do something on a recurring basis |
-| [Workflows](workflows.md) | Run a multi-step job that belongs to no agent |
+| [Routines](routines.md) | Hand known work to a graph of steps that the system admits, improves and retires on evidence |
 | [Fleet management](fleet-management.md) | Add, change and remove agents while the system runs |
 | [Versions and rollback](versions-and-rollback.md) | Know what an agent was when it did something, and undo a change |
 | [Grants](grants.md) | Widen what an agent is allowed to do |
@@ -52,16 +52,30 @@ document first.
 7. **An answer returns to the channel that asked for it.** Which chat tool a
    request arrived through decides where its answer goes, and no capability is
    available in one chat tool and missing from another.
-8. **An agent can change anything about itself except what it is measured by.**
+8. **Nothing can change what it is measured by.** An agent can change anything
+   about itself except its evaluation cases; whoever improves a routine cannot
+   change its contract or the independent cases it is held to.
 9. **Nothing an agent changes about itself is unrecoverable.** Every self-made
-   change leaves a version, and every version can be returned to. This is the
+   change — to itself or to a routine it owns — leaves a version, and every
+   version can be returned to. This is the
    whole of the protection: no measurement stands between an agent and a change
    to itself, so the history is what a person acts on.
 10. **An agent is never told a capability works when it does not.**
+11. **Nothing picks a routine on anybody's behalf.** An agent or a person names
+    the routine that work goes to. Nothing reads a request and sends it to one.
+12. **Records and verdicts are computed, never described.** Whether something
+    passed, how often, at what cost, and whether a routine is admitted, promoted
+    or archived are all counted from what was recorded by a stated rule — never
+    formed by a model reading outputs — and every figure says whose standard it
+    measures.
+13. **A hand-off costs the delegator only its result.** The delegate's progress
+    never enters the delegator's context; what arrives is bounded and the rest is
+    kept to be opened on purpose; and a delegate starts from what it was handed,
+    never from the delegator's history.
 
 ## Depth
 
-These documents are not uniformly detailed, on purpose. [Proposals](proposals.md)
-is the deepest because the current roadmap item generalises it. Requests, turn
+These documents are not uniformly detailed, on purpose. [Routines](routines.md)
+is the deepest because it is the current roadmap item. Requests, turn
 control, conversations and delegation carry the goal's success criteria. The rest
 state their behaviours and stop.

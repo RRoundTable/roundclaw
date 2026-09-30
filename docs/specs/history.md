@@ -38,6 +38,20 @@ errors is not a way to work.
 **When** the retention period has passed
 **Then** its detail is removed on a schedule that is configured, not arbitrary.
 
+### Routine runs are history
+
+**Given** a routine that has run
+**When** somebody looks at its history
+**Then** they see each run, each step's record, and each decision that admitted,
+changed or archived the routine, on the same terms as a turn.
+
+### Cost says what it is made of
+
+**Given** any finished piece of work — a turn or a routine step
+**When** somebody looks at what it cost
+**Then** they also see which model did it and how many tokens of each kind it
+used, so the figure can be checked and two models compared.
+
 ## Invariants
 
 - History is readable without any model being involved.

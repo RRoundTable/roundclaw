@@ -34,6 +34,7 @@ really started.
 
   - A routine is a graph document one human-owned interpreter runs; steps are activities keyed by stable ids, recorded to SQLite as they start and finish, and a result is delivered on every terminal path (`adr/006`).
   - A process step is an allowlisted image and a literal argv in a container with only the run's work area mounted, which amends adr/004 rather than bending it (`adr/007`).
+  - A routine is compiled at admission — graph, references, authority, bounds, effects — and refused whole with every problem named; a run pins what it resolves in a manifest (`adr/008`).
 
 ## Next
 

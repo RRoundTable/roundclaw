@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/roundtable/roundclaw/internal/core"
@@ -29,6 +30,13 @@ CREATE TABLE IF NOT EXISTS routines (
     contract      TEXT NOT NULL,
     contract_hash TEXT NOT NULL,
     state         TEXT NOT NULL DEFAULT 'active',
+    -- When something it needs went missing, 0 while it can run.
+    unrunnable_since INTEGER NOT NULL DEFAULT 0,
+    -- The last measurement on its independent cases, and what it ran against.
+    measured_at       INTEGER NOT NULL DEFAULT 0,
+    measured_manifest TEXT NOT NULL DEFAULT '{}',
+    independent_passed INTEGER NOT NULL DEFAULT 0,
+    independent_total  INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
@@ -40,6 +48,9 @@ CREATE TABLE IF NOT EXISTS routine_versions (
     plan_hash  TEXT NOT NULL,
     note       TEXT NOT NULL DEFAULT '',
     author     TEXT NOT NULL DEFAULT '',
+    -- 1 serves, 0 is on trial, -1 was rejected. Only a version that passed its
+    -- trial, or that a person forced, serves (adr/009, adr/013).
+    promoted   INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (routine_id, version)
 );
@@ -107,6 +118,9 @@ CREATE TABLE IF NOT EXISTS routine_step_runs (
 );
 `
 
+// TrialRequester prefixes the requested_by of runs a trial starts.
+const TrialRequester = "trial:"
+
 // ErrContractFrozen is returned when a change would alter a routine's contract.
 var ErrContractFrozen = errors.New("a routine's contract cannot change; register a new routine")
 
@@ -114,6 +128,11 @@ var ErrContractFrozen = errors.New("a routine's contract cannot change; register
 const (
 	RoutineActive   = "active"
 	RoutineArchived = "archived"
+	// RoutineTrial is a routine being tried before admission: not offered, and
+	// run only by its trial.
+	RoutineTrial = "trial"
+	// RoutineRejected failed its admission trial; it stays in the record.
+	RoutineRejected = "rejected"
 )
 
 // Run and step statuses.
@@ -136,8 +155,15 @@ type Routine struct {
 	State        string           `json:"state"`
 	Version      int              `json:"version"`
 	Plan         routine.Plan     `json:"plan"`
-	CreatedAt    time.Time        `json:"created_at"`
-	UpdatedAt    time.Time        `json:"updated_at"`
+	// PendingVersion is a version on trial, 0 when none.
+	PendingVersion    int            `json:"pending_version,omitempty"`
+	UnrunnableSince   time.Time      `json:"unrunnable_since,omitempty"`
+	MeasuredAt        time.Time      `json:"measured_at,omitempty"`
+	MeasuredManifest  map[string]int `json:"measured_manifest,omitempty"`
+	IndependentPassed int            `json:"independent_passed"`
+	IndependentTotal  int            `json:"independent_total"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
 }
 
 // RoutineVersion is one recorded version.
@@ -168,12 +194,26 @@ type PutResult struct {
 	Created bool    `json:"created"`
 	// Minted is false when the plan matched the current version exactly.
 	Minted bool `json:"minted"`
+	// Version is the version minted, when one was.
+	Version int `json:"version,omitempty"`
 }
 
 // PutRoutine records a compiled routine. A new routine is created with owner as
 // its owner; an existing one must keep its contract, and gets a new version
 // only if its plan changed.
 func (s *Store) PutRoutine(ctx context.Context, plan routine.Plan, owner string, c Change) (PutResult, error) {
+	return s.PutRoutineWith(ctx, plan, owner, c, PutOptions{State: RoutineActive, Promote: true})
+}
+
+// PutOptions say how a routine enters: a new routine's state, and whether a new
+// version serves at once (a person's or a rollback's) or waits for its trial.
+type PutOptions struct {
+	State   string
+	Promote bool
+}
+
+// PutRoutineWith is PutRoutine with the lifecycle's choices made explicit.
+func (s *Store) PutRoutineWith(ctx context.Context, plan routine.Plan, owner string, c Change, opts PutOptions) (PutResult, error) {
 	contractJSON, err := json.Marshal(plan.Source.Contract)
 	if err != nil {
 		return PutResult{}, fmt.Errorf("encode contract: %w", err)
@@ -203,7 +243,7 @@ func (s *Store) PutRoutine(ctx context.Context, plan routine.Plan, owner string,
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO routines (id, owner, contract, contract_hash, state, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			id, owner, string(contractJSON), contractHash, RoutineActive, now, now); err != nil {
+			id, owner, string(contractJSON), contractHash, opts.State, now, now); err != nil {
 			return PutResult{}, fmt.Errorf("create routine %s: %w", id, err)
 		}
 		res.Created = true
@@ -228,22 +268,26 @@ func (s *Store) PutRoutine(ctx context.Context, plan routine.Plan, owner string,
 			return PutResult{}, fmt.Errorf("next version of %s: %w", id, err)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO routine_versions (routine_id, version, plan, plan_hash, note, author, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			id, next, string(planJSON), plan.Hash, c.Note, c.Author, now); err != nil {
+			INSERT INTO routine_versions (routine_id, version, plan, plan_hash, note, author, promoted, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, next, string(planJSON), plan.Hash, c.Note, c.Author, boolInt(opts.Promote), now); err != nil {
 			return PutResult{}, fmt.Errorf("record version %d of %s: %w", next, id, err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE routines SET updated_at = ? WHERE id = ?`, now, id); err != nil {
 			return PutResult{}, fmt.Errorf("touch routine %s: %w", id, err)
 		}
-		decision := "promoted"
-		if res.Created {
-			decision = "admitted"
+		decision, rule := "promoted", "compiled and promoted without a trial"
+		switch {
+		case !opts.Promote:
+			decision, rule = "submitted", "compiled; waiting for its trial"
+		case res.Created:
+			decision, rule = "admitted", "compiled and admitted without a trial"
 		}
-		if err := recordDecisionTx(ctx, tx, id, decision, "compiled at admission",
+		if err := recordDecisionTx(ctx, tx, id, decision, rule,
 			map[string]any{"version": next, "plan_hash": plan.Hash}, c.Author, now); err != nil {
 			return PutResult{}, err
 		}
+		res.Version = next
 		res.Minted = true
 	}
 	if err := tx.Commit(); err != nil {
@@ -269,18 +313,22 @@ func recordDecisionTx(ctx context.Context, tx *sql.Tx, id, decision, rule string
 // GetRoutine reads a routine and its current version.
 func (s *Store) GetRoutine(ctx context.Context, id string) (Routine, error) {
 	var (
-		r                  Routine
-		contractJSON, plan string
-		created, updated   int64
+		r                               Routine
+		contractJSON, plan, measured    string
+		created, updated, unrun, measAt int64
 	)
+	// The current version is the newest one that serves. A routine with none —
+	// on its admission trial, or rejected — shows the version tried last.
 	err := s.db.QueryRowContext(ctx, `
 		SELECT r.id, r.owner, r.contract, r.contract_hash, r.state, r.created_at, r.updated_at,
+		       r.unrunnable_since, r.measured_at, r.measured_manifest, r.independent_passed, r.independent_total,
 		       v.version, v.plan
 		FROM routines r
 		JOIN routine_versions v ON v.routine_id = r.id
 		WHERE r.id = ?
-		ORDER BY v.version DESC LIMIT 1`, id).
-		Scan(&r.ID, &r.Owner, &contractJSON, &r.ContractHash, &r.State, &created, &updated, &r.Version, &plan)
+		ORDER BY v.promoted DESC, v.version DESC LIMIT 1`, id).
+		Scan(&r.ID, &r.Owner, &contractJSON, &r.ContractHash, &r.State, &created, &updated,
+			&unrun, &measAt, &measured, &r.IndependentPassed, &r.IndependentTotal, &r.Version, &plan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Routine{}, fmt.Errorf("%w: routine %s", ErrNotFound, id)
 	}
@@ -294,7 +342,28 @@ func (s *Store) GetRoutine(ctx context.Context, id string) (Routine, error) {
 		return Routine{}, fmt.Errorf("decode plan of %s: %w", id, err)
 	}
 	r.CreatedAt, r.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
+	if unrun > 0 {
+		r.UnrunnableSince = time.UnixMilli(unrun)
+	}
+	if measAt > 0 {
+		r.MeasuredAt = time.UnixMilli(measAt)
+	}
+	if err := json.Unmarshal([]byte(measured), &r.MeasuredManifest); err != nil {
+		return Routine{}, fmt.Errorf("decode measured manifest of %s: %w", id, err)
+	}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(version), 0) FROM routine_versions WHERE routine_id = ? AND promoted = 0 AND version > ?`,
+		id, r.Version).Scan(&r.PendingVersion); err != nil {
+		return Routine{}, fmt.Errorf("pending version of %s: %w", id, err)
+	}
 	return r, nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // ListRoutines returns every routine, in id order, optionally only active ones.
@@ -872,7 +941,9 @@ func (s *Store) RoutineMetrics(ctx context.Context, id string, currentVersion in
 	}
 	var cur, all []RoutineRun
 	for _, r := range runs {
-		if r.Status == RunRunning {
+		// Trials and measurements are not hand-offs; they are what the record is
+		// checked against, and counting them would let the lifecycle grade itself.
+		if r.Status == RunRunning || strings.HasPrefix(r.RequestedBy, TrialRequester) {
 			continue
 		}
 		all = append(all, r)

@@ -600,7 +600,8 @@ func forbiddenReason(id Identity) string {
 // See registerScheduleRoutes.
 func delegateAllowed(method, path string) bool {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
-	if len(segs) >= 2 && segs[0] == "v1" && (segs[1] == "routines" || segs[1] == "routine-runs") {
+	if len(segs) >= 2 && segs[0] == "v1" && (segs[1] == "routines" || segs[1] == "routine-runs" ||
+		segs[1] == "routine-trials" || segs[1] == "routine-candidates") {
 		return routineDelegateAllowed(method, segs)
 	}
 	if len(segs) < 2 || segs[0] != "v1" || segs[1] != "agents" {

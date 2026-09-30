@@ -33,6 +33,7 @@ import (
 
 	"github.com/roundtable/roundclaw/internal/adapter"
 	"github.com/roundtable/roundclaw/internal/config"
+	"github.com/roundtable/roundclaw/internal/core"
 	"github.com/roundtable/roundclaw/internal/registry"
 	"github.com/roundtable/roundclaw/internal/store"
 	"github.com/roundtable/roundclaw/internal/temporal/activity"
@@ -52,6 +53,10 @@ func fakeRuntime(t *testing.T, dir string) string {
 		"  run)\n" +
 		"    case \"$*\" in\n" +
 		"      *hang-please*) sleep 300 ;;\n" +
+		"      *\"You are writing the checks\"*)\n" +
+		`        echo '{"type":"system","subtype":"init","session_id":"s","model":"claude-examiner"}'` + "\n" +
+		`        echo '{"type":"result","subtype":"success","result":"{\"must_contain\": [\"done\"]}","total_cost_usd":0.001,"is_error":false}'` + "\n" +
+		"        ;;\n" +
 		"      *\" claude \"*)\n" +
 		`        echo '{"type":"system","subtype":"init","session_id":"s","model":"claude-e2e"}'` + "\n" +
 		`        echo '{"type":"result","subtype":"success","result":"all done here ` + long + `TAIL-MARKER","total_cost_usd":0.03,"is_error":false,"modelUsage":{"claude-e2e":{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.03}}}'` + "\n" +
@@ -69,13 +74,16 @@ func fakeRuntime(t *testing.T, dir string) string {
 }
 
 type harness struct {
+	tc  client.Client
 	srv *httptest.Server
 	reg *registry.Store
 	st  *store.Registry
 	cfg *config.Config
 }
 
-func setup(t *testing.T) harness {
+func setup(t *testing.T) harness { return setupWith(t, "") }
+
+func setupWith(t *testing.T, extra string) harness {
 	t.Helper()
 	ctx := context.Background()
 	dev, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
@@ -93,7 +101,7 @@ func setup(t *testing.T) harness {
 		"workspace_root: ws\n"+
 			"temporal:\n  task_queue: "+queue+"\n"+
 			"container:\n  runtime: "+fakeRuntime(t, dir)+"\n  image: test-image\n  stop_grace: 1s\n"+
-			"routines:\n  process_images: [allowed:1]\n  result_limit: 80\n"+
+			"routines:\n  process_images: [allowed:1]\n  result_limit: 80\n"+extra+
 			"agents:\n  - id: pm\n  - id: dev\n"), 0o600))
 	cfg, err := config.Load(cfgPath)
 	require.NoError(t, err)
@@ -104,7 +112,7 @@ func setup(t *testing.T) harness {
 	reg, err := registry.Open(filepath.Join(dir, "registry.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { reg.Close() })
-	for _, id := range []string{"pm", "dev"} {
+	for _, id := range []string{"pm", "dev", "steward"} {
 		_, err := reg.Create(ctx, registry.Agent{ID: id, Enabled: true})
 		require.NoError(t, err)
 	}
@@ -113,6 +121,8 @@ func setup(t *testing.T) harness {
 	w := worker.New(tc, cfg.Temporal.TaskQueue, worker.Options{MaxHeartbeatThrottleInterval: time.Second})
 	w.RegisterWorkflow(rcworkflow.SubAgent)
 	w.RegisterWorkflow(rcworkflow.RoutineRun)
+	w.RegisterWorkflow(rcworkflow.RoutineTrial)
+	w.RegisterWorkflow(rcworkflow.RoutineLifecycle)
 	w.RegisterActivity(acts)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
@@ -128,7 +138,7 @@ func setup(t *testing.T) harness {
 		cfg.HTTP.WaitTimeout, cfg.HTTP.MaxSSEPerAgent)
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
-	return harness{srv: srv, reg: reg, st: stores, cfg: cfg}
+	return harness{srv: srv, reg: reg, st: stores, cfg: cfg, tc: tc}
 }
 
 func (h harness) call(t *testing.T, method, path string, body any, into any) int {
@@ -290,4 +300,121 @@ func TestRoutineEndToEnd(t *testing.T) {
 		"/v1/routine-runs/"+strconv.FormatInt(started.RunID, 10)+"/stop", nil, nil))
 	v = h.waitRun(t, started.RunID)
 	assert.Equal(t, registry.RunStopped, v.Run.Status)
+}
+
+// The automatic lifecycle, end to end: recurring work is found and the steward
+// woken; the steward's draft is tried on the recorded work with checks the
+// examiner wrote without seeing it; the lifecycle admits it by rule; a version
+// that fixes nothing is rejected and never serves.
+func TestRoutineLifecycleEndToEnd(t *testing.T) {
+	h := setupWith(t, "  steward: steward\n  lifecycle:\n    sweep_every: 1s\n")
+	ctx := context.Background()
+
+	// Five successful turns of the same work, across conversations, each
+	// dearer than the routine will be.
+	dev, err := h.st.Get("dev")
+	require.NoError(t, err)
+	var turnIDs []int64
+	for i := 0; i < 5; i++ {
+		conv := "c" + strconv.Itoa(i%2)
+		id, _, err := dev.CreateTurn(ctx, store.NewTurn{Request: "fix vet in repo r" + strconv.Itoa(i),
+			Origin: core.HTTPPollOrigin(), Conversation: conv})
+		require.NoError(t, err)
+		require.NoError(t, dev.FinishTurn(ctx, id, core.TurnResult{TurnID: id, Status: core.TurnDone,
+			Text: "all done: vet clean", CostUSD: 0.5, Shape: "Bash:go > Edit > Bash:git"}))
+		turnIDs = append(turnIDs, id)
+	}
+
+	_, err = h.tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: rcworkflow.RoutineLifecycleID, TaskQueue: h.cfg.Temporal.TaskQueue,
+	}, rcworkflow.RoutineLifecycle, rcworkflow.RoutineLifecycleInput{StepQueue: h.cfg.RoutineStepQueue(), Every: time.Second})
+	require.NoError(t, err)
+
+	// The sweep raises a candidate and wakes the steward with the evidence.
+	var cands struct {
+		Candidates []registry.Candidate `json:"candidates"`
+	}
+	require.Eventually(t, func() bool {
+		h.call(t, http.MethodGet, "/v1/routine-candidates", nil, &cands)
+		return len(cands.Candidates) == 1
+	}, 30*time.Second, 300*time.Millisecond)
+	assert.Equal(t, "Bash:go > Edit > Bash:git", cands.Candidates[0].Shape)
+	steward, err := h.st.Get("steward")
+	require.NoError(t, err)
+	lc := activity.StewardConversation
+	require.Eventually(t, func() bool {
+		turns, err := steward.Turns(ctx, store.TurnFilter{Limit: 5, Conversation: &lc})
+		return err == nil && len(turns) > 0 && strings.Contains(turns[len(turns)-1].Request, "[routine candidate")
+	}, 30*time.Second, 300*time.Millisecond)
+
+	// The steward drafts a routine with one case per recorded turn.
+	var cases []map[string]any
+	for i, id := range turnIDs {
+		cases = append(cases, map[string]any{"agent": "dev", "turn_id": id, "inputs": map[string]string{"repo": "r" + strconv.Itoa(i)}})
+	}
+	var drafted struct {
+		TrialID int64 `json:"trial_id"`
+	}
+	src := source([]string{"go", "vet"})
+	require.Equal(t, http.StatusAccepted, h.call(t, http.MethodPost,
+		"/v1/routine-candidates/"+strconv.FormatInt(cands.Candidates[0].ID, 10)+"/draft",
+		map[string]any{"routine": src, "cases": cases}, &drafted))
+
+	trial := h.waitTrial(t, drafted.TrialID)
+	require.Equal(t, registry.TrialAccepted, trial.State, "%s %v", trial.Rule, trial.Figures)
+	for _, c := range trial.Cases {
+		assert.Equal(t, []string{"done"}, c.Checks.MustContain, "the examiner wrote the checks")
+	}
+	rt, err := h.reg.GetRoutine(ctx, "fix-vet")
+	require.NoError(t, err)
+	assert.Equal(t, registry.RoutineActive, rt.State)
+	assert.Equal(t, "dev", rt.Owner, "owned by the agent whose work it came from")
+	assert.Equal(t, 5, rt.IndependentTotal)
+	independent, err := h.reg.ListRoutineCases(ctx, "fix-vet")
+	require.NoError(t, err)
+	assert.Len(t, independent, 5)
+	spent, err := h.reg.LifecycleSpend(ctx, "fix-vet")
+	require.NoError(t, err)
+	assert.Greater(t, spent, 0.0, "what the trial cost is on the lifecycle's ledger")
+	cands.Candidates = nil
+	h.call(t, http.MethodGet, "/v1/routine-candidates", nil, &cands)
+	assert.Equal(t, registry.CandidateAdmitted, cands.Candidates[0].State)
+
+	// A new version that fixes nothing and costs no less is rejected, and v1
+	// keeps serving.
+	next := source([]string{"go", "vet"})
+	next["steps"].([]map[string]any)[2]["task"] = "report briefly on {{steps.fix.output}}"
+	var versioned struct {
+		TrialID int64 `json:"trial_id"`
+	}
+	require.Equal(t, http.StatusAccepted, h.call(t, http.MethodPut, "/v1/routines/fix-vet?trial", next, &versioned))
+	vt := h.waitTrial(t, versioned.TrialID)
+	assert.Equal(t, registry.TrialRejected, vt.State, vt.Rule)
+	rt, err = h.reg.GetRoutine(ctx, "fix-vet")
+	require.NoError(t, err)
+	assert.Equal(t, 1, rt.Version)
+
+	decisions, err := h.reg.ListRoutineDecisions(ctx, "fix-vet")
+	require.NoError(t, err)
+	var kinds []string
+	for _, d := range decisions {
+		kinds = append(kinds, d.Decision)
+	}
+	assert.Contains(t, kinds, "admitted")
+	assert.Contains(t, kinds, "rejected")
+}
+
+func (h harness) waitTrial(t *testing.T, id int64) registry.Trial {
+	t.Helper()
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		var tr registry.Trial
+		h.call(t, http.MethodGet, "/v1/routine-trials/"+strconv.FormatInt(id, 10), nil, &tr)
+		if tr.State != registry.TrialRunning && tr.State != "" {
+			return tr
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Fatalf("trial %d did not finish", id)
+	return registry.Trial{}
 }

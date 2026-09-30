@@ -121,6 +121,10 @@ func selfAllowed(agentID, method, path string) bool {
 		}
 		return false
 
+	case "routine-candidates":
+		// Drafting from recurring work; the handler admits only the steward.
+		return method == http.MethodPost && len(segs) == 4 && segs[3] == "draft"
+
 	case "routines":
 		// Submitting a routine, changing one, rolling it back or archiving it.
 		// Shape only: the handler bounds the subject to routines this agent

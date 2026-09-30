@@ -326,6 +326,45 @@ flowchart TB
   by a second worker capped by `routines.max_concurrent_steps` (adr/010), so
   routines cannot take the slots interactive turns and deliveries need.
 
+### `RoutineLifecycle` and `RoutineTrial` — admitted, evolving, archived
+
+`internal/temporal/workflow/lifecycle.go` over the pure `internal/lifecycle`
+rules (adr/013). **Agents propose, arithmetic decides:** the steward — an agent
+named by `routines.steward`, holding the `roundclaw-routine-steward` skill —
+drafts; every transition is a rule in `internal/lifecycle` applied to recorded
+figures and written to `routine_decisions` with them.
+
+- **`RoutineLifecycle`** is one loop per deployment (`roundclaw-routine-lifecycle`,
+  started by the worker with `USE_EXISTING`). Each `LifecycleSweep`:
+  - mines recurrence from every agent's `turns.shape` — the acting tool calls a
+    turn made, reads left out, a shell call by its program — and turns a shape
+    seen in enough successful turns across enough conversations into a
+    candidate, waking the steward with the evidence;
+  - wakes the steward when a routine's recent failures gather at one step;
+  - creates a re-measurement when a routine is due or an agent it uses has a
+    new version;
+  - records when a routine became unable to run, and archives a routine that
+    is unused, keeps failing after rejected fixes, is outdone by one with the
+    same contract, or cannot run past its grace period.
+
+  Past `routines.lifecycle.daily_spend_usd` it drafts and measures nothing;
+  archival still runs. Trials it creates run as their own executions.
+- **`RoutineTrial`** runs one trial. For an admission, `ExamineCase` first
+  writes each case's checks from the recorded request and outcome — a
+  judge-shaped model call with a fixed prompt, every tool denied, never shown
+  the routine. Then every case runs on each version compared, as a
+  *measurement* run (`RoutineRunInput.Measurement`: external steps are
+  recorded, not carried out), and `DecideTrial` applies `lifecycle.Admit`,
+  `lifecycle.Promote` or records the re-measurement. Trial runs name the trial
+  as their parent by its negated id, so they deliver nothing and never count in
+  a routine's record.
+- **Nothing an agent submits serves before its trial.** A new routine goes to an
+  admission trial on the cases it brings; a changed version to a version trial
+  on the independent cases and recent failures, while the current version keeps
+  serving. A full-scope token admits or promotes directly — the control path —
+  and the decision says so. A draft whose contract matches an archived or
+  rejected routine brings that routine back through its trial.
+
 ## Activities
 
 `internal/temporal/activity`. Registered as one struct via

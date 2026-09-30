@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
@@ -138,6 +139,10 @@ func run(configPath string, log *slog.Logger) error {
 	w.RegisterWorkflow(rcworkflow.EvalRun)
 	// Routines: the one interpreter every routine runs on (adr/006).
 	w.RegisterWorkflow(rcworkflow.RoutineRun)
+	// The routine lifecycle: trials, and the loop that sweeps for recurring
+	// work, failing steps, due measurements and routines to archive (adr/013).
+	w.RegisterWorkflow(rcworkflow.RoutineTrial)
+	w.RegisterWorkflow(rcworkflow.RoutineLifecycle)
 	// Registering the struct exposes every exported method as an activity,
 	// which is why Activities carries no exported non-activity methods.
 	acts := activity.NewActivities(cfg, stores, reg, discord, slackSend, tc)
@@ -155,6 +160,18 @@ func run(configPath string, log *slog.Logger) error {
 		return fmt.Errorf("start routine step worker: %w", err)
 	}
 	defer steps.Stop()
+
+	// One lifecycle loop per deployment. Starting it at every boot is safe: the
+	// fixed ID and USE_EXISTING leave a running loop alone.
+	if _, err := tc.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{
+		ID:                       rcworkflow.RoutineLifecycleID,
+		TaskQueue:                cfg.Temporal.TaskQueue,
+		WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+	}, rcworkflow.RoutineLifecycle, rcworkflow.RoutineLifecycleInput{
+		StepQueue: cfg.RoutineStepQueue(), Every: cfg.Routines.Lifecycle.SweepEvery,
+	}); err != nil {
+		return fmt.Errorf("start the routine lifecycle: %w", err)
+	}
 
 	// Cancelled when the worker stops, so a sweep cannot outlive the process.
 	retentionCtx, stopRetention := context.WithCancel(context.Background())

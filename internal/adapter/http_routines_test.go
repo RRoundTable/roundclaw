@@ -57,12 +57,25 @@ func TestSelfCredentialsAreBoundedByOwner(t *testing.T) {
 	devToken := core.DeriveAgentToken("dev", selfKey)
 	opsToken := core.DeriveAgentToken("ops", selfKey)
 
+	// An agent's submission is tried before it serves, so it must bring cases.
 	resp := do(t, srv, http.MethodPost, "/v1/routines", devToken, summariser("summarise {{inputs.text}}"))
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	resp.Body.Close()
+	src := summariser("summarise {{inputs.text}}")
+	resp = do(t, srv, http.MethodPost, "/v1/routines", devToken, map[string]any{
+		"routine": src,
+		"cases": []map[string]any{
+			{"inputs": map[string]string{"text": "a"}, "request": "summarise a", "outcome": "a summary"},
+			{"inputs": map[string]string{"text": "b"}, "request": "summarise b", "outcome": "b summary"},
+			{"inputs": map[string]string{"text": "c"}, "request": "summarise c", "outcome": "c summary"},
+		},
+	})
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 	resp.Body.Close()
 	rt, err := reg.GetRoutine(t.Context(), "summarise")
 	require.NoError(t, err)
 	assert.Equal(t, "dev", rt.Owner)
+	assert.Equal(t, "trial", rt.State, "not offered until its trial admits it")
 	versions, err := reg.ListRoutineVersions(t.Context(), "summarise")
 	require.NoError(t, err)
 	assert.Equal(t, "agent:dev", versions[0].Author, "authorship comes from the credential")
@@ -72,7 +85,7 @@ func TestSelfCredentialsAreBoundedByOwner(t *testing.T) {
 	resp.Body.Close()
 
 	resp = do(t, srv, http.MethodPut, "/v1/routines/summarise", devToken, summariser("better {{inputs.text}}"))
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, "a routine on its admission trial waits for the verdict")
 	resp.Body.Close()
 }
 

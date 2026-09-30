@@ -22,6 +22,7 @@ import (
 	"github.com/roundtable/roundclaw/internal/claude"
 	"github.com/roundtable/roundclaw/internal/config"
 	"github.com/roundtable/roundclaw/internal/core"
+	"github.com/roundtable/roundclaw/internal/lifecycle"
 	"github.com/roundtable/roundclaw/internal/registry"
 	"github.com/roundtable/roundclaw/internal/store"
 	"github.com/roundtable/roundclaw/internal/workspace"
@@ -448,6 +449,7 @@ func (a *Activities) stream(
 		sawFinal bool
 		sawInit  bool
 		model    string
+		calls    []lifecycle.ToolCall
 	)
 
 	onEvent := func(ev claude.Event) error {
@@ -455,6 +457,7 @@ func (a *Activities) stream(
 		progress.Events++
 		if ev.Kind == claude.KindToolUse {
 			progress.LastTool = ev.ToolName
+			calls = append(calls, lifecycle.ToolCall{Name: ev.ToolName, Input: ev.ToolInput})
 		}
 		if ev.Kind == claude.KindResult {
 			sawFinal = true
@@ -464,6 +467,7 @@ func (a *Activities) stream(
 				Text:    ev.Text,
 				CostUSD: ev.CostUSD,
 				Usage:   attributeUsage(ev.Usage, model),
+				Shape:   lifecycle.Shape(calls),
 			}
 			if ev.IsError {
 				final.Status = core.TurnError

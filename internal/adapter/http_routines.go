@@ -38,6 +38,7 @@ func (h *HTTP) registerRoutineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/routines/{routine}/runs", h.listRoutineRuns)
 	mux.HandleFunc("GET /v1/routine-runs/{run}", h.getRoutineRun)
 	mux.HandleFunc("POST /v1/routine-runs/{run}/stop", h.stopRoutineRun)
+	h.registerLifecycleRoutes(mux)
 }
 
 // libraryEntry is what an agent sees when it chooses: what the routine is for,
@@ -104,75 +105,6 @@ func (h *HTTP) listRoutines(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"routines": out})
-}
-
-// putRoutine compiles and records a routine. A new routine is owned by the
-// agent whose credential submitted it, or by people; a self credential may write
-// only the routines its agent owns (adr/009).
-func (h *HTTP) putRoutine(w http.ResponseWriter, r *http.Request) {
-	var src routine.Source
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	if err := json.NewDecoder(r.Body).Decode(&src); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid routine: "+err.Error())
-		return
-	}
-	if id := r.PathValue("routine"); id != "" {
-		if src.ID != "" && src.ID != id {
-			writeError(w, http.StatusBadRequest, "the routine id in the body does not match the path")
-			return
-		}
-		src.ID = id
-	}
-	c, ok := changeFrom(w, r)
-	if !ok {
-		return
-	}
-
-	id := identityFrom(r)
-	owner := ""
-	existing, err := h.disp.Registry().GetRoutine(r.Context(), src.ID)
-	switch {
-	case err == nil:
-		owner = existing.Owner
-		if id.Scope == ScopeSelf && existing.Owner != id.AgentID {
-			writeError(w, http.StatusForbidden, "only its owner, the steward or a person changes this routine; file a proposal")
-			return
-		}
-	case errors.Is(err, registry.ErrNotFound):
-		if id.Scope == ScopeSelf {
-			owner = id.AgentID
-		} else {
-			owner = r.URL.Query().Get("owner")
-		}
-	default:
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	plan, err := h.disp.CompileRoutine(r.Context(), src)
-	var cerr *routine.Error
-	if errors.As(err, &cerr) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "routine refused", "diagnostics": cerr.Diagnostics})
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	res, err := h.disp.Registry().PutRoutine(r.Context(), plan, owner, c)
-	if errors.Is(err, registry.ErrContractFrozen) {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	status := http.StatusOK
-	if res.Created {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, res)
 }
 
 func (h *HTTP) getRoutine(w http.ResponseWriter, r *http.Request) {

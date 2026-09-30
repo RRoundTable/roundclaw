@@ -21,6 +21,10 @@ type RoutineRunInput struct {
 	// StepQueue is the task queue routine step activities run on (adr/010).
 	// Empty uses the workflow's own queue, which is what tests do.
 	StepQueue string `json:"step_queue,omitempty"`
+	// Measurement marks a run a trial started. A step that would act on the
+	// outside world is recorded, not carried out, and the run goes on as though
+	// it had passed (SPEC-004: a measurement never acts).
+	Measurement bool `json:"measurement,omitempty"`
 }
 
 // RoutineRun is the one interpreter every routine runs on (adr/006).
@@ -73,6 +77,12 @@ func RoutineRun(ctx workflow.Context, in RoutineRunInput) error {
 		}
 		if blocker := firstUnpassed(step.After, passed); blocker != "" {
 			skip(ctx, in.RunID, step, fmt.Sprintf("step %q did not pass", blocker))
+			continue
+		}
+
+		if in.Measurement && step.Effects == routine.EffectExternal {
+			skip(ctx, in.RunID, step, "recorded, not carried out: a measurement never acts on the outside world")
+			passed[id] = true
 			continue
 		}
 
@@ -192,7 +202,8 @@ func runChild(ctx workflow.Context, in RoutineRunInput, plan activity.RoutineRun
 		ParentClosePolicy:   enumspb.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		WaitForCancellation: true,
 	})
-	childErr := workflow.ExecuteChildWorkflow(childCtx, RoutineRun, RoutineRunInput{RunID: childID, StepQueue: in.StepQueue}).Get(childCtx, nil)
+	childErr := workflow.ExecuteChildWorkflow(childCtx, RoutineRun,
+		RoutineRunInput{RunID: childID, StepQueue: in.StepQueue, Measurement: in.Measurement}).Get(childCtx, nil)
 
 	var child registry.RoutineRun
 	if err := workflow.ExecuteActivity(detached(short), (*activity.Activities).RoutineRunStatus, childID).Get(short, &child); err != nil {

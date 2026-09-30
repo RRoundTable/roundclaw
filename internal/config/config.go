@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/roundtable/roundclaw/internal/core"
+	"github.com/roundtable/roundclaw/internal/lifecycle"
 )
 
 // Config is the whole file. Secrets are never stored here — every secret is
@@ -311,6 +312,13 @@ type RoutinesConfig struct {
 	// ResultLimit is how many characters of a delegated result reach the
 	// delegator; the rest is kept as a file in its work area (adr/014).
 	ResultLimit int `yaml:"result_limit"`
+	// Steward names the agent that drafts routines from recurring work and fixes
+	// for their failing steps (adr/013). Empty means nothing is drafted
+	// automatically; trials, re-measurement and archival still run.
+	Steward string `yaml:"steward"`
+	// Lifecycle holds the thresholds that admit, promote, evolve and archive
+	// routines. Every unset value takes ADR-013's default.
+	Lifecycle lifecycle.Rules `yaml:"lifecycle"`
 }
 
 // ImageAllowed reports whether image is on the process-step allowlist.
@@ -508,6 +516,7 @@ func (c *Config) applyDefaults() {
 	if c.Retention.Interval == 0 {
 		c.Retention.Interval = 6 * time.Hour
 	}
+	c.Routines.Lifecycle = c.Routines.Lifecycle.WithDefaults()
 	if c.Routines.MaxConcurrentSteps == 0 {
 		c.Routines.MaxConcurrentSteps = 2
 	}

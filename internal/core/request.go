@@ -128,4 +128,8 @@ type TurnResult struct {
 	// Usage is what the work consumed, by model. Additive: absent in results
 	// recorded before it existed.
 	Usage Usage `json:"usage,omitempty"`
+	// Shape is the structure of what the turn did — its acting tool calls in
+	// order — which is how recurring work is recognised without reading what
+	// anybody wrote (adr/013).
+	Shape string `json:"shape,omitempty"`
 }

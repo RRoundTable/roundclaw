@@ -124,6 +124,24 @@ routine_step_runs(run_id, step_id, attempt, kind, status, verdicts, feedback,
                   PK(run_id, step_id, attempt))
 ```
 
+```sql
+routine_cases(routine_id, name, inputs, checks, source, created_at, PK(routine_id, name))
+routine_candidates(id PK AUTOINCREMENT, shape, evidence, state, routine_id, drafts,
+                   reason, created_at, updated_at)
+routine_trials(id PK AUTOINCREMENT, kind, routine_id, version, base_version,
+               candidate_id, cases, state, rule, figures, created_at, finished_at)
+lifecycle_spend(day, routine_id, cost_usd, PK(day, routine_id))
+```
+
+**The lifecycle's records** (adr/013). `routine_versions.promoted` is 1 for a
+version that serves, 0 on trial, -1 rejected; the current version is the newest
+that serves. `routine_cases` are written once, at admission, from the
+examiner's checks — `ON CONFLICT DO NOTHING`, so nothing that changes a routine
+changes what it is measured by. `routines` also carries `unrunnable_since` and
+the last measurement (`measured_at`, `measured_manifest`,
+`independent_passed/total`), which is how a moved dependency is noticed.
+`turns.shape` is what recurrence is mined from.
+
 **Routines keep a frozen contract and append-only versions.** `PutRoutine`
 refuses a changed `contract_hash` (`ErrContractFrozen`) and mints a version only
 when the compiled plan's hash moved; a rollback applies an old plan as a new

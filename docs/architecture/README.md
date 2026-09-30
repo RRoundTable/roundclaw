@@ -103,6 +103,7 @@ cmd/
 internal/
 ├── core/            # Request, Origin, AgentStatus, Usage — shared by every layer, imports nothing local
 ├── routine/         # routines, pure: contract + graph, the admission compiler, completion rules
+├── lifecycle/       # routine lifecycle rules, pure: recurrence, admit, promote, hotspot, archive
 ├── config/          # YAML config, env indirection, chat permission gating
 ├── registry/        # runtime CRUD: agents, schedules, workflows, tools, skills,
 │                    #   versions (agent, tool, skill), tool identity and
@@ -150,6 +151,7 @@ cmd/*  →  adapter  →  registry, store, config, core, routine, temporal/contr
           workflow →  core, routine, registry (types), temporal/activity (method refs), temporal/contract
           registry →  core, routine
           routine  →  stdlib only
+          lifecycle →  stdlib only
           claude   →  core
           core     →  stdlib only
 ```

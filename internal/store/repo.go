@@ -220,10 +220,10 @@ func (s *Store) FinishTurn(ctx context.Context, turnID int64, result core.TurnRe
 	}
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE turns
-		SET result = ?, status = ?, cost_usd = ?, error = ?, finished_at = ?, usage = ?
+		SET result = ?, status = ?, cost_usd = ?, error = ?, finished_at = ?, usage = ?, shape = ?
 		WHERE id = ? AND status = ?`,
 		result.Text, string(result.Status), result.CostUSD, result.ErrorMessage,
-		time.Now().UnixMilli(), string(usageJSON), turnID, string(core.TurnRunning))
+		time.Now().UnixMilli(), string(usageJSON), result.Shape, turnID, string(core.TurnRunning))
 	if err != nil {
 		return fmt.Errorf("finish turn %d: %w", turnID, err)
 	}
@@ -518,4 +518,42 @@ func (s *Store) Prune(ctx context.Context, logsBefore, turnsBefore time.Time) (P
 	p.Keys, _ = res.RowsAffected()
 
 	return p, nil
+}
+
+// ShapedTurn is a finished turn as recurrence mining reads it.
+type ShapedTurn struct {
+	ID           int64
+	Conversation string
+	Request      string
+	Result       string
+	CostUSD      float64
+	Shape        string
+	FinishedAt   time.Time
+}
+
+// SucceededWithShape returns turns that finished done since the given time and
+// recorded a shape, newest first — the evidence recurrence is mined from.
+func (s *Store) SucceededWithShape(ctx context.Context, since time.Time, limit int) ([]ShapedTurn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, conversation, request, COALESCE(result, ''), COALESCE(cost_usd, 0), shape, finished_at
+		FROM turns
+		WHERE status = ? AND shape <> '' AND finished_at >= ?
+		ORDER BY id DESC LIMIT ?`, string(core.TurnDone), since.UnixMilli(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("shaped turns: %w", err)
+	}
+	defer rows.Close()
+	var out []ShapedTurn
+	for rows.Next() {
+		var (
+			t        ShapedTurn
+			finished int64
+		)
+		if err := rows.Scan(&t.ID, &t.Conversation, &t.Request, &t.Result, &t.CostUSD, &t.Shape, &finished); err != nil {
+			return nil, err
+		}
+		t.FinishedAt = time.UnixMilli(finished)
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

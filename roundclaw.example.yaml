@@ -142,6 +142,27 @@ routines:
   # Characters of a delegated result that reach the delegator; the rest is kept
   # as a file in its work area under inbox/results/ (adr/014).
   result_limit: 2000
+  # The agent woken to draft routines from recurring work and fixes for failing
+  # steps (give it the roundclaw-routine-steward skill). Empty drafts nothing;
+  # trials, re-measurement and archival still run.
+  steward: ""
+  # The rules that admit, promote, evolve and archive routines (adr/013). Every
+  # unset value takes ADR-013's default, shown here.
+  lifecycle:
+    min_turns: 5                 # recurring work: successful turns of one shape
+    min_conversations: 2         # ...from this many conversations
+    recurrence_window: 336h      # ...within 14 days
+    min_trial_cases: 3
+    admit_min_pass_rate: 0.8     # and no lower than the work it came from
+    health_window: 20            # a fix is drafted when, of the last 20 runs,
+    health_min_failures: 3       # at least 3 did not pass
+    hotspot_share: 0.5           # and half of those failed at one step
+    remeasure_every: 168h        # and whenever an agent it uses changes
+    promote_max_cost_ratio: 1.1
+    unused_after: 720h           # archived after 30 days unused
+    unrunnable_after: 168h
+    daily_spend_usd: 5           # what the lifecycle itself may spend per day
+    sweep_every: 15m
 
 # How much history each agent keeps.
 #

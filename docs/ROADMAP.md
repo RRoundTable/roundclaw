@@ -39,6 +39,7 @@ really started.
   - Routine steps run on their own queue with their own container budget, so a busy library cannot starve interactive turns (`adr/010`).
   - A step is a function of declared inputs with a declared effect; reruns reuse only what the record can stand in for, report what they could not put back, and never repeat an external effect (`adr/011`).
   - Delegation is judged by standards the judged party did not set — callers' conditions, independent cases — kept apart and never blended; a measurement records hand-offs instead of making them (`adr/012`).
+  - Routines are admitted, promoted and archived by stated rules on recorded figures; agents only draft, and the examiner that writes trial checks never sees the draft (`adr/013`).
 
 ## Next
 

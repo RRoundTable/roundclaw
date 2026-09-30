@@ -36,6 +36,7 @@ really started.
   - A process step is an allowlisted image and a literal argv in a container with only the run's work area mounted, which amends adr/004 rather than bending it (`adr/007`).
   - A routine is compiled at admission — graph, references, authority, bounds, effects — and refused whole with every problem named; a run pins what it resolves in a manifest (`adr/008`).
   - A routine's authority is its owner's, its contract is frozen, and its steps carry no roundclaw credential, so every hand-off is a step of the graph (`adr/009`).
+  - Routine steps run on their own queue with their own container budget, so a busy library cannot starve interactive turns (`adr/010`).
 
 ## Next
 

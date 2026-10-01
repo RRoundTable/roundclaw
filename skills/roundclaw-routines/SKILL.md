@@ -1,6 +1,6 @@
 ---
 name: roundclaw-routines
-description: Hand known work to a roundclaw routine instead of doing it yourself — find a routine in the library, read its record by whose standard it measures, hand work off with what you need back, check a run's trace only when it fails, and submit or improve a routine you own. Use when a request looks like work the fleet has done before, when asked to "use a routine", "delegate to a routine", "run the routine", or when you have solved something that will recur.
+description: Use FIRST, before doing any task yourself — check whether the fleet already has a routine for it, and if one fits, hand the work to it instead of doing it. Covers finding a routine, reading its record by whose standard it measures, handing work off with what you need back, answering from the result when you are woken, checking a trace only when a run fails, and improving a routine you own. Skip only for conversation that is not a task.
 ---
 
 # Handing work to routines
@@ -10,12 +10,14 @@ is for, what it takes, what counts as done, what it may do outside) and a graph
 of steps that carries it out. Handing work to one costs you only its result, so
 spend your own turns on what is new.
 
-You reach routines over the roundclaw API with the token in your container.
+You reach routines over the roundclaw API at `$ROUNDCLAW_URL`, with
+`$ROUNDCLAW_SELF_TOKEN` — the credential roundclaw puts in your container for
+each turn. It names you, so the routines you start are recorded as yours.
 
 ## 1. Look before you do it yourself
 
 ```bash
-curl -s -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" $ROUNDCLAW_URL/v1/routines
+curl -s -H "Authorization: Bearer $ROUNDCLAW_SELF_TOKEN" $ROUNDCLAW_URL/v1/routines
 ```
 
 Each entry gives `intent`, `inputs`, `effects`, whether it is `runnable` (and
@@ -36,7 +38,7 @@ is what the next routine is drawn from.
 ## 2. Hand off, say what you need back, carry on
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" \
+curl -s -X POST -H "Authorization: Bearer $ROUNDCLAW_SELF_TOKEN" \
   $ROUNDCLAW_URL/v1/routines/<id>/runs -d '{
     "inputs": {"repo": "…"},
     "expect": {"must_contain": ["branch:"]},
@@ -53,13 +55,25 @@ curl -s -X POST -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" \
 - **Do not poll.** Status checks put the run's progress into your context,
   which is exactly what handing off was meant to avoid.
 - A routine that acts on the outside world runs only for its owner or a person.
+- Map the request onto the routine's `inputs` exactly as named. If the request
+  does not supply one, do the work yourself rather than guess it.
+
+Then end your turn: say which routine you handed the work to, and the run id.
+
+## When you are woken
+
+The message starts `[routine passed]` or `[routine failed]`, says whether
+**your** conditions were met, and gives the result. Answer the original request
+from it, as if you had done the work — the person asked you, not the routine.
+If your conditions were not met, either redo it with `instead_of` or do the
+work yourself; never present a result that failed your own check as done.
 
 ## 3. When it fails
 
 The wake-up names the failing step and why. Only then read the trace:
 
 ```bash
-curl -s -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" $ROUNDCLAW_URL/v1/routine-runs/<run>
+curl -s -H "Authorization: Bearer $ROUNDCLAW_SELF_TOKEN" $ROUNDCLAW_URL/v1/routine-runs/<run>
 ```
 
 Read the failing step's `verdicts` — which rule did not hold and the detail —

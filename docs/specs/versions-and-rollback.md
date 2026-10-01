@@ -85,6 +85,20 @@ rather than reporting success.
 **Then** it uses the tool and skill versions its old version named, while every
 other agent holding those tools is unaffected.
 
+### Routines are versioned, and a version serves only after its trial
+
+**Given** a [routine](routines.md) that changes
+**When** the change is saved
+**Then** a version is recorded, and it replaces the version in use only after it
+passes its trial. Any version that once served can be returned to at once.
+
+### A run records the versions it resolved
+
+**Given** a routine run
+**When** it starts
+**Then** it records which version of the routine and of every agent, tool and
+image it resolved, so its result can be tied to exactly what produced it.
+
 ## Invariants
 
 - Nothing changes an agent, a tool or a skill without leaving a version behind.

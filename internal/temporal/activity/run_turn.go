@@ -22,6 +22,7 @@ import (
 	"github.com/roundtable/roundclaw/internal/claude"
 	"github.com/roundtable/roundclaw/internal/config"
 	"github.com/roundtable/roundclaw/internal/core"
+	"github.com/roundtable/roundclaw/internal/lifecycle"
 	"github.com/roundtable/roundclaw/internal/registry"
 	"github.com/roundtable/roundclaw/internal/store"
 	"github.com/roundtable/roundclaw/internal/workspace"
@@ -447,6 +448,8 @@ func (a *Activities) stream(
 		final    core.TurnResult
 		sawFinal bool
 		sawInit  bool
+		model    string
+		calls    []lifecycle.ToolCall
 	)
 
 	onEvent := func(ev claude.Event) error {
@@ -454,6 +457,7 @@ func (a *Activities) stream(
 		progress.Events++
 		if ev.Kind == claude.KindToolUse {
 			progress.LastTool = ev.ToolName
+			calls = append(calls, lifecycle.ToolCall{Name: ev.ToolName, Input: ev.ToolInput})
 		}
 		if ev.Kind == claude.KindResult {
 			sawFinal = true
@@ -462,6 +466,8 @@ func (a *Activities) stream(
 				Status:  core.TurnDone,
 				Text:    ev.Text,
 				CostUSD: ev.CostUSD,
+				Usage:   attributeUsage(ev.Usage, model),
+				Shape:   lifecycle.Shape(calls),
 			}
 			if ev.IsError {
 				final.Status = core.TurnError
@@ -470,6 +476,7 @@ func (a *Activities) stream(
 		}
 		if ev.Kind == claude.KindInit {
 			sawInit = true
+			model = ev.Model
 		}
 		if ev.Kind == claude.KindInit && ev.SessionID != "" && ev.SessionID != spec.SessionID {
 			// Not fatal, but it means resume did not attach to the session we
@@ -522,11 +529,24 @@ func (a *Activities) stream(
 				Status:  core.TurnStopped,
 				Text:    final.Text,
 				CostUSD: final.CostUSD,
+				Usage:   final.Usage,
 			}
 			mu.Unlock()
 			return stopped, sawInit, ctx.Err()
 		}
 	}
+}
+
+// attributeUsage names the model behind usage the CLI reported without one,
+// using the model its init event announced.
+func attributeUsage(u core.Usage, model string) core.Usage {
+	m, ok := u.Models[claude.UnattributedModel]
+	if !ok || model == "" {
+		return u
+	}
+	delete(u.Models, claude.UnattributedModel)
+	u.Models[model] = m
+	return u
 }
 
 // finish converts process outcome into a TurnResult. A container that exits

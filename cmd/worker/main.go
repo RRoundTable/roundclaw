@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
@@ -136,9 +137,41 @@ func run(configPath string, log *slog.Logger) error {
 	w.RegisterWorkflow(rcworkflow.RunWorkflow)
 	// Eval runs: a set of cases against one pinned agent version.
 	w.RegisterWorkflow(rcworkflow.EvalRun)
+	// Routines: the one interpreter every routine runs on (adr/006).
+	w.RegisterWorkflow(rcworkflow.RoutineRun)
+	// The routine lifecycle: trials, and the loop that sweeps for recurring
+	// work, failing steps, due measurements and routines to archive (adr/013).
+	w.RegisterWorkflow(rcworkflow.RoutineTrial)
+	w.RegisterWorkflow(rcworkflow.RoutineLifecycle)
 	// Registering the struct exposes every exported method as an activity,
 	// which is why Activities carries no exported non-activity methods.
-	w.RegisterActivity(activity.NewActivities(cfg, stores, reg, discord, slackSend, tc))
+	acts := activity.NewActivities(cfg, stores, reg, discord, slackSend, tc)
+	w.RegisterActivity(acts)
+
+	// Routine steps run on their own queue with their own container budget, so a
+	// busy routine library cannot take the slots interactive turns and deliveries
+	// need (adr/010). The host runs up to the sum of the two caps.
+	steps := worker.New(tc, cfg.RoutineStepQueue(), worker.Options{
+		MaxHeartbeatThrottleInterval:       time.Second,
+		MaxConcurrentActivityExecutionSize: cfg.Routines.MaxConcurrentSteps,
+	})
+	steps.RegisterActivity(acts)
+	if err := steps.Start(); err != nil {
+		return fmt.Errorf("start routine step worker: %w", err)
+	}
+	defer steps.Stop()
+
+	// One lifecycle loop per deployment. Starting it at every boot is safe: the
+	// fixed ID and USE_EXISTING leave a running loop alone.
+	if _, err := tc.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{
+		ID:                       rcworkflow.RoutineLifecycleID,
+		TaskQueue:                cfg.Temporal.TaskQueue,
+		WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+	}, rcworkflow.RoutineLifecycle, rcworkflow.RoutineLifecycleInput{
+		StepQueue: cfg.RoutineStepQueue(), Every: cfg.Routines.Lifecycle.SweepEvery,
+	}); err != nil {
+		return fmt.Errorf("start the routine lifecycle: %w", err)
+	}
 
 	// Cancelled when the worker stops, so a sweep cannot outlive the process.
 	retentionCtx, stopRetention := context.WithCancel(context.Background())

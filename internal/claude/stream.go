@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/roundtable/roundclaw/internal/core"
 )
 
 // EventKind is the decoded shape of one stream-json line, flattened to what
@@ -58,6 +60,12 @@ type Event struct {
 	// Terminal fields for KindResult.
 	CostUSD float64
 	IsError bool
+	// Usage is the per-model consumption the CLI reports on its result event.
+	Usage core.Usage
+
+	// Model is set on KindInit: the model the CLI actually runs, which can
+	// differ from the one configured.
+	Model string
 
 	// Raw is the original line, kept for KindOther so nothing is silently lost.
 	Raw string
@@ -74,6 +82,7 @@ type wire struct {
 	Type      string `json:"type"`
 	Subtype   string `json:"subtype"`
 	SessionID string `json:"session_id"`
+	Model     string `json:"model"`
 
 	Message *struct {
 		Content []struct {
@@ -86,9 +95,24 @@ type wire struct {
 	} `json:"message"`
 
 	// result
-	Result       string  `json:"result"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	IsError      bool    `json:"is_error"`
+	Result        string  `json:"result"`
+	TotalCostUSD  float64 `json:"total_cost_usd"`
+	IsError       bool    `json:"is_error"`
+	NumTurns      int     `json:"num_turns"`
+	DurationAPIMS int64   `json:"duration_api_ms"`
+	Usage         *struct {
+		InputTokens              int64 `json:"input_tokens"`
+		OutputTokens             int64 `json:"output_tokens"`
+		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	} `json:"usage"`
+	ModelUsage map[string]struct {
+		InputTokens              int64   `json:"inputTokens"`
+		OutputTokens             int64   `json:"outputTokens"`
+		CacheReadInputTokens     int64   `json:"cacheReadInputTokens"`
+		CacheCreationInputTokens int64   `json:"cacheCreationInputTokens"`
+		CostUSD                  float64 `json:"costUSD"`
+	} `json:"modelUsage"`
 
 	// api_retry
 	Attempt    int    `json:"attempt"`
@@ -120,7 +144,7 @@ func Decode(line []byte) ([]Event, error) {
 	case "system":
 		switch w.Subtype {
 		case "init":
-			return []Event{{Kind: KindInit, SessionID: w.SessionID, Raw: trimmed}}, nil
+			return []Event{{Kind: KindInit, SessionID: w.SessionID, Model: w.Model, Raw: trimmed}}, nil
 		case "api_retry":
 			return []Event{{
 				Kind:         KindAPIRetry,
@@ -177,11 +201,46 @@ func Decode(line []byte) ([]Event, error) {
 			Text:      w.Result,
 			CostUSD:   w.TotalCostUSD,
 			IsError:   w.IsError,
+			Usage:     resultUsage(w),
 			Raw:       trimmed,
 		}}, nil
 	}
 
 	return []Event{{Kind: KindOther, SessionID: w.SessionID, Raw: trimmed}}, nil
+}
+
+// UnattributedModel keys usage the CLI reported without naming a model. The
+// caller relabels it with the model the init event named, when it saw one.
+const UnattributedModel = "unattributed"
+
+// resultUsage reads the per-model breakdown when the CLI gives one, and falls
+// back to the aggregate counters under UnattributedModel when it does not, so
+// an older CLI still yields tokens rather than nothing.
+func resultUsage(w wire) core.Usage {
+	u := core.Usage{Turns: w.NumTurns, APIMS: w.DurationAPIMS}
+	if len(w.ModelUsage) > 0 {
+		u.Models = make(map[string]core.ModelUsage, len(w.ModelUsage))
+		for name, m := range w.ModelUsage {
+			u.Models[name] = core.ModelUsage{
+				InputTokens:      m.InputTokens,
+				OutputTokens:     m.OutputTokens,
+				CacheReadTokens:  m.CacheReadInputTokens,
+				CacheWriteTokens: m.CacheCreationInputTokens,
+				CostUSD:          m.CostUSD,
+			}
+		}
+		return u
+	}
+	if w.Usage != nil {
+		u.Models = map[string]core.ModelUsage{UnattributedModel: {
+			InputTokens:      w.Usage.InputTokens,
+			OutputTokens:     w.Usage.OutputTokens,
+			CacheReadTokens:  w.Usage.CacheReadInputTokens,
+			CacheWriteTokens: w.Usage.CacheCreationInputTokens,
+			CostUSD:          w.TotalCostUSD,
+		}}
+	}
+	return u
 }
 
 func preview(s string) string {

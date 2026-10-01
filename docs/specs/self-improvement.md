@@ -95,6 +95,14 @@ An agent whose change vanished with no record would simply make it again.
 Applying a change never requires reading a credential back, so nothing here widens
 what an agent can see.
 
+### An agent's own routines improve the same way, except their promise
+
+**Given** an agent that owns a [routine](routines.md)
+**When** it changes how the routine works
+**Then** the change is recorded as a version naming the agent, and it serves once
+it passes the routine's trial. What the routine promises cannot be changed by the
+agent at all.
+
 ## Invariants
 
 - Every self-made change leaves a version, and every version can be returned to.

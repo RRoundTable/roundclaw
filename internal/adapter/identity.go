@@ -121,6 +121,20 @@ func selfAllowed(agentID, method, path string) bool {
 		}
 		return false
 
+	case "routine-candidates":
+		// Drafting from recurring work; the handler admits only the steward.
+		return method == http.MethodPost && len(segs) == 4 && segs[3] == "draft"
+
+	case "routines":
+		// Submitting a routine, changing one, rolling it back or archiving it.
+		// Shape only: the handler bounds the subject to routines this agent
+		// owns (adr/009), as the tool routes are bounded to tools it holds.
+		switch method {
+		case http.MethodPost, http.MethodPut:
+			return true
+		}
+		return false
+
 	case "tools", "skills":
 		// Shape only; the handler decides whether this agent holds it. Deleting
 		// a registry row is not here: removing a shared tool for everybody is

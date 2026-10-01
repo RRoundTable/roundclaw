@@ -91,6 +91,7 @@ func (h *HTTP) Handler() http.Handler {
 	h.registerScheduleRoutes(mux)
 	h.registerSecretRoutes(mux)
 	h.registerWorkflowRoutes(mux)
+	h.registerRoutineRoutes(mux)
 	h.registerToolRoutes(mux)
 	h.registerSkillRoutes(mux)
 	h.registerGrantVersionRoutes(mux)
@@ -378,15 +379,17 @@ func (h *HTTP) getStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type turnResponse struct {
-	AgentID    string  `json:"agent_id"`
-	TurnID     int64   `json:"turn_id"`
-	Status     string  `json:"status"`
-	Request    string  `json:"request"`
-	Result     string  `json:"result,omitempty"`
-	Error      string  `json:"error,omitempty"`
-	CostUSD    float64 `json:"cost_usd"`
-	QueuedAt   string  `json:"queued_at"`
-	FinishedAt string  `json:"finished_at,omitempty"`
+	AgentID string  `json:"agent_id"`
+	TurnID  int64   `json:"turn_id"`
+	Status  string  `json:"status"`
+	Request string  `json:"request"`
+	Result  string  `json:"result,omitempty"`
+	Error   string  `json:"error,omitempty"`
+	CostUSD float64 `json:"cost_usd"`
+	// Usage is what the turn consumed, by model: the tokens behind CostUSD.
+	Usage      core.Usage `json:"usage,omitzero"`
+	QueuedAt   string     `json:"queued_at"`
+	FinishedAt string     `json:"finished_at,omitempty"`
 }
 
 func (h *HTTP) getTurn(w http.ResponseWriter, r *http.Request) {
@@ -420,6 +423,7 @@ func (h *HTTP) getTurn(w http.ResponseWriter, r *http.Request) {
 		Result:   turn.Result,
 		Error:    turn.Error,
 		CostUSD:  turn.CostUSD,
+		Usage:    turn.Usage,
 		QueuedAt: turn.QueuedAt.UTC().Format(time.RFC3339),
 	}
 	if !turn.FinishedAt.IsZero() {
@@ -599,6 +603,10 @@ func forbiddenReason(id Identity) string {
 // See registerScheduleRoutes.
 func delegateAllowed(method, path string) bool {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) >= 2 && segs[0] == "v1" && (segs[1] == "routines" || segs[1] == "routine-runs" ||
+		segs[1] == "routine-trials" || segs[1] == "routine-candidates") {
+		return routineDelegateAllowed(method, segs)
+	}
 	if len(segs) < 2 || segs[0] != "v1" || segs[1] != "agents" {
 		return false
 	}
@@ -639,6 +647,26 @@ func delegateAllowed(method, path string) bool {
 	case http.MethodPut, http.MethodDelete:
 		// /v1/agents/{id}/schedules/{s}               define or drop its own
 		return len(segs) == 5 && segs[3] == "schedules"
+	}
+	return false
+}
+
+// routineDelegateAllowed is the routine surface an agent's container reaches:
+// it may read the library and any run's trace, hand work to a routine, and stop
+// a run. Changing a routine is not here; a self credential adds that for the
+// routines its agent owns (selfAllowed), and running one that acts on the
+// outside world is refused in the handler unless the caller owns it.
+func routineDelegateAllowed(method string, segs []string) bool {
+	switch method {
+	case http.MethodGet:
+		return true
+	case http.MethodPost:
+		switch {
+		case segs[1] == "routines" && len(segs) == 4 && segs[3] == "runs":
+			return true
+		case segs[1] == "routine-runs" && len(segs) == 4 && segs[3] == "stop":
+			return true
+		}
 	}
 	return false
 }

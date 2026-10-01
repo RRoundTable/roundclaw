@@ -70,7 +70,7 @@ func (s *Store) Turns(ctx context.Context, f TurnFilter) ([]Turn, error) {
 		args = append(args, *f.Conversation)
 	}
 
-	q := `SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+	q := `SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at, usage
 	      FROM turns`
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")

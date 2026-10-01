@@ -38,6 +38,8 @@ type Turn struct {
 	Conversation string
 	QueuedAt     time.Time
 	FinishedAt   time.Time
+	// Usage is what the turn consumed, by model — the facts behind CostUSD.
+	Usage core.Usage
 }
 
 // LogEntry is one live_logs row.
@@ -212,12 +214,16 @@ func (s *Store) TurnAttachments(ctx context.Context, turnID int64) ([]string, er
 // already reached a terminal state keeps its first outcome, so a delivery retry
 // cannot rewrite a stopped turn into a done one.
 func (s *Store) FinishTurn(ctx context.Context, turnID int64, result core.TurnResult) error {
-	_, err := s.db.ExecContext(ctx, `
+	usageJSON, err := json.Marshal(result.Usage)
+	if err != nil {
+		return fmt.Errorf("encode usage for turn %d: %w", turnID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		UPDATE turns
-		SET result = ?, status = ?, cost_usd = ?, error = ?, finished_at = ?
+		SET result = ?, status = ?, cost_usd = ?, error = ?, finished_at = ?, usage = ?, shape = ?
 		WHERE id = ? AND status = ?`,
 		result.Text, string(result.Status), result.CostUSD, result.ErrorMessage,
-		time.Now().UnixMilli(), turnID, string(core.TurnRunning))
+		time.Now().UnixMilli(), string(usageJSON), result.Shape, turnID, string(core.TurnRunning))
 	if err != nil {
 		return fmt.Errorf("finish turn %d: %w", turnID, err)
 	}
@@ -235,12 +241,13 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 		status     string
 		queuedAt   int64
 		finishedAt sql.NullInt64
+		usageJSON  string
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at, usage
 		FROM turns WHERE id = ?`, turnID).
 		Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg,
-			&t.Conversation, &queuedAt, &finishedAt)
+			&t.Conversation, &queuedAt, &finishedAt, &usageJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}
@@ -256,6 +263,9 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 	if finishedAt.Valid {
 		t.FinishedAt = time.UnixMilli(finishedAt.Int64)
 	}
+	if err := json.Unmarshal([]byte(usageJSON), &t.Usage); err != nil {
+		return t, fmt.Errorf("decode usage for turn %d: %w", turnID, err)
+	}
 	if t.Origin, err = core.DecodeOrigin(originJSON); err != nil {
 		return t, fmt.Errorf("turn %d: %w", turnID, err)
 	}
@@ -266,7 +276,7 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 // conversation. Used for display and for spend accounting.
 func (s *Store) RecentTurns(ctx context.Context, limit int) ([]Turn, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at, usage
 		FROM turns ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("recent turns: %w", err)
@@ -290,10 +300,14 @@ func scanTurns(rows *sql.Rows) ([]Turn, error) {
 			status     string
 			queuedAt   int64
 			finishedAt sql.NullInt64
+			usageJSON  string
 		)
 		if err := rows.Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg,
-			&t.Conversation, &queuedAt, &finishedAt); err != nil {
+			&t.Conversation, &queuedAt, &finishedAt, &usageJSON); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
+		}
+		if err := json.Unmarshal([]byte(usageJSON), &t.Usage); err != nil {
+			return nil, fmt.Errorf("decode usage for turn %d: %w", t.ID, err)
 		}
 		t.Result = result.String
 		t.Status = core.TurnStatus(status)
@@ -317,7 +331,7 @@ func scanTurns(rows *sql.Rows) ([]Turn, error) {
 // would hand the agent a conversation it never had.
 func (s *Store) RecentTurnsIn(ctx context.Context, conversation string, limit int) ([]Turn, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at, usage
 		FROM turns WHERE conversation = ? ORDER BY id DESC LIMIT ?`, conversation, limit)
 	if err != nil {
 		return nil, fmt.Errorf("recent turns in %q: %w", conversation, err)
@@ -508,4 +522,42 @@ func (s *Store) Prune(ctx context.Context, logsBefore, turnsBefore time.Time) (P
 	p.Keys, _ = res.RowsAffected()
 
 	return p, nil
+}
+
+// ShapedTurn is a finished turn as recurrence mining reads it.
+type ShapedTurn struct {
+	ID           int64
+	Conversation string
+	Request      string
+	Result       string
+	CostUSD      float64
+	Shape        string
+	FinishedAt   time.Time
+}
+
+// SucceededWithShape returns turns that finished done since the given time and
+// recorded a shape, newest first — the evidence recurrence is mined from.
+func (s *Store) SucceededWithShape(ctx context.Context, since time.Time, limit int) ([]ShapedTurn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, conversation, request, COALESCE(result, ''), COALESCE(cost_usd, 0), shape, finished_at
+		FROM turns
+		WHERE status = ? AND shape <> '' AND finished_at >= ?
+		ORDER BY id DESC LIMIT ?`, string(core.TurnDone), since.UnixMilli(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("shaped turns: %w", err)
+	}
+	defer rows.Close()
+	var out []ShapedTurn
+	for rows.Next() {
+		var (
+			t        ShapedTurn
+			finished int64
+		)
+		if err := rows.Scan(&t.ID, &t.Conversation, &t.Request, &t.Result, &t.CostUSD, &t.Shape, &finished); err != nil {
+			return nil, err
+		}
+		t.FinishedAt = time.UnixMilli(finished)
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

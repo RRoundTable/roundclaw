@@ -101,7 +101,9 @@ cmd/
 ├── worker/          # Temporal worker: registers workflows + activities, runs retention
 └── gateway/         # Discord + Slack listeners, HTTP server, direct SQLite reads
 internal/
-├── core/            # Request, Origin, AgentStatus — shared by every layer, imports nothing local
+├── core/            # Request, Origin, AgentStatus, Usage — shared by every layer, imports nothing local
+├── routine/         # routines, pure: contract + graph, the admission compiler, completion rules
+├── lifecycle/       # routine lifecycle rules, pure: recurrence, admit, promote, hotspot, archive
 ├── config/          # YAML config, env indirection, chat permission gating
 ├── registry/        # runtime CRUD: agents, schedules, workflows, tools, skills,
 │                    #   versions (agent, tool, skill), tool identity and
@@ -112,8 +114,9 @@ internal/
 │                    #   limits.go, proposals.go (the shared apply path)
 └── temporal/
     ├── contract/    # workflow IDs, signal/query names, activity input types (leaf package)
-    ├── workflow/    # SubAgent, ScheduledRequest, RunWorkflow, EvalRun — deterministic, no I/O
-    └── activity/    # RunClaudeTurn, DeliverResponse, workspace resolution, eval cases
+    ├── workflow/    # SubAgent, ScheduledRequest, RunWorkflow, EvalRun, RoutineRun — deterministic, no I/O
+    └── activity/    # RunClaudeTurn, DeliverResponse, workspace resolution, eval cases, routine steps
+e2e/                 # (build tag e2e) routines end to end on a Temporal dev server
 container/           # the agent image (claude CLI) + a scripted fake for tests
 skills/              # Claude Code skills roundclaw ships: how to manage and review a fleet
 Dockerfile           # roundclaw's own binaries
@@ -143,9 +146,12 @@ features; no code knows either name.
 The dependency direction is one-way, from edges inward:
 
 ```
-cmd/*  →  adapter  →  registry, store, config, core, temporal/contract
-          activity →  registry, store, config, claude, core, temporal/contract
-          workflow →  core, temporal/contract          (nothing else)
+cmd/*  →  adapter  →  registry, store, config, core, routine, temporal/contract, temporal/workflow
+          activity →  registry, store, config, claude, core, routine, temporal/contract
+          workflow →  core, routine, registry (types), temporal/activity (method refs), temporal/contract
+          registry →  core, routine
+          routine  →  stdlib only
+          lifecycle →  stdlib only
           claude   →  core
           core     →  stdlib only
 ```
@@ -157,9 +163,13 @@ on the leaf instead of on each other.
 ## Import rules
 
 - `core/` imports no other roundclaw package. Everything may import it.
-- `temporal/workflow/` may import only `core` and `temporal/contract`. It must
-  not import `store`, `registry`, `config`, or anything else that does I/O —
-  workflow code is replayed and must stay deterministic.
+- `routine/` imports only the standard library and does no I/O: the compiler
+  learns about the fleet through its `Resolver` interface, so the interpreter
+  can call it during replay.
+- `temporal/workflow/` must not *call* anything that does I/O — workflow code is
+  replayed and must stay deterministic. In practice it imports `activity` for
+  method references and `registry` for record types, and calls neither's I/O;
+  `routine` is pure and is what the interpreter's control flow is decided by.
 - `temporal/activity/` may import anything except `temporal/workflow`.
 - `adapter/` may import `registry`, `store`, `config`, `core`, `contract`. It
   must not import `temporal/activity` or `temporal/workflow`; it reaches the
@@ -197,6 +207,11 @@ on the leaf instead of on each other.
   Tools and skills version the same way, and their versions record a digest of
   what the definition pointed at as well as the definition — a row can stand
   still while the directory or service behind it moves (`adr/005`).
+- **One interpreter, graphs as data.** Every routine runs on `RoutineRun`,
+  which loads the plan pinned by the run's version; a new routine or version is
+  a registry row, never a deploy. See [orchestration.md](orchestration.md#routinerun--one-interpreter-for-every-routine).
+- **Cost is read, not computed.** The CLI's reported cost is recorded as given,
+  with the model and tokens per model beside it; roundclaw keeps no price table.
 - **Verdicts are computed, not summarised.** Whether a change helped is decided
   by `registry.compareRuns` from case-level pass/fail, not by a model reading
   outputs. The reviewer is itself a model, and forming an impression from outputs

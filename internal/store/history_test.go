@@ -139,3 +139,24 @@ func TestTurnsFilterBySince(t *testing.T) {
 		t.Errorf("since=-1h returned %d turns, want 2", len(got))
 	}
 }
+
+// A listed turn carries what it consumed, as a fetched one does: the tokens are
+// the facts behind the cost, and a comparison that reads history needs them.
+func TestTurnsCarryUsage(t *testing.T) {
+	s := newTestStore(t)
+	id, _, err := s.CreateTurn(t.Context(), NewTurn{Request: "work", Origin: core.HTTPPollOrigin()})
+	if err != nil {
+		t.Fatalf("CreateTurn: %v", err)
+	}
+	usage := core.Usage{Models: map[string]core.ModelUsage{"m": {InputTokens: 3, OutputTokens: 5, CostUSD: 0.01}}, Turns: 2}
+	if err := s.FinishTurn(t.Context(), id, core.TurnResult{TurnID: id, Status: core.TurnDone, Text: "ok", Usage: usage}); err != nil {
+		t.Fatalf("FinishTurn: %v", err)
+	}
+	got, err := s.Turns(t.Context(), TurnFilter{})
+	if err != nil {
+		t.Fatalf("Turns: %v", err)
+	}
+	if len(got) != 1 || got[0].Usage.Tokens() != 8 || got[0].Usage.Turns != 2 {
+		t.Errorf("usage = %+v, want 8 tokens over 2 round-trips", got)
+	}
+}

@@ -44,7 +44,7 @@ routine's inputs:
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $ROUNDCLAW_SELF_TOKEN" \
-  $ROUNDCLAW_API/v1/routine-candidates/<N>/draft -d '{
+  $ROUNDCLAW_URL/v1/routine-candidates/<N>/draft -d '{
     "routine": {"id": "...", "contract": {...}, "steps": [...]},
     "cases": [{"agent": "dev", "turn_id": 123, "inputs": {"repo": "..."}}, ...]
   }'

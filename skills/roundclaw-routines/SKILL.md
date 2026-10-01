@@ -15,7 +15,7 @@ You reach routines over the roundclaw API with the token in your container.
 ## 1. Look before you do it yourself
 
 ```bash
-curl -s -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" $ROUNDCLAW_API/v1/routines
+curl -s -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" $ROUNDCLAW_URL/v1/routines
 ```
 
 Each entry gives `intent`, `inputs`, `effects`, whether it is `runnable` (and
@@ -37,7 +37,7 @@ is what the next routine is drawn from.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" \
-  $ROUNDCLAW_API/v1/routines/<id>/runs -d '{
+  $ROUNDCLAW_URL/v1/routines/<id>/runs -d '{
     "inputs": {"repo": "…"},
     "expect": {"must_contain": ["branch:"]},
     "notify": {"agent": "'$ROUNDCLAW_AGENT_ID'", "conversation": "'$ROUNDCLAW_CONVERSATION_ID'"}
@@ -59,7 +59,7 @@ curl -s -X POST -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" \
 The wake-up names the failing step and why. Only then read the trace:
 
 ```bash
-curl -s -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" $ROUNDCLAW_API/v1/routine-runs/<run>
+curl -s -H "Authorization: Bearer $ROUNDCLAW_API_TOKEN" $ROUNDCLAW_URL/v1/routine-runs/<run>
 ```
 
 Read the failing step's `verdicts` — which rule did not hold and the detail —

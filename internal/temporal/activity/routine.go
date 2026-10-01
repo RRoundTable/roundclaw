@@ -126,7 +126,7 @@ func (a *Activities) RunRoutineStep(ctx context.Context, in RoutineStepInput) (R
 		row.Status = registry.RunError
 		out.Status, out.Reason = registry.RunError, row.Error
 	default:
-		out.Verdicts = routine.Check(in.Step.Done, row.Output, exitCode)
+		out.Verdicts = routine.Check(in.Step.Done.Render(in.Inputs, in.Outputs), row.Output, exitCode)
 		row.Verdicts = out.Verdicts
 		if routine.Held(out.Verdicts) {
 			row.Status, out.Status = registry.RunPassed, registry.RunPassed
@@ -181,10 +181,11 @@ func stepPrompt(in RoutineStepInput) string {
 		b.WriteString("Your goal:\n")
 		b.WriteString(routine.Render(in.Step.Goal, in.Inputs, in.Outputs))
 		b.WriteString("\n\nChoose your own method. The step is done only when all of these hold for your final message:\n")
-		for _, want := range in.Step.Done.MustContain {
+		done := in.Step.Done.Render(in.Inputs, in.Outputs)
+		for _, want := range done.MustContain {
 			fmt.Fprintf(&b, "- it contains %q\n", want)
 		}
-		for _, bad := range in.Step.Done.MustNotContain {
+		for _, bad := range done.MustNotContain {
 			fmt.Fprintf(&b, "- it does not contain %q\n", bad)
 		}
 	}

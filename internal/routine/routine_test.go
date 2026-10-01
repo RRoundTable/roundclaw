@@ -79,12 +79,14 @@ func TestCompileRefuses(t *testing.T) {
 		mutate func(*Source)
 		want   string
 	}{
-		"missing intent":     {func(s *Source) { s.Contract.Intent = "" }, "intent"},
-		"unknown agent":      {func(s *Source) { s.Steps[1].Agent = "ghost" }, `agent "ghost"`},
-		"unknown dependency": {func(s *Source) { s.Steps[1].After = []string{"nope"} }, `"nope"`},
-		"cycle":              {func(s *Source) { s.Steps[0].After = []string{"fix"} }, "cycle"},
-		"open step, no done": {func(s *Source) { s.Steps[1].Done = Condition{} }, "how to tell it is done"},
-		"unbound input":      {func(s *Source) { s.Steps[1].Goal = "{{inputs.other}}" }, "inputs.other"},
+		"missing intent":           {func(s *Source) { s.Contract.Intent = "" }, "intent"},
+		"unknown agent":            {func(s *Source) { s.Steps[1].Agent = "ghost" }, `agent "ghost"`},
+		"unknown dependency":       {func(s *Source) { s.Steps[1].After = []string{"nope"} }, `"nope"`},
+		"cycle":                    {func(s *Source) { s.Steps[0].After = []string{"fix"} }, "cycle"},
+		"open step, no done":       {func(s *Source) { s.Steps[1].Done = Condition{} }, "how to tell it is done"},
+		"unbound input":            {func(s *Source) { s.Steps[1].Goal = "{{inputs.other}}" }, "inputs.other"},
+		"unbound input in done":    {func(s *Source) { s.Steps[1].Done.MustContain = []string{"{{inputs.other}}"} }, "inputs.other"},
+		"binding in contract done": {func(s *Source) { s.Contract.Done.MustContain = []string{"{{inputs.repo}}"} }, "cannot hold a binding"},
 		"non-upstream binding": {func(s *Source) {
 			s.Steps[0].Argv = []string{"x"}
 			s.Steps[1].Goal = "ok"
@@ -136,6 +138,19 @@ func TestRenderSubstitutesBindings(t *testing.T) {
 	out := Render("repo {{inputs.repo}} said {{ steps.vet.output }}",
 		map[string]string{"repo": "r1"}, map[string]string{"vet": "3 issues"})
 	assert.Equal(t, "repo r1 said 3 issues", out)
+}
+
+// A step's condition names what the run was given, as its instruction does.
+// Checked literally, "{{inputs.topic}}: 5 words" fails every right answer and
+// tells the retry to echo the template back — which is what a live trial saw.
+func TestConditionRenderSubstitutesBindings(t *testing.T) {
+	c := Condition{MustContain: []string{"{{inputs.topic}}: 5 words"}, MustNotContain: []string{"{{steps.vet.output}}"}, ExitCode: exit(0)}
+	r := c.Render(map[string]string{"topic": "apples"}, map[string]string{"vet": "broken"})
+	assert.Equal(t, []string{"apples: 5 words"}, r.MustContain)
+	assert.Equal(t, []string{"broken"}, r.MustNotContain)
+	assert.Equal(t, c.ExitCode, r.ExitCode)
+	assert.True(t, Held(Check(r, "apples: 5 words", exit(0))))
+	assert.False(t, Held(Check(r, "{{inputs.topic}}: 5 words", exit(0))))
 }
 
 func TestCheckDecidesByRuleAndExplainsShortfall(t *testing.T) {

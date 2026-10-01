@@ -62,6 +62,19 @@ type Condition struct {
 	ExitCode *int `json:"exit_code,omitempty"`
 }
 
+// Render substitutes bindings in the condition's text, so a step's condition
+// can name what this run was given, as its instruction does.
+func (c Condition) Render(inputs, outputs map[string]string) Condition {
+	r := Condition{ExitCode: c.ExitCode}
+	for _, t := range c.MustContain {
+		r.MustContain = append(r.MustContain, Render(t, inputs, outputs))
+	}
+	for _, t := range c.MustNotContain {
+		r.MustNotContain = append(r.MustNotContain, Render(t, inputs, outputs))
+	}
+	return r
+}
+
 // Empty reports whether the condition states nothing.
 func (c Condition) Empty() bool {
 	return len(c.MustContain) == 0 && len(c.MustNotContain) == 0 && c.ExitCode == nil
@@ -274,6 +287,13 @@ func Compile(src Source, r Resolver, caps Caps) (Plan, error) {
 				}
 			}
 		}
+		// The contract's condition is checked in the interpreter, which renders
+		// nothing; a binding there would be checked as literal text.
+		for _, text := range append(append([]string{}, src.Contract.Done.MustContain...), src.Contract.Done.MustNotContain...) {
+			if bindingPattern.MatchString(text) {
+				add("", "the contract's done condition %q cannot hold a binding", text)
+			}
+		}
 		checkSelfContainment(src, r, add)
 	}
 
@@ -390,7 +410,9 @@ func orNone(e Effect) Effect {
 }
 
 // bindable is every text field a binding may appear in.
-func bindable(s Step) []string { return []string{s.Task, s.Goal} }
+func bindable(s Step) []string {
+	return append(append([]string{s.Task, s.Goal}, s.Done.MustContain...), s.Done.MustNotContain...)
+}
 
 // topoOrder returns the steps in an order where every step follows what it
 // waits for, ties broken by position in the source. The tie-break is what keeps

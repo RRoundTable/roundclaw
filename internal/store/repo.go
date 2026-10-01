@@ -276,7 +276,7 @@ func (s *Store) GetTurn(ctx context.Context, turnID int64) (Turn, error) {
 // conversation. Used for display and for spend accounting.
 func (s *Store) RecentTurns(ctx context.Context, limit int) ([]Turn, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at, usage
 		FROM turns ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("recent turns: %w", err)
@@ -300,10 +300,14 @@ func scanTurns(rows *sql.Rows) ([]Turn, error) {
 			status     string
 			queuedAt   int64
 			finishedAt sql.NullInt64
+			usageJSON  string
 		)
 		if err := rows.Scan(&t.ID, &t.Request, &result, &status, &cost, &originJSON, &errMsg,
-			&t.Conversation, &queuedAt, &finishedAt); err != nil {
+			&t.Conversation, &queuedAt, &finishedAt, &usageJSON); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
+		}
+		if err := json.Unmarshal([]byte(usageJSON), &t.Usage); err != nil {
+			return nil, fmt.Errorf("decode usage for turn %d: %w", t.ID, err)
 		}
 		t.Result = result.String
 		t.Status = core.TurnStatus(status)
@@ -327,7 +331,7 @@ func scanTurns(rows *sql.Rows) ([]Turn, error) {
 // would hand the agent a conversation it never had.
 func (s *Store) RecentTurnsIn(ctx context.Context, conversation string, limit int) ([]Turn, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at
+		SELECT id, request, result, status, cost_usd, origin, error, conversation, queued_at, finished_at, usage
 		FROM turns WHERE conversation = ? ORDER BY id DESC LIMIT ?`, conversation, limit)
 	if err != nil {
 		return nil, fmt.Errorf("recent turns in %q: %w", conversation, err)

@@ -379,15 +379,17 @@ func (h *HTTP) getStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type turnResponse struct {
-	AgentID    string  `json:"agent_id"`
-	TurnID     int64   `json:"turn_id"`
-	Status     string  `json:"status"`
-	Request    string  `json:"request"`
-	Result     string  `json:"result,omitempty"`
-	Error      string  `json:"error,omitempty"`
-	CostUSD    float64 `json:"cost_usd"`
-	QueuedAt   string  `json:"queued_at"`
-	FinishedAt string  `json:"finished_at,omitempty"`
+	AgentID string  `json:"agent_id"`
+	TurnID  int64   `json:"turn_id"`
+	Status  string  `json:"status"`
+	Request string  `json:"request"`
+	Result  string  `json:"result,omitempty"`
+	Error   string  `json:"error,omitempty"`
+	CostUSD float64 `json:"cost_usd"`
+	// Usage is what the turn consumed, by model: the tokens behind CostUSD.
+	Usage      core.Usage `json:"usage,omitzero"`
+	QueuedAt   string     `json:"queued_at"`
+	FinishedAt string     `json:"finished_at,omitempty"`
 }
 
 func (h *HTTP) getTurn(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +423,7 @@ func (h *HTTP) getTurn(w http.ResponseWriter, r *http.Request) {
 		Result:   turn.Result,
 		Error:    turn.Error,
 		CostUSD:  turn.CostUSD,
+		Usage:    turn.Usage,
 		QueuedAt: turn.QueuedAt.UTC().Format(time.RFC3339),
 	}
 	if !turn.FinishedAt.IsZero() {

@@ -33,16 +33,18 @@ func (h *HTTP) registerHistoryRoutes(mux *http.ServeMux) {
 const historyPreview = 600
 
 type historyTurn struct {
-	TurnID       int64   `json:"turn_id"`
-	Status       string  `json:"status"`
-	Request      string  `json:"request"`
-	Result       string  `json:"result,omitempty"`
-	Error        string  `json:"error,omitempty"`
-	CostUSD      float64 `json:"cost_usd"`
-	Origin       string  `json:"origin,omitempty"`
-	Conversation string  `json:"conversation,omitempty"`
-	QueuedAt     string  `json:"queued_at"`
-	FinishedAt   string  `json:"finished_at,omitempty"`
+	TurnID  int64   `json:"turn_id"`
+	Status  string  `json:"status"`
+	Request string  `json:"request"`
+	Result  string  `json:"result,omitempty"`
+	Error   string  `json:"error,omitempty"`
+	CostUSD float64 `json:"cost_usd"`
+	// Usage is what the turn consumed, by model: the tokens behind CostUSD.
+	Usage        core.Usage `json:"usage,omitzero"`
+	Origin       string     `json:"origin,omitempty"`
+	Conversation string     `json:"conversation,omitempty"`
+	QueuedAt     string     `json:"queued_at"`
+	FinishedAt   string     `json:"finished_at,omitempty"`
 	// Truncated says the request or result was cut; fetch the turn itself, or
 	// pass ?full=true, to read the whole thing.
 	Truncated bool `json:"truncated,omitempty"`
@@ -80,6 +82,7 @@ func (h *HTTP) listTurns(w http.ResponseWriter, r *http.Request) {
 			Result:       t.Result,
 			Error:        t.Error,
 			CostUSD:      t.CostUSD,
+			Usage:        t.Usage,
 			Origin:       string(t.Origin.Type),
 			Conversation: t.Conversation,
 			QueuedAt:     t.QueuedAt.UTC().Format(time.RFC3339),

@@ -202,8 +202,10 @@ retention:
 # the mode from whichever credential is set.
 router:
   enabled: false
-  # A small fast model — this is a classification, not the work itself.
-  model: haiku
+  # The model for short calls that are not the work itself: this router, the
+  # eval judge and the routine examiner. Haiku proved too small for the
+  # examiner — it ran away and cut its answers off — so the default is Sonnet.
+  model: claude-sonnet-5-5
   timeout: 30s
   # Restrict routing to these channels. Empty means every unbound channel the
   # bot can see, which on a busy server is a large bill.

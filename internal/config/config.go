@@ -499,7 +499,7 @@ func (c *Config) applyDefaults() {
 		c.Router.Timeout = 30 * time.Second
 	}
 	if c.Router.Model == "" {
-		c.Router.Model = "haiku"
+		c.Router.Model = "claude-sonnet-5-5"
 	}
 	// Commands that only read. Everything else can spend money or destroy work
 	// in progress, so it needs the allow-list when one is configured.

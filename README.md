@@ -69,6 +69,7 @@ constraints that are easy to break — is in [docs/architecture/](docs/architect
 | `cmd/gateway` | Discord and Slack listeners + HTTP API + status reads |
 | `cmd/roundclaw` | Terminal client for the HTTP API (agents, requests, secrets) |
 | `cmd/routercheck` | Verifies the router against a real model (manual, needs a credential) |
+| `cmd/quickbench` | Compares roundclaw with plain Claude Code on a live stack: small coding tasks, delegation, delegator context, a killed worker (manual, needs a credential) |
 | `internal/core` | Types shared by every adapter; imports no adapter |
 | `internal/claude` | CLI argv, stream-json decoder, session derivation |
 | `internal/store` | Per-agent SQLite (WAL) |

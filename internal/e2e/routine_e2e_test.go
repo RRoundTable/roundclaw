@@ -53,6 +53,9 @@ func fakeRuntime(t *testing.T, dir string) string {
 		"  run)\n" +
 		"    case \"$*\" in\n" +
 		"      *hang-please*) sleep 300 ;;\n" +
+		"      *\"You are writing the checks\"*garble-please*)\n" +
+		`        echo '{"type":"result","subtype":"success","result":"{\"must_contain\": [\"cut off","total_cost_usd":0.001,"is_error":false}'` + "\n" +
+		"        ;;\n" +
 		"      *\"You are writing the checks\"*)\n" +
 		`        echo '{"type":"system","subtype":"init","session_id":"s","model":"claude-examiner"}'` + "\n" +
 		`        echo '{"type":"result","subtype":"success","result":"{\"must_contain\": [\"done\"]}","total_cost_usd":0.001,"is_error":false}'` + "\n" +
@@ -310,14 +313,19 @@ func TestRoutineLifecycleEndToEnd(t *testing.T) {
 	h := setupWith(t, "  steward: steward\n  lifecycle:\n    sweep_every: 1s\n")
 	ctx := context.Background()
 
-	// Five successful turns of the same work, across conversations, each
-	// dearer than the routine will be.
+	// Six successful turns of the same work, across conversations, each
+	// dearer than the routine will be. The examiner's answer for the last is
+	// cut off, as a live one was, so that case is left unmarked.
 	dev, err := h.st.Get("dev")
 	require.NoError(t, err)
 	var turnIDs []int64
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 6; i++ {
 		conv := "c" + strconv.Itoa(i%2)
-		id, _, err := dev.CreateTurn(ctx, store.NewTurn{Request: "fix vet in repo r" + strconv.Itoa(i),
+		req := "fix vet in repo r" + strconv.Itoa(i)
+		if i == 5 {
+			req += " garble-please"
+		}
+		id, _, err := dev.CreateTurn(ctx, store.NewTurn{Request: req,
 			Origin: core.HTTPPollOrigin(), Conversation: conv})
 		require.NoError(t, err)
 		require.NoError(t, dev.FinishTurn(ctx, id, core.TurnResult{TurnID: id, Status: core.TurnDone,
@@ -362,9 +370,12 @@ func TestRoutineLifecycleEndToEnd(t *testing.T) {
 
 	trial := h.waitTrial(t, drafted.TrialID)
 	require.Equal(t, registry.TrialAccepted, trial.State, "%s %v", trial.Rule, trial.Figures)
-	for _, c := range trial.Cases {
+	for _, c := range trial.Cases[:5] {
 		assert.Equal(t, []string{"done"}, c.Checks.MustContain, "the examiner wrote the checks")
 	}
+	cut := trial.Cases[5]
+	assert.True(t, cut.Unmarked, "a cut-off answer marks nothing")
+	assert.Equal(t, "the examiner returned no exact checks", cut.UnmarkedReason, "and the record says why")
 	rt, err := h.reg.GetRoutine(ctx, "fix-vet")
 	require.NoError(t, err)
 	assert.Equal(t, registry.RoutineActive, rt.State)

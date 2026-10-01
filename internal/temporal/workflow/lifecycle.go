@@ -62,7 +62,7 @@ func RoutineTrial(ctx workflow.Context, in RoutineTrialInput) error {
 			}).Get(examineCtx, &ex); err != nil {
 				ex = activity.ExamineResult{Unmarked: true, Reason: err.Error()}
 			}
-			c.Checks, c.Unmarked = ex.Checks, ex.Unmarked
+			c.Checks, c.Unmarked, c.UnmarkedReason = ex.Checks, ex.Unmarked, ex.Reason
 			cost += ex.CostUSD
 		}
 		if err := workflow.ExecuteActivity(short, (*activity.Activities).SaveTrialCases,

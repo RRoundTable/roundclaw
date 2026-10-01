@@ -295,8 +295,11 @@ type TrialCase struct {
 	Checks   routine.Condition `json:"checks"`
 	Source   CaseSource        `json:"source"`
 	Targeted bool              `json:"targeted,omitempty"` // a recent failure a version was drafted to fix
-	// Unmarked is set when the examiner could not write checks for the case.
-	Unmarked bool `json:"unmarked,omitempty"`
+	// Unmarked is set when the examiner could not write checks for the case,
+	// and UnmarkedReason says why — an unmarked case counts against admission,
+	// so the record has to explain it.
+	Unmarked       bool   `json:"unmarked,omitempty"`
+	UnmarkedReason string `json:"unmarked_reason,omitempty"`
 	// Runs are the routine runs this case produced: one per version tried.
 	Runs map[int]int64 `json:"runs,omitempty"`
 }

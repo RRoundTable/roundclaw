@@ -161,5 +161,5 @@ func TestRoutineWakePromptIsBoundedAndNamesBothVerdicts(t *testing.T) {
 	assert.Contains(t, p, "your conditions NOT met")
 	assert.Contains(t, p, `missing "branch:"`)
 	assert.Contains(t, p, "inbox/results/x.md")
-	assert.Contains(t, p, "--instead-of 5")
+	assert.Contains(t, p, `"instead_of": 5`)
 }

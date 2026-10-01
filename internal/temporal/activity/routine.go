@@ -554,7 +554,7 @@ func routineWakePrompt(run registry.RoutineRun, head, kept string) string {
 	if kept != "" {
 		fmt.Fprintf(&b, "\nfull result: %s (open it only if you need it)\n", kept)
 	}
-	fmt.Fprintf(&b, "\ninspect: roundclaw routine trace %d · redo: roundclaw routine run %s --instead-of %d\n",
+	fmt.Fprintf(&b, "\ninspect: GET /v1/routine-runs/%d · redo: POST /v1/routines/%s/runs with \"instead_of\": %d\n",
 		run.ID, run.RoutineID, run.ID)
 	return b.String()
 }
